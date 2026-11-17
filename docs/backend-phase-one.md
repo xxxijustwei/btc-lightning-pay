@@ -99,7 +99,7 @@ phoenixd 的 9740 端口只允许本机／私有容器网络访问。北美业�
 - 停用商户阻止新开票；既有订单仍能查询和接收到账更新，不删除历史归属。
 - 收款金额、实际净入账和节点费用分别记录；手续费额度不能冒充可结算余额。
 - Worker 通过 Gateway 主动查询已保存 payment hash 的到账状态；公开订单查询与每分钟 Cron 补查共同更新业务数据库。
-- 人工结算记录必须核对对应已到账订单、金额和重复归属。记录金额与订单集合不符时拒绝写入；保留操作者、时间和凭证。系统无法仅靠事后登记阻止人在外部钱包重复转账。
+- 先生成固定订单集合与总金额的结算单，占用订单；平台人工付款后提交凭证确认完成，才计入已结算。未付款时可取消释放订单，保留历史明细和审计字段。系统不执行转账，也无法阻止人在外部钱包重复转账。
 - 结算按整笔收款登记：一次可以结算同一商户的多笔订单，每笔订单只归属一次结算，暂不拆分一笔订单的结算金额。
 - 不做订单／收款／结算的物理删除或直接修改金额来“修账”。
 
@@ -131,16 +131,16 @@ phoenixd 的 9740 端口只允许本机／私有容器网络访问。北美业�
 
 ### 平台管理端
 
-| 接口                                           | 用途                                                                 |
-| ---------------------------------------------- | -------------------------------------------------------------------- |
-| `POST /api/admin/merchants`                    | 创建 merchant ID                                                     |
-| `GET /api/admin/merchants`                     | 分页查询商户及状态                                                   |
-| `PATCH /api/admin/merchants/:merchantId`       | 启用／停用；不改 ID、不配置金额选项                                  |
-| `GET /api/admin/orders`                        | 按商户、支付状态、时间筛选订单，分页返回                             |
-| `GET /api/admin/orders/:orderId`               | 查询订单、报价、收款及结算详情                                       |
-| `GET /api/admin/merchants/:merchantId/summary` | 累计实收、已登记结算、未结算应付，均以 sats 表达                     |
-| `POST /api/admin/settlements`                  | 登记已在线下完成的结算，关联同一商户订单、金额和凭证；支持防重复提交 |
-| `GET /api/admin/settlements`                   | 分页查询人工结算记录                                                 |
+| 接口                                           | 用途                                                            |
+| ---------------------------------------------- | --------------------------------------------------------------- |
+| `POST /api/admin/merchants`                    | 创建 merchant ID                                                |
+| `GET /api/admin/merchants`                     | 分页查询商户及状态                                              |
+| `PATCH /api/admin/merchants/:merchantId`       | 启用／停用；不改 ID、不配置金额选项                             |
+| `GET /api/admin/orders`                        | 按商户、支付状态、时间筛选订单，分页返回                        |
+| `GET /api/admin/orders/:orderId`               | 查询订单、报价、收款及结算详情                                  |
+| `GET /api/admin/merchants/:merchantId/summary` | 累计实收、已登记结算、未结算应付，均以 sats 表达                |
+| `POST /api/admin/settlements`                  | 生成固定订单和金额的待付款结算单；只传 merchantId，支持幂等重试 |
+| `GET /api/admin/settlements`                   | 分页查询待付款／已结算／已取消批次                              |
 
 所有管理接口均验证平台管理员权限。公开创建订单不能传入后台状态、行情、sats、结算字段或任意 webhook URL。
 
@@ -149,7 +149,7 @@ phoenixd 的 9740 端口只允许本机／私有容器网络访问。北美业�
 1. 定稿共享接口契约、状态及错误样例，交给 Claude；不修改他的前端实现。
 2. 完成商户、报价、订单和管理权限后端逻辑。
 3. 完成北美服务的开票、结果恢复、到账同步及补偿查询。
-4. 完成商户应收统计及人工结算登记。
+4. 完成商户应收统计、结算单生成、确认和取消。
 5. 使用本地环境联调并完成针对性测试、类型、格式与构建检查。
 6. 北美部署与真实 Cash App 付款单独执行：先确定服务器访问方式、服务认证、钱包备份、通道流动性和费用预算，再由用户操作实际付款。
 
@@ -176,3 +176,7 @@ phoenixd 的 9740 端口只允许本机／私有容器网络访问。北美业�
 - [Coinbase 现货价格接口](https://docs.cdp.coinbase.com/coinbase-app/track-apis/prices#get-spot-price)：无需认证，无需配置付费订阅；没有文档保证匿名调用无限额。接口不提供报价生成时间，系统记录的是自身获取时间。
 - [Cash App Bitcoin](https://cash.app/bitcoin)、[Cash App 服务条款](https://cash.app/us/en/legal/tos)：Lightning 付款与 USD 换算规则；不据此保证特定账户或地区可用。
 - [phoenixd v0.9.3 API](https://github.com/ACINQ/phoenixd/blob/v0.9.3/src/commonMain/kotlin/fr/acinq/phoenixd/Api.kt)：开票、externalId、支付查询与通知。接口本身不提供商户账务或开票幂等保证。
+
+## 结算批次补充（已实现）
+
+每日由管理员操作生成，截止时间由后端取当前快照，界面按北京时间展示；包含往日积累的全部符合条件订单。新订单不改变已生成的单。同一天可生成多批，订单不能同时被两张有效单占用。结算详情、分页明细、confirm 和 cancel 接口，以及新的汇总口径见 [接入文档](backend-setup.md)。旧“传订单 ID 数组登记结算”接口已替换，前端必须使用新契约。

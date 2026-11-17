@@ -60,33 +60,63 @@ HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代
 
 `invoice` 和 `expiresAt` 在 `creating` 时为空。公开响应不包含备注、payment hash、费用或结算信息；链接持有者可以查看本笔付款信息，不可列出商户历史。支付状态说明见 [方案](backend-phase-one.md)。Cash App 入口按参考页使用 `https://cash.app/launch/lightning/{invoice}`；这一跳转仍待真机验证。
 
-列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、到账净额 `receivedMsat`、费用 `feeMsat`、到账时间及 `settlementId`；费用单位是 millisatoshi，1 sat = 1000 msat。
+商户和订单列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、到账净额 `receivedMsat`、费用 `feeMsat`、到账时间及 `settlementId`、`settlementStatus`；费用单位是 millisatoshi，1 sat = 1000 msat。
 
-`GET /api/admin/merchants/onne/summary` 返回 `merchantId`、`paidSat`、`settledSat`、`unsettledSat`。`paidSat` 是已付款订单的商户应收合计，平台承担的节点成本不从其中扣除；不是钱包可用余额。
+`GET /api/admin/merchants/onne/summary` 返回 `merchantId` 和以下口径（金额单位 sats）：
 
-人工结算：`POST /api/admin/settlements`，带独立 `Idempotency-Key`，示例：
+| 字段                     | 含义                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `paidSat`                | 全部已确认支付订单的商户应付                                                      |
+| `settledSat`             | 已确认结算完成的金额                                                              |
+| `unsettledSat`           | 未结清金额，包括待付款批次                                                        |
+| `pendingSettlementSat`   | 已生成结算单、尚未确认付款的占用金额                                              |
+| `availableSettlementSat` | 未被批次占用，可以生成新结算单的金额                                              |
+| `unconfirmedOrderCount`  | creating/pending 订单数量，包含到期后尚未确认付款的订单；不代表这些订单实际已付款 |
 
-```json
-{
-  "merchantId": "onne",
-  "orderIds": ["12345678-1234-4234-8234-123456789abc"],
-  "amountSat": 15000,
-  "proof": "外部转账凭证或记录号"
-}
+恒等式：`unsettledSat = paidSat - settledSat`，`availableSettlementSat = unsettledSat - pendingSettlementSat`。这些数值不是钱包可用余额，平台节点成本不从商户应付扣除。
+
+### 结算单接口
+
+流程：生成固定结算单 → 平台人工转账 → 填写凭证确认完成。服务端不执行转账。同商户允许多张互不重叠的待付款单，同一天可以多次结算。
+
+```http
+POST /api/admin/settlements
+Idempotency-Key: 8b562e87-a348-4e04-9705-3c09b4ea7195
+Content-Type: application/json
+
+{"merchantId":"onne"}
 ```
 
-每次 1–100 笔同商户的已支付、未结算订单，金额必须等于整笔订单 sats 之和，凭证 1–1000 字符。重复键与相同内容返回原记录；已被其他结算占用则 409。此 API **只登记已在线下完成的转账，不执行转账**。不要在一次外部转账失败后仍登记成功。退款不在本阶段范围内。
+创建时不再传 orderIds、amountSat 或 proof，旧字段和其他未知字段返回 400。后端在同一事务内固定该商户全部已确认到账、未被有效批次占用的订单及总金额，不限制为 100 笔；无可选订单返回 409 `NO_ELIGIBLE_ORDERS`。停用商户仍能结算历史收款。
+
+新建返回 201；同幂等键、同商户重试返回 200 和原批次当前状态。响应包含 `id, merchantId, status, amountSat, orderCount, cutoffAt, createdAt, createdBy, proof, confirmedAt, confirmedBy, cancelReason, cancelledAt, cancelledBy`，不返回整个订单 ID 数组，也不暴露幂等键。未填写的审计字段为 null。
+
+| 接口                                      | 说明                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| `GET /api/admin/settlements`              | 支持 merchantId、status、from、to、limit、offset；按创建时间倒序          |
+| `GET /api/admin/settlements/:id`          | 读取批次金额、笔数、状态和审计记录                                        |
+| `GET /api/admin/settlements/:id/orders`   | 分页读取固定明细，每条含 orderId、merchantId、amountSat；取消后明细仍保留 |
+| `POST /api/admin/settlements/:id/confirm` | `{ "proof": "外部转账凭证" }`，仅待付款单可确认                           |
+| `POST /api/admin/settlements/:id/cancel`  | `{ "reason": "尚未付款，重新核对" }`，仅待付款单可取消                    |
+
+结算列表和明细列表返回 `{items,total,limit,offset}`；默认 50、每页最多 100、offset 最大 100000。批次列表时间过滤针对 createdAt，from 含、to 不含。详情明细按订单 ID 排序。订单详情中的 settlementStatus 独立于支付 status：pending 表示占用，settled 才是已结算；不能只看 settlementId 非空就显示已结算。
+
+状态为 pending（待付款）、settled（已结算）、cancelled（已取消）。生成时只增加占用，确认时才计入已结算，取消释放占用但不删除明细。已结算不可取消、改凭证或删除；取消后不可确认。
+
+凭证去首尾空白后为 1–1000 字符，取消原因 1–500 字符。同批次相同凭证重复确认／相同原因重复取消返回原结果，保留首次操作者和时间；不同内容返回对应 409 冲突。确认与取消并发只有一个成功。转账结果不明时保持待付款，先核实，不取消或再次付款。
+
+截止时刻由数据库在生成时取快照，按毫秒记录；包含快照可见且 paidAt 不晚于截止时刻的订单，包括往日积累。之后的新到账、迟到确认不改变本批，顺延下一批。API 返回 UTC ISO8601，前端固定按北京时间 `Asia/Shanghai` 展示；不以午夜自动切账。创建结算单不会同步扫描所有 phoenixd invoice。
 
 业务错误与输入校验错误统一返回 `{ "code": "...", "message": "..." }`。无效 JSON、Schema 输入校验失败返回 400 `INVALID_INPUT`；内部响应编码错误返回 500 `INTERNAL_ERROR`，不暴露原始校验内容。Worker 支付响应和 Gateway 响应带 `X-Request-Id`，可用于关联日志。
 
-| HTTP      | 常见 code / 含义                                                                      |
-| --------- | ------------------------------------------------------------------------------------- |
-| 400       | 输入不合法、`INVALID_PAGINATION`、`DUPLICATE_ORDER`、`BODY_TOO_LARGE`                 |
-| 401 / 403 | 未登录、`ADMIN_REQUIRED`、`ORIGIN_REJECTED`                                           |
-| 404       | `MERCHANT_NOT_FOUND`、`ORDER_NOT_FOUND`                                               |
-| 409       | `IDEMPOTENCY_CONFLICT`、`MERCHANT_DISABLED`、`MERCHANT_EXISTS`、`SETTLEMENT_CONFLICT` |
-| 429       | `RATE_LIMITED`：每商户每秒最多 5 个新订单；重试使用原幂等键                           |
-| 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                             |
+| HTTP      | 常见 code / 含义                                                                                                                                                             |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400       | 输入不合法、`INVALID_PAGINATION`、`DUPLICATE_ORDER`、`BODY_TOO_LARGE`                                                                                                        |
+| 401 / 403 | 未登录、`ADMIN_REQUIRED`、`ORIGIN_REJECTED`                                                                                                                                  |
+| 404       | `MERCHANT_NOT_FOUND`、`ORDER_NOT_FOUND`                                                                                                                                      |
+| 409       | `IDEMPOTENCY_CONFLICT`、`MERCHANT_DISABLED`、`MERCHANT_EXISTS`、`NO_ELIGIBLE_ORDERS`、`SETTLEMENT_STATE_CONFLICT`、`SETTLEMENT_PROOF_CONFLICT`、`SETTLEMENT_REASON_CONFLICT` |
+| 429       | `RATE_LIMITED`：每商户每秒最多 5 个新订单；重试使用原幂等键                                                                                                                  |
+| 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                                                                                                                    |
 
 ## 付款查询与恢复
 
@@ -112,7 +142,7 @@ Worker 先保存订单和报价，再在该订单的行锁内创建并保存 inv
 
 ## 后端边界与验证
 
-Worker 的 `app.ts` 只适配 HTTP，`service.ts` 编排报价、订单和开票，`rules.ts` 维护纯业务校验，`store.ts` 负责事务、锁和 SQL，`projection.ts` 生成公开／管理响应。外部报价在事务外获取，进入事务后重新验证幂等键、商户启用状态和限流。业务错误使用类型化错误码，由 HTTP 边界映射状态码。
+Worker 的 `app.ts` 只适配 HTTP，`service.ts` 编排报价、订单和开票，`rules.ts` 维护纯业务校验，`store.ts` 负责支付事务，`settlements.ts` 负责结算事务、锁和 SQL，`projection.ts` 生成公开／管理响应。外部报价在事务外获取，进入事务后重新验证幂等键、商户启用状态和限流。业务错误使用类型化错误码，由 HTTP 边界映射状态码。
 
 请求取消时，数据库任务等待当前事务提交／回滚结束后才释放连接；已观察到取消的事务在提交前回滚。取消不撤销已经提交的订单。失败日志保留请求 ID、操作和脱敏上游错误分类，不记录 token、完整 invoice 或上游响应正文。
 
@@ -123,3 +153,15 @@ rtk proxy env PAYMENT_TEST_DATABASE_URL="$PAYMENT_TEST_DATABASE_URL" pnpm test -
 ```
 
 此变量只能指向本机独占的临时 `payments_test` 数据库，使用测试容器的迁移所有者账号；不要填写项目数据库连接。测试执行迁移及角色配置，以三个独立的非所有者 `btc_backend` 连接验证锁竞争、重复下单、结算冲突、事务取消、RLS 作用域复位及报价期间的商户停用。用例只清理自身测试数据，测试完成后由创建者销毁临时容器。
+
+## 结算批次升级（0006）
+
+新增迁移 `0006_slippery_iron_man.sql` 扩展 settlement，新增不可变 settlement_item 明细并 FORCE RLS。旧结算全部迁为 settled，确认人／时间沿用历史登记人／时间，cutoffAt 为 null（显示“历史记录，无截止快照”）。迁移先核对原金额与订单之和，空单或不一致将使事务整体回滚，不自动修账。
+
+部署前备份业务数据库，暂停管理端结算写入并等待旧请求结束；执行迁移后重新运行角色配置 SQL，为新明细表授予 SELECT/INSERT 权限，再同步发布新 Worker 和管理前端。此迁移在一个事务内建索引和回填，会持有表锁；lock_timeout 为 5 秒，statement_timeout 为 60 秒。选择维护窗口。已有大表时应先在副本测量，再拆分为在线索引与分批回填方案，不能将此初期迁移当成零停机迁移。
+
+切换后旧 orderIds/amountSat/proof 创建请求被拒绝；结算列表从数组变成分页对象。新 pending 批次存在后不能直接回退旧 Worker，因为旧版会把占用当作已结算；优先前向修复，不用旧备份覆盖新支付或结算数据。无需迁移 Gateway，也没有钱包交易。
+
+结算操作采用商户级事务锁，锁等待上限 5 秒、单条 SQL 执行上限 15 秒。遇到超时返回可重试的服务错误，事务回滚，不会部分生成。创建成功日志记录批次 ID、笔数和耗时，不记录凭证。完整业务规则见 [结算批次方案](settlement-batches-review.md)。
+
+验证记录（2026-11-18）：本机隔离 PostgreSQL 16、多连接、非所有者角色下，5,000 笔生成约 313 ms，10,000 笔约 438 ms；同时验证取消保留明细、重新生成、确认和竞争回滚。数字仅代表本机此次运行，不是线上延迟承诺。历史迁移通过正确金额升级与错误金额拒绝两种用例。

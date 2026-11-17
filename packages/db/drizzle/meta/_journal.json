@@ -43,6 +43,13 @@
       "when": 1794922054218,
       "tag": "0005_blue_dakota_north",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794932282000,
+      "tag": "0006_slippery_iron_man",
+      "breakpoints": true
     }
   ]
 }

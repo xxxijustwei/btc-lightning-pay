@@ -1,9 +1,9 @@
 import { PaymentsApi } from "@btc-lightning-pay/api";
 import { Context, Effect, Layer } from "effect";
-import { HttpRouter, HttpServer } from "effect/http";
+import { HttpRouter, HttpServerResponse, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import type { createPaymentStore } from "./store";
-import { adminOrder, publicOrder } from "./projection";
+import { adminOrder, publicOrder, settlementView } from "./projection";
 import { PaymentFailure, type PaymentError } from "./errors";
 import { createPaymentService } from "./service";
 import { paymentTask } from "./runtime";
@@ -118,13 +118,48 @@ const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) 
       run(
         "settle_orders",
         (r) =>
-          r.payments.settle(headers["idempotency-key"], payload, r.actor!).pipe(Effect.map(dated)),
+          r.payments.settle(headers["idempotency-key"], payload, r.actor!).pipe(
+            Effect.map((result) =>
+              HttpServerResponse.jsonUnsafe(settlementView(result.record), {
+                status: result.created ? 201 : 200,
+              }),
+            ),
+          ),
+        true,
+      ),
+    settlement: ({ params }) =>
+      read(
+        "read_settlement",
+        async (r) => settlementView(await r.store.settlement(params.orderId)),
+        true,
+      ),
+    settlementOrders: ({ params, query }) =>
+      read(
+        "settlement_orders",
+        (r) => r.store.settlementOrders(params.orderId, ...paging(query)),
+        true,
+      ),
+    confirmSettlement: ({ params, payload }) =>
+      read(
+        "confirm_settlement",
+        async (r) =>
+          settlementView(await r.store.confirmSettlement(params.orderId, payload.proof, r.actor!)),
+        true,
+      ),
+    cancelSettlement: ({ params, payload }) =>
+      read(
+        "cancel_settlement",
+        async (r) =>
+          settlementView(await r.store.cancelSettlement(params.orderId, payload.reason, r.actor!)),
         true,
       ),
     settlements: ({ query }) =>
       read(
         "list_settlements",
-        async (r) => (await r.store.settlements(query.merchantId, ...paging(query))).map(dated),
+        async (r) => {
+          const page = await r.store.settlements(query, ...paging(query));
+          return { ...page, items: page.items.map(settlementView) };
+        },
         true,
       ),
   }),

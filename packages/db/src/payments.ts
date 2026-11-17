@@ -6,6 +6,7 @@ import {
   foreignKey,
   index,
   integer,
+  primaryKey,
   pgPolicy,
   pgTable,
   text,
@@ -45,7 +46,15 @@ export const settlement = pgTable(
       .references(() => merchant.id, { onDelete: "restrict" }),
     key: text("idempotency_key").notNull().unique(),
     amountSat: bigint("amount_sat", { mode: "number" }).notNull(),
-    proof: text("proof").notNull(),
+    proof: text("proof"),
+    status: text("status").notNull(),
+    orderCount: integer("order_count").notNull(),
+    cutoffAt: timestamp("cutoff_at", { withTimezone: true }),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    confirmedBy: text("confirmed_by").references(() => user.id, { onDelete: "restrict" }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    cancelledBy: text("cancelled_by").references(() => user.id, { onDelete: "restrict" }),
+    cancelReason: text("cancel_reason"),
     createdBy: text("created_by")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
@@ -53,6 +62,13 @@ export const settlement = pgTable(
   },
   (t) => [
     unique("settlement_tenant_id").on(t.merchantId, t.id),
+    index("settlement_confirmer_idx").on(t.confirmedBy),
+    index("settlement_canceller_idx").on(t.cancelledBy),
+    check("settlement_count", sql`${t.orderCount} > 0`),
+    check(
+      "settlement_state",
+      sql`(${t.status} = 'pending' AND ${t.cutoffAt} IS NOT NULL AND ${t.proof} IS NULL AND ${t.confirmedAt} IS NULL AND ${t.confirmedBy} IS NULL AND ${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancelReason} IS NULL) OR (${t.status} = 'settled' AND ${t.proof} IS NOT NULL AND ${t.confirmedAt} IS NOT NULL AND ${t.confirmedBy} IS NOT NULL AND ${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancelReason} IS NULL) OR (${t.status} = 'cancelled' AND ${t.cutoffAt} IS NOT NULL AND ${t.proof} IS NULL AND ${t.confirmedAt} IS NULL AND ${t.confirmedBy} IS NULL AND ${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL AND length(trim(${t.cancelReason})) BETWEEN 1 AND 500 AND ${t.cancelReason} IS NOT NULL)`,
+    ),
     index("settlement_creator_idx").on(t.createdBy),
     index("settlement_merchant_created_idx").on(t.merchantId, t.createdAt),
     check("settlement_amount", sql`${t.amountSat} > 0 AND ${t.amountSat} <= 2100000000000000`),
@@ -86,6 +102,10 @@ export const paymentOrder = pgTable(
     attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    unique("order_tenant_id").on(t.merchantId, t.id),
+    index("order_settlement_candidates")
+      .on(t.merchantId, t.paidAt, t.id)
+      .where(sql`${t.status} = 'paid' AND ${t.settlementId} IS NULL`),
     unique("order_idempotency").on(t.merchantId, t.key),
     uniqueIndex("order_payment_hash").on(t.paymentHash),
     index("order_merchant_created").on(t.merchantId, t.createdAt),
@@ -118,5 +138,32 @@ export const paymentOrder = pgTable(
       using: sql`${admin} OR ${tenant(t.merchantId)} OR ${t.id}::text = nullif(current_setting('app.order_id', true), '')`,
       withCheck: sql`${admin} OR ${tenant(t.merchantId)}`,
     }),
+  ],
+).enableRLS();
+
+export const settlementItem = pgTable(
+  "settlement_item",
+  {
+    settlementId: uuid("settlement_id").notNull(),
+    merchantId: text("merchant_id").notNull(),
+    orderId: uuid("order_id").notNull(),
+    amountSat: bigint("amount_sat", { mode: "number" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.settlementId, t.orderId] }),
+    index("settlement_item_order_idx").on(t.merchantId, t.orderId),
+    index("settlement_item_batch_idx").on(t.merchantId, t.settlementId),
+    foreignKey({
+      columns: [t.merchantId, t.settlementId],
+      foreignColumns: [settlement.merchantId, settlement.id],
+      name: "settlement_item_batch_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.merchantId, t.orderId],
+      foreignColumns: [paymentOrder.merchantId, paymentOrder.id],
+      name: "settlement_item_order_fk",
+    }).onDelete("restrict"),
+    check("settlement_item_amount", sql`${t.amountSat} > 0 AND ${t.amountSat} <= 9007199254740`),
+    pgPolicy("settlement_item_access", { for: "all", using: admin, withCheck: admin }),
   ],
 ).enableRLS();

@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+import { Settlement } from "@btc-lightning-pay/api";
 import type { PaymentStatus } from "@btc-lightning-pay/api";
 import type { OrderRow } from "./store";
 export function publicOrder(row: OrderRow) {
@@ -12,7 +14,7 @@ export function publicOrder(row: OrderRow) {
     serverTime: new Date().toISOString(),
   };
 }
-export function adminOrder(row: OrderRow) {
+export function adminOrder(row: OrderRow & { settlementStatus?: string | null }) {
   return {
     ...publicOrder(row),
     reference: row.reference,
@@ -25,6 +27,12 @@ export function adminOrder(row: OrderRow) {
     receivedMsat: row.receivedMsat,
     feeMsat: row.feeMsat,
     settlementId: row.settlementId,
+    settlementStatus:
+      row.settlementStatus === "pending"
+        ? ("pending" as const)
+        : row.settlementStatus === "settled"
+          ? ("settled" as const)
+          : null,
   };
 }
 export function statusOf(row: OrderRow): typeof PaymentStatus.Type {
@@ -32,4 +40,17 @@ export function statusOf(row: OrderRow): typeof PaymentStatus.Type {
   if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return "expired";
   if (row.invoice) return "pending";
   return row.status === "failed" ? "failed" : "creating";
+}
+
+export function settlementView(
+  row: typeof import("@btc-lightning-pay/db/schema").settlement.$inferSelect,
+) {
+  const { key: _key, ...rest } = row;
+  return Schema.decodeUnknownSync(Settlement)({
+    ...rest,
+    createdAt: row.createdAt.toISOString(),
+    cutoffAt: row.cutoffAt?.toISOString() ?? null,
+    confirmedAt: row.confirmedAt?.toISOString() ?? null,
+    cancelledAt: row.cancelledAt?.toISOString() ?? null,
+  });
 }

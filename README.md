@@ -133,7 +133,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-已包含 OrbStack/Docker Compose 下的 phoenixd 本地部署与开票 demo，以及多商户订单、固定报价、到账核验、管理员权限和人工结算 API。付款页面与管理页面交给 Claude 实现。旧 `/demo` 暂时保留用于本地节点排查；不用于生产商户收款。不包含商户独立钱包、退款、自动提现、CI/CD 或云端部署。
+已包含 OrbStack/Docker Compose 下的 phoenixd 本地部署与开票 demo，以及多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页面与管理页面交给 Claude 实现。旧 `/demo` 暂时保留用于本地节点排查；不用于生产商户收款。不包含商户独立钱包、退款、自动提现、CI/CD 或云端部署。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

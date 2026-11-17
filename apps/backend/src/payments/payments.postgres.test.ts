@@ -111,6 +111,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     try {
       if (admin) {
         for (const id of merchantIds) {
+          await admin.database.execute(sql`DELETE FROM settlement_item WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM payment_order WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM settlement WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM merchant WHERE id=${id}`);
@@ -193,7 +194,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
         .map((client, i) =>
           createPaymentStore(client.database).settle(
             `settlement-${crypto.randomUUID()}-${i}`,
-            { merchantId: id, orderIds: [order.id], amountSat: 10000, proof: "test-transfer" },
+            { merchantId: id },
             actor,
           ),
         ),
@@ -206,9 +207,109 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const results = await pending;
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.find((result) => result.status === "rejected")).toMatchObject({
-      reason: { code: "SETTLEMENT_CONFLICT" },
+      reason: { code: "NO_ELIGIBLE_ORDERS" },
     });
-    expect(await store.summary(id)).toMatchObject({ settledSat: 10000, unsettledSat: 0 });
+    expect(await store.summary(id)).toMatchObject({
+      settledSat: 0,
+      pendingSettlementSat: 10000,
+      unsettledSat: 10000,
+    });
+  });
+
+  async function seedPaid(id: string, size: number) {
+    await admin.database
+      .execute(sql`WITH ids AS (SELECT gen_random_uuid() AS id, n FROM generate_series(1,${size}::int) n)
+      INSERT INTO payment_order(id,merchant_id,idempotency_key,amount_usd_cents,amount_sat,rate_usd,quoted_at,status,invoice,payment_hash,expires_at,paid_at,received_msat,fee_msat)
+      SELECT id,${id},'seed-'||n,1000,10000,'100000',now(),'paid','lnbc100u1test',md5(id::text)||md5(id::text),now()+interval '1 hour',now(),10000000,0 FROM ids`);
+  }
+  test.each([5000, 10000])(
+    "a %i-order batch has an exact fixed total and paginated history",
+    async (size) => {
+      const id = await fixture();
+      await seedPaid(id, size);
+      const store = createPaymentStore(clients[0].database);
+      const started = performance.now();
+      const { record } = await store.settle(crypto.randomUUID(), { merchantId: id }, actor);
+      const durationMs = Math.round(performance.now() - started);
+      console.info(JSON.stringify({ event: "settlement_capacity_test", orders: size, durationMs }));
+      expect(record).toMatchObject({
+        orderCount: size,
+        amountSat: size * 10000,
+        status: "pending",
+      });
+      const first = await store.settlementOrders(record.id, 100, 0),
+        last = await store.settlementOrders(record.id, 100, size - 100);
+      expect(first.items).toHaveLength(100);
+      expect(last.items).toHaveLength(100);
+      expect(last.total).toBe(size);
+      expect(first.items[0].orderId).not.toBe(last.items[0].orderId);
+      await store.cancelSettlement(record.id, "not paid", actor);
+      expect((await store.settlementOrders(record.id, 100, size - 100)).items).toEqual(last.items);
+      expect(await store.summary(id)).toMatchObject({
+        availableSettlementSat: size * 10000,
+        pendingSettlementSat: 0,
+      });
+      const second = (await store.settle(crypto.randomUUID(), { merchantId: id }, actor)).record;
+      await store.confirmSettlement(second.id, "wire-proof", actor);
+      expect(await store.summary(id)).toMatchObject({ settledSat: size * 10000, unsettledSat: 0 });
+    },
+    20000,
+  );
+
+  test("confirm and cancel serialize and only one can win", async () => {
+    const id = await fixture();
+    await seedPaid(id, 1);
+    const record = (
+      await createPaymentStore(clients[0].database).settle(
+        crypto.randomUUID(),
+        { merchantId: id },
+        actor,
+      )
+    ).record;
+    const release = await hold(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"settlement:merchant:" + id},0))`,
+    );
+    const pending = Promise.allSettled([
+      createPaymentStore(clients[0].database).confirmSettlement(record.id, "wire", actor),
+      createPaymentStore(clients[1].database).cancelSettlement(record.id, "unpaid", actor),
+    ]);
+    try {
+      await blocked(2);
+    } finally {
+      await release();
+    }
+    const results = await pending;
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { code: "SETTLEMENT_STATE_CONFLICT" },
+    });
+  });
+
+  test("cancelled generation rolls back both batch and order reservation", async () => {
+    const id = await fixture();
+    await seedPaid(id, 1);
+    const controller = new AbortController();
+    const store = createPaymentStore(clients[0].database, controller.signal);
+    const release = await hold(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"settlement:merchant:" + id},0))`,
+    );
+    const pending = store.settle(crypto.randomUUID(), { merchantId: id }, actor).then(
+      () => false,
+      () => true,
+    );
+    try {
+      await blocked(1);
+      controller.abort();
+    } finally {
+      await release();
+    }
+    expect(await pending).toBe(true);
+    const remaining = createPaymentStore(clients[1].database);
+    expect((await remaining.settlements({ merchantId: id }, 50, 0)).total).toBe(0);
+    expect(await remaining.summary(id)).toMatchObject({
+      availableSettlementSat: 10000,
+      pendingSettlementSat: 0,
+    });
   });
 
   test("cancellation drains the transaction rollback before connection cleanup", async () => {

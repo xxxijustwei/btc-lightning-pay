@@ -51,30 +51,68 @@ export const AdminOrder = Schema.Struct({
   receivedMsat: Schema.NullOr(Millisats),
   feeMsat: Schema.NullOr(Millisats),
   settlementId: Schema.NullOr(OrderId),
+  settlementStatus: Schema.NullOr(Schema.Literals(["pending", "settled"])),
 });
-export const NewSettlement = Schema.Struct({
-  merchantId: MerchantId,
-  orderIds: Schema.Array(OrderId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  amountSat: Sats,
-  proof: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
-});
+export const SettlementStatus = Schema.Literals(["pending", "settled", "cancelled"]);
+export const SettlementAmount = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 2100000000000000 }),
+);
+export const NewSettlement = Schema.StructWithRest(Schema.Struct({ merchantId: MerchantId }), [
+  Schema.Record(Schema.String, Schema.Unknown),
+]).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "merchantId")));
+export const ConfirmSettlement = Schema.StructWithRest(
+  Schema.Struct({ proof: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)) }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "proof")));
+export const CancelSettlement = Schema.StructWithRest(
+  Schema.Struct({ reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)) }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "reason")));
 export const Settlement = Schema.Struct({
   id: OrderId,
   merchantId: MerchantId,
-  amountSat: Sats,
-  orderIds: Schema.Array(OrderId),
-  proof: Schema.String,
+  status: SettlementStatus,
+  amountSat: SettlementAmount,
+  orderCount: Schema.Int,
+  cutoffAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   createdBy: Schema.String,
+  proof: Schema.NullOr(Schema.String),
+  confirmedAt: Schema.NullOr(Schema.String),
+  confirmedBy: Schema.NullOr(Schema.String),
+  cancelReason: Schema.NullOr(Schema.String),
+  cancelledAt: Schema.NullOr(Schema.String),
+  cancelledBy: Schema.NullOr(Schema.String),
+});
+export const SettlementPage = Schema.Struct({
+  items: Schema.Array(Settlement),
+  total: Schema.Int,
+  limit: Schema.Int,
+  offset: Schema.Int,
+});
+export const SettlementOrderPage = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ orderId: OrderId, merchantId: MerchantId, amountSat: Sats })),
+  total: Schema.Int,
+  limit: Schema.Int,
+  offset: Schema.Int,
 });
 export const Summary = Schema.Struct({
   merchantId: MerchantId,
   paidSat: Schema.Int,
   settledSat: Schema.Int,
   unsettledSat: Schema.Int,
+  pendingSettlementSat: Schema.Int,
+  availableSettlementSat: Schema.Int,
+  unconfirmedOrderCount: Schema.Int,
 });
 export const paymentErrorStatus = {
   INVALID_INPUT: 400,
+  NO_ELIGIBLE_ORDERS: 409,
+  SETTLEMENT_NOT_FOUND: 404,
+  SETTLEMENT_STATE_CONFLICT: 409,
+  SETTLEMENT_PROOF_CONFLICT: 409,
+  SETTLEMENT_REASON_CONFLICT: 409,
+
   INVALID_BODY: 400,
   INVALID_EVENT: 400,
   BODY_TOO_LARGE: 400,
@@ -177,12 +215,41 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
     HttpApiEndpoint.post("settle", "/api/admin/settlements", {
       headers: idempotencyHeaders,
       payload: NewSettlement,
+      success: [Settlement, Settlement.annotate({ httpApiStatus: 201 })],
+      error: errors,
+    }),
+    HttpApiEndpoint.get("settlement", "/api/admin/settlements/:orderId", {
+      params: orderParams,
+      success: Settlement,
+      error: errors,
+    }),
+    HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:orderId/orders", {
+      params: orderParams,
+      query: paging,
+      success: SettlementOrderPage,
+      error: errors,
+    }),
+    HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:orderId/confirm", {
+      params: orderParams,
+      payload: ConfirmSettlement,
+      success: Settlement,
+      error: errors,
+    }),
+    HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:orderId/cancel", {
+      params: orderParams,
+      payload: CancelSettlement,
       success: Settlement,
       error: errors,
     }),
     HttpApiEndpoint.get("settlements", "/api/admin/settlements", {
-      query: { ...paging, merchantId: Schema.optional(MerchantId) },
-      success: Schema.Array(Settlement),
+      query: {
+        ...paging,
+        merchantId: Schema.optional(MerchantId),
+        status: Schema.optional(SettlementStatus),
+        from: Schema.optional(Schema.String),
+        to: Schema.optional(Schema.String),
+      },
+      success: SettlementPage,
       error: errors,
     }),
   ),

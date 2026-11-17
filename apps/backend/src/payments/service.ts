@@ -115,9 +115,20 @@ export function createPaymentService(
       input: typeof NewSettlement.Type,
       actor: string,
     ) {
-      if (new Set(input.orderIds).size !== input.orderIds.length)
-        return yield* new PaymentFailure({ code: "DUPLICATE_ORDER" });
-      return yield* paymentTask("settle_orders", () => store.settle(key, input, actor));
+      const started = Date.now();
+      const result = yield* paymentTask("settle_orders", () => store.settle(key, input, actor));
+      yield* Effect.sync(() =>
+        console.info(
+          JSON.stringify({
+            event: "settlement_batch",
+            settlementId: result.record.id,
+            orderCount: result.record.orderCount,
+            created: result.created,
+            durationMs: Date.now() - started,
+          }),
+        ),
+      );
+      return result;
     }),
   };
 }

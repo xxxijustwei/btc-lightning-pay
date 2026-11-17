@@ -3,6 +3,12 @@ import { Schema } from "effect";
 export class PaymentFailure extends Schema.TaggedError<PaymentFailure>()("PaymentFailure", {
   code: Schema.Literals([
     "ORDER_NOT_FOUND",
+    "NO_ELIGIBLE_ORDERS",
+    "SETTLEMENT_NOT_FOUND",
+    "SETTLEMENT_STATE_CONFLICT",
+    "SETTLEMENT_PROOF_CONFLICT",
+    "SETTLEMENT_REASON_CONFLICT",
+
     "MERCHANT_NOT_FOUND",
     "IDEMPOTENCY_CONFLICT",
     "MERCHANT_DISABLED",

@@ -67,7 +67,7 @@ beforeAll(async () => {
   });
   await pg.exec(`CREATE ROLE payment_app NOSUPERUSER NOBYPASSRLS;
     GRANT USAGE ON SCHEMA public TO payment_app;
-    GRANT SELECT, INSERT, UPDATE ON merchant, payment_order, settlement TO payment_app;
+    GRANT SELECT, INSERT, UPDATE ON merchant, payment_order, settlement, settlement_item TO payment_app;
     INSERT INTO public."user" (id,name,email) VALUES ('admin','Admin','admin@example.com');`);
   const provision = readFileSync(
     new NodeURL("../../../../packages/db/sql/provision-backend-role.sql", import.meta.url),
@@ -84,7 +84,9 @@ beforeAll(async () => {
   await pg.exec("RESET ROLE;");
 });
 beforeEach(async () => {
-  await pg.exec("RESET ROLE; TRUNCATE payment_order, settlement, merchant; SET ROLE payment_app;");
+  await pg.exec(
+    "RESET ROLE; TRUNCATE settlement_item, payment_order, settlement, merchant; SET ROLE payment_app;",
+  );
   await store.createMerchant("onne");
   await store.createMerchant("other");
   quote.mockClear();
@@ -127,7 +129,7 @@ test("payment updates are monotonic, late payments are credited and net cost is 
   await store.sync(payment);
   await store.sync(pending);
   expect(publicOrder(await store.getOrder(row.id)).status).toBe("paid");
-  expect(await store.summary("onne")).toEqual({
+  expect(await store.summary("onne")).toMatchObject({
     merchantId: "onne",
     paidSat: 10000,
     settledSat: 0,
@@ -138,31 +140,110 @@ test("payment updates are monotonic, late payments are credited and net cost is 
     code: "PAYMENT_MISMATCH",
   });
 });
-test("settlement is atomic, tenant-bound, attributed to its admin and cannot settle an order twice", async () => {
+test("batch lifecycle freezes amounts, reserves orders, retains cancelled history and confirms idempotently", async () => {
   const a = await createOrder("onne", key, { amountUsdCents: 1000 });
   const b = await createOrder("other", key, { amountUsdCents: 1000 });
   await store.sync(paid(a.id));
   await store.sync(paid(b.id));
-  const input = {
-    merchantId: "onne",
-    orderIds: [a.id],
+  const { record } = await store.settle(key, { merchantId: "onne" }, "admin");
+  expect(record).toMatchObject({
+    status: "pending",
     amountSat: 10000,
-    proof: "external-transfer-reference",
-  };
-  await expect(store.settle(key, { ...input, orderIds: [b.id] }, "admin")).rejects.toMatchObject({
-    code: "SETTLEMENT_CONFLICT",
+    orderCount: 1,
+    createdBy: "admin",
   });
-  await expect(store.settle(key, { ...input, amountSat: 9999 }, "admin")).rejects.toMatchObject({
-    code: "SETTLEMENT_CONFLICT",
+  expect(await store.summary("onne")).toMatchObject({
+    settledSat: 0,
+    pendingSettlementSat: 10000,
+    availableSettlementSat: 0,
   });
-  const record = await store.settle(key, input, "admin");
-  expect(record.createdBy).toBe("admin");
-  expect((await store.settle(key, input, "admin")).id).toBe(record.id);
-  await expect(store.settle("other-settlement-key", input, "admin")).rejects.toMatchObject({
-    code: "SETTLEMENT_CONFLICT",
+  expect((await store.settle(key, { merchantId: "onne" }, "admin")).record.id).toBe(record.id);
+  await expect(store.settle(key, { merchantId: "other" }, "admin")).rejects.toMatchObject({
+    code: "IDEMPOTENCY_CONFLICT",
   });
-  expect(await store.summary("onne")).toMatchObject({ settledSat: 10000, unsettledSat: 0 });
-  expect(await store.summary("other")).toMatchObject({ settledSat: 0, unsettledSat: 10000 });
+  await expect(
+    store.settle("other-batch-key", { merchantId: "onne" }, "admin"),
+  ).rejects.toMatchObject({ code: "NO_ELIGIBLE_ORDERS" });
+  const later = await createOrder("onne", "later-order-key-0001", { amountUsdCents: 1000 });
+  await store.sync(paid(later.id));
+  expect((await store.settlementOrders(record.id, 50, 0)).items).toEqual([
+    { orderId: a.id, merchantId: "onne", amountSat: 10000 },
+  ]);
+  expect((await store.settlement(record.id)).amountSat).toBe(10000);
+  await store.cancelSettlement(record.id, "not paid", "admin");
+  expect((await store.settlementOrders(record.id, 50, 0)).total).toBe(1);
+  expect(await store.summary("onne")).toMatchObject({
+    availableSettlementSat: 20000,
+    pendingSettlementSat: 0,
+  });
+  await expect(store.confirmSettlement(record.id, "proof", "admin")).rejects.toMatchObject({
+    code: "SETTLEMENT_STATE_CONFLICT",
+  });
+  const next = (await store.settle("replacement-batch-key", { merchantId: "onne" }, "admin"))
+    .record;
+  expect(next.orderCount).toBe(2);
+  const confirmed = await store.confirmSettlement(next.id, " transfer-1 ", "admin");
+  expect(await store.confirmSettlement(next.id, "transfer-1", "admin")).toEqual(confirmed);
+  await expect(store.confirmSettlement(next.id, "different", "admin")).rejects.toMatchObject({
+    code: "SETTLEMENT_PROOF_CONFLICT",
+  });
+  await expect(store.cancelSettlement(next.id, "oops", "admin")).rejects.toMatchObject({
+    code: "SETTLEMENT_STATE_CONFLICT",
+  });
+  expect(await store.summary("onne")).toMatchObject({
+    settledSat: 20000,
+    unsettledSat: 0,
+    pendingSettlementSat: 0,
+  });
+  expect(await store.summary("other")).toMatchObject({
+    settledSat: 0,
+    availableSettlementSat: 10000,
+  });
+});
+
+test("batch HTTP rejects old bodies, paginates history, and exposes independent settlement status", async () => {
+  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  await store.sync(paid(row.id));
+  const headers = { "idempotency-key": key };
+  expect(
+    (
+      await call(
+        request(
+          "/api/admin/settlements",
+          { merchantId: "onne", orderIds: [row.id], amountSat: 10000, proof: "old" },
+          headers,
+        ),
+        "admin",
+      )
+    ).status,
+  ).toBe(400);
+  const response = await call(
+    request("/api/admin/settlements", { merchantId: "onne" }, headers),
+    "admin",
+  );
+  expect(response.status).toBe(201);
+  const batch = (await response.json()) as { id: string };
+  expect(
+    (await call(request("/api/admin/settlements", { merchantId: "onne" }, headers), "admin"))
+      .status,
+  ).toBe(200);
+  expect(await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json()).toMatchObject({
+    status: "paid",
+    settlementStatus: "pending",
+  });
+  expect(
+    await (await call(request("/api/admin/settlements?limit=1"), "admin")).json(),
+  ).toMatchObject({ total: 1, limit: 1, items: [{ id: batch.id, status: "pending" }] });
+  expect(
+    await (await call(request(`/api/admin/settlements/${batch.id}/orders`), "admin")).json(),
+  ).toMatchObject({ total: 1, items: [{ orderId: row.id }] });
+  expect(
+    (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }))).status,
+  ).toBe(403);
+  expect(
+    (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }), "admin"))
+      .status,
+  ).toBe(200);
 });
 test("real non-owner RLS isolates merchants and public orders and resets on the pooled connection", async () => {
   const a = await createOrder("onne", key, { amountUsdCents: 1000 });

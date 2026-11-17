@@ -1,17 +1,29 @@
 import type { Database } from "@btc-lightning-pay/db/client";
 import { merchant, paymentOrder, settlement } from "@btc-lightning-pay/db/schema";
-import type { GatewayPayment, NewOrder, NewSettlement } from "@btc-lightning-pay/api";
-import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import type { GatewayPayment, NewOrder } from "@btc-lightning-pay/api";
+import { getTableColumns, and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 import { PaymentFailure } from "./errors";
-import { assertSameOrder, paymentUpdate, assertSettlement } from "./rules";
+import { assertSameOrder, paymentUpdate } from "./rules";
 
 export type OrderRow = typeof paymentOrder.$inferSelect;
-type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
-export type Scope = { admin?: boolean; merchantId?: string; orderId?: string };
+export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+export type Scope = {
+  admin?: boolean;
+  merchantId?: string;
+  orderId?: string;
+  repeatableRead?: boolean;
+};
+export type TransactionRunner = <T>(
+  scope: Scope,
+  body: (tx: Transaction) => Promise<T>,
+) => Promise<T>;
+import { createSettlementStore } from "./settlements";
 export function createPaymentStore(db: Database, signal?: AbortSignal) {
   async function transaction<T>(scope: Scope, body: (tx: Transaction) => Promise<T>) {
     return db.transaction(async (tx) => {
       signal?.throwIfAborted();
+      if (scope.repeatableRead)
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
       await tx.execute(
         sql`SELECT set_config('app.payment_admin', ${scope.admin ? "true" : "false"}, true), set_config('app.merchant_id', ${scope.merchantId ?? ""}, true), set_config('app.order_id', ${scope.orderId ?? ""}, true)`,
       );
@@ -22,7 +34,11 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
   }
   async function getOrder(id: string, admin = false) {
     return transaction({ admin, orderId: id }, async (tx) => {
-      const [row] = await tx.select().from(paymentOrder).where(eq(paymentOrder.id, id));
+      const [row] = await tx
+        .select({ ...getTableColumns(paymentOrder), settlementStatus: settlement.status })
+        .from(paymentOrder)
+        .leftJoin(settlement, eq(paymentOrder.settlementId, settlement.id))
+        .where(eq(paymentOrder.id, id));
       if (!row) throw new PaymentFailure({ code: "ORDER_NOT_FOUND" });
       return row;
     });
@@ -207,100 +223,15 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         { admin: true },
         async (tx) =>
           await tx
-            .select()
+            .select({ ...getTableColumns(paymentOrder), settlementStatus: settlement.status })
             .from(paymentOrder)
+            .leftJoin(settlement, eq(paymentOrder.settlementId, settlement.id))
             .where(and(...conditions))
             .orderBy(desc(paymentOrder.createdAt), paymentOrder.id)
             .limit(limit)
             .offset(offset),
       );
     },
-    async summary(merchantId: string) {
-      return transaction({ admin: true }, async (tx) => {
-        const [m] = await tx.select().from(merchant).where(eq(merchant.id, merchantId));
-        if (!m) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
-        const [totals] = await tx
-          .select({
-            paid: sql<string>`coalesce(sum(${paymentOrder.amountSat}),0)::text`,
-            settled: sql<string>`coalesce(sum(case when ${paymentOrder.settlementId} IS NOT NULL then ${paymentOrder.amountSat} else 0 end),0)::text`,
-          })
-          .from(paymentOrder)
-          .where(and(eq(paymentOrder.merchantId, merchantId), eq(paymentOrder.status, "paid")));
-        const paidSat = Number(totals.paid),
-          settledSat = Number(totals.settled);
-        if (!Number.isSafeInteger(paidSat) || !Number.isSafeInteger(settledSat))
-          throw new PaymentFailure({ code: "AMOUNT_OVERFLOW" });
-        return { merchantId, paidSat, settledSat, unsettledSat: paidSat - settledSat };
-      });
-    },
-    async settle(key: string, input: typeof NewSettlement.Type, actor: string) {
-      const ids = [...input.orderIds].sort();
-      if (new Set(ids).size !== ids.length) throw new PaymentFailure({ code: "DUPLICATE_ORDER" });
-      return transaction({ admin: true }, async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key},0))`);
-        const [old] = await tx.select().from(settlement).where(eq(settlement.key, key));
-        if (old) {
-          const rows = await tx
-            .select({ id: paymentOrder.id })
-            .from(paymentOrder)
-            .where(eq(paymentOrder.settlementId, old.id))
-            .orderBy(paymentOrder.id);
-          if (
-            old.merchantId !== input.merchantId ||
-            old.amountSat !== input.amountSat ||
-            old.proof !== input.proof ||
-            JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(ids)
-          )
-            throw new PaymentFailure({ code: "IDEMPOTENCY_CONFLICT" });
-          return { ...old, orderIds: ids };
-        }
-        const rows = await tx
-          .select()
-          .from(paymentOrder)
-          .where(and(eq(paymentOrder.merchantId, input.merchantId), inArray(paymentOrder.id, ids)))
-          .orderBy(paymentOrder.id)
-          .for("update");
-        assertSettlement(rows, input);
-        const [record] = await tx
-          .insert(settlement)
-          .values({
-            id: crypto.randomUUID(),
-            key,
-            merchantId: input.merchantId,
-            amountSat: input.amountSat,
-            proof: input.proof,
-            createdBy: actor,
-          })
-          .returning();
-        await tx
-          .update(paymentOrder)
-          .set({ settlementId: record.id })
-          .where(inArray(paymentOrder.id, ids));
-        return { ...record, orderIds: ids };
-      });
-    },
-    async settlements(merchantId: string | undefined, limit: number, offset: number) {
-      return transaction({ admin: true }, async (tx) => {
-        const rows = await tx
-          .select()
-          .from(settlement)
-          .where(merchantId ? eq(settlement.merchantId, merchantId) : undefined)
-          .orderBy(desc(settlement.createdAt), settlement.id)
-          .limit(limit)
-          .offset(offset);
-        return Promise.all(
-          rows.map(async (row) => ({
-            ...row,
-            orderIds: (
-              await tx
-                .select({ id: paymentOrder.id })
-                .from(paymentOrder)
-                .where(eq(paymentOrder.settlementId, row.id))
-                .orderBy(paymentOrder.id)
-            ).map((r) => r.id),
-          })),
-        );
-      });
-    },
+    ...createSettlementStore(transaction),
   };
 }
