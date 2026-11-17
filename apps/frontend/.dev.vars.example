@@ -1,0 +1,2 @@
+# 前端通过 wrangler.jsonc 的 BACKEND 服务绑定访问后端，无需公开 API 地址。
+# 后续服务端本地密钥放入 .dev.vars；不要使用 VITE_ 前缀暴露密钥。
