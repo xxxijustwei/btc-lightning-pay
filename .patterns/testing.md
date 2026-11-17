@@ -21,7 +21,7 @@ required generation. Verify scripts against the manifests before using them.
 | Cross-package integration or readiness | `pnpm ready` includes generation, types, checks, tests, and builds; do not rerun its constituent checks without a reason.                                                 |
 
 Tests currently run from the root Vite+ configuration: backend uses Node and
-frontend uses happy-dom. There are no package-level test scripts. New test locations
+frontend uses happy-dom, with Node environment overrides for its server-boundary tests. There are no package-level test scripts. New test locations
 must be included in that configuration; a test file outside its globs is not tested.
 The backend build is a deployment dry-run, not a remote deployment.
 
@@ -41,3 +41,10 @@ The backend build is a deployment dry-run, not a remote deployment.
   leave unexpected warnings visible.
 - DOM tests do not prove layout, CSS generation, or SSR hydration. Use browser and
   build checks when those behaviors change. Trivial documentation edits need none.
+
+Database/auth integration tests run in the backend project with isolated PGlite,
+applying `packages/db/drizzle` migrations and the supplied provisioning SQL.
+Mock only connection creation and mail delivery; keep the actual ORM and auth
+library in the flow. Test public-table access as a non-owner, non-BYPASSRLS role.
+Real Supabase, Resend delivery, and deployed Workers require separate integration
+checks after credentials are configured.

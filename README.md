@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前只实现健康检查，不包含支付业务。
+初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前实现健康检查和前后端邮箱验证码认证，不包含支付业务。
 
 AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUDE.md) 引用同一份规则；按任务阅读 `.patterns/` 中的工程规范。Skills 由开发者单独安装和维护。
 
@@ -20,7 +20,7 @@ npx --yes pnpm@12.21.0 install --frozen-lockfile
 npx --yes pnpm@12.21.0 dev
 ```
 
-打开 <http://127.0.0.1:3000>，点击「检查连接」。后端地址为 <http://127.0.0.1:8787/api/health>，成功返回 `{"status":"ok"}`。
+打开 <http://127.0.0.1:3000>，未登录会进入登录页；完成下方认证配置后登录，首页可点击「检查连接」。后端地址为 <http://127.0.0.1:8787/api/health>，成功返回 `{"status":"ok"}`。
 
 两个应用都在本地 Workers 运行时运行，无需登录 Cloudflare。也可以分别执行 `pnpm dev:frontend` 和 `pnpm dev:backend`。
 
@@ -34,6 +34,7 @@ apps/
   backend/        Workers + Effect HttpApi
 packages/
   api/            Effect Schema 与 HTTP API 契约
+  db/             Drizzle schema、迁移和 PostgreSQL 连接
   ui/             shadcn/ui 组件源码、主题与样式工具
 ```
 
@@ -58,7 +59,7 @@ packages/
 
 ## 环境配置
 
-当前无需环境变量即可启动。两端各有 `.dev.vars.example`，后续需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
+健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；仅限预开户用户。配置、迁移和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
 前端 `wrangler.jsonc` 的 `BACKEND` 绑定名称对应后端 Worker 的 `name`；重命名时需同步修改。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
@@ -104,7 +105,7 @@ Vite+ 的内置 Vite fork 版本号是 `1.6.0`，因此只对其 `vitest` 和 `@
 | 图标            | `lucide-react`                                              | 健康检查按钮使用图标                                                                                      |
 | 测试            | Testing Library（React、DOM、user-event）、`happy-dom`      | Vite+ 分开运行 Node 后端测试与 DOM 前端测试                                                               |
 
-Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 shadcn/ui，官方 CLI 按 preset `bIkeymG` 初始化（`base-vega`、neutral、Lucide、Inter）。preset 不包含底层 primitive 选择，本项目使用 Base UI（`--base base`）。现阶段只生成 Button 和 Card；日期、表单、二维码等既有依赖继续保留。
+Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 shadcn/ui，官方 CLI 按 preset `bIkeymG` 初始化（`base-vega`、neutral、Lucide、Inter）。preset 不包含底层 primitive 选择，本项目使用 Base UI（`--base base`）。已生成 Button、Card 及登录所需的 Field、Input Group、Input OTP、Alert、Spinner 等官方组件；日期、表单、二维码等既有依赖继续保留。
 
 `packages/ui/src/styles/globals.css` 保存 CLI 生成的主题变量，Inter 字体由本地 npm 包提供；前端样式入口导入共享 CSS，并声明 Tailwind 对应用和共享组件的扫描路径。根路由使用 `MotionConfig reducedMotion="user"`，无需额外 UI Provider。
 
@@ -126,9 +127,9 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-未包含数据库、Docker、登录认证、支付协议、钱包、合约、队列、CI/CD 和部署。首页是联调入口，不是支付产品界面。新增业务时再加入对应服务、配置和测试。
+未包含 Docker、支付协议、钱包、合约、队列、CI/CD 和部署。首页是联调入口，不是支付产品界面。新增业务时再加入对应服务、配置和测试。
 
-本地验证通过：格式/lint、各包类型检查、10 项测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
+本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 
 Cloudflare 从兼容日期 `2026-11-17` 起默认启用新的模块注册机制。当前 Cloudflare Vite plugin 1.69.1 的本地开发组合会因此打印两次 `no match for module: node:process` 模块回退报错。前端通过官方 `legacy_module_registry` 兼容开关保留旧机制，开发和构建使用同一配置；升级工具链后重新验证，再移除此开关。后端未出现该问题，保留默认行为。参见 [Cloudflare 兼容说明](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#new-module-registry)。
 

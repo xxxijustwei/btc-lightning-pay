@@ -1,6 +1,8 @@
 import { defineConfig } from "vite-plus";
 
-const generated = [
+const ignored = [
+  // Installed skills retain their upstream formatting and examples.
+  "**/.agents/skills/**",
   "**/dist/**",
   "**/.wrangler/**",
   "**/.tanstack/**",
@@ -9,8 +11,8 @@ const generated = [
 ];
 
 export default defineConfig({
-  fmt: { ignorePatterns: generated },
-  lint: { ignorePatterns: generated },
+  fmt: { ignorePatterns: ignored },
+  lint: { ignorePatterns: ignored },
   test: {
     projects: [
       { test: { name: "backend", include: ["apps/backend/src/**/*.test.ts"] } },

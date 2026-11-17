@@ -36,3 +36,15 @@ with the installed package version. Generic React skills apply where compatible
 with TanStack Start; Next.js-specific APIs and RSC assumptions do not apply here.
 There is currently no Paraglide setup or dedicated preview system. See
 [testing](testing.md) for interaction and visual validation.
+
+## Authentication
+
+`modules/auth` owns sign-in and account UI; `lib/auth` owns the client, session
+query, and server function. The authenticated layout guards protected routes;
+shared UI remains independent of this flow. Read [auth setup](../docs/auth-setup.md)
+when changing routes, cookies, origins, or sign-in behavior.
+
+Validate sessions at the backend, append every refreshed Set-Cookie, and keep
+identity-dependent responses private/no-store. Treat 401 as anonymous and propagate
+service failures. Use fresh session queries in guards and clear user data and
+route caches after successful identity changes.

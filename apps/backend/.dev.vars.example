@@ -1,2 +1,9 @@
-# 当前健康检查不需要环境变量或密钥。
-# 后续本地密钥放入 .dev.vars；该文件已被 Git 忽略。
+# Copy to .dev.vars and fill locally. Health checks work without these values.
+# Must match the frontend origin used in the browser.
+BETTER_AUTH_URL="http://127.0.0.1:3000"
+BETTER_AUTH_SECRET=""
+# Supabase direct connection or Session pooler URL; use TLS (sslmode=require).
+# A configured HYPERDRIVE binding takes precedence over DATABASE_URL.
+DATABASE_URL=""
+RESEND_API_KEY=""
+AUTH_EMAIL_FROM="BTC Lightning Pay <login@your-verified-domain.com>"

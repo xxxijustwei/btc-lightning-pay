@@ -24,7 +24,7 @@ export function Home() {
   else if (health.isSuccess) status = "后端连接正常";
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center px-6 py-16">
+    <main className="mx-auto flex min-h-[calc(100dvh-5rem)] max-w-2xl flex-col justify-center px-6 py-16">
       <p className="mb-3 text-sm font-medium text-primary">开发环境 · 工程骨架</p>
       <h1 className="text-4xl font-semibold tracking-tight">BTC Lightning Pay</h1>
       <p className="mt-5 leading-7 text-muted-foreground">

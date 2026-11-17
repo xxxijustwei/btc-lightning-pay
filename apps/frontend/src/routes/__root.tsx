@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import stylesheet from "../styles.css?url";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  headers: () => ({ "cache-control": "private, no-store" }),
   head: () => ({
     meta: [
       { charSet: "utf-8" },

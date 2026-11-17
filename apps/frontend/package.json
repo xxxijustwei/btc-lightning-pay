@@ -19,6 +19,7 @@
     "@tanstack/react-router": "catalog:",
     "@tanstack/react-router-ssr-query": "catalog:",
     "@tanstack/react-start": "catalog:",
+    "better-auth": "catalog:",
     "date-fns": "catalog:",
     "effect": "catalog:",
     "jotai": "catalog:",

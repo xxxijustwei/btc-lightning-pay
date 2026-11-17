@@ -16,3 +16,9 @@ When adding or changing an operation, update the shared contract, backend handle
 frontend adapter/consumer, and affected tests together. Check all callers before
 changing a public shape or path. The existing health flow is the smallest example,
 not evidence that payment services are ready. See [testing](testing.md).
+
+Better Auth's `/api/auth/*` protocol is delegated to the installed library and its
+client SDK. The backend allowlist limits exposed capabilities. Custom endpoints
+such as `/api/me` still declare contracts here and validate library output before
+returning it. Frontend auth uses the official client and same-origin service-binding proxy; see
+[auth setup](../docs/auth-setup.md).

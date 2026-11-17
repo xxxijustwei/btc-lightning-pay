@@ -9,8 +9,8 @@ Applies to `apps/backend` and the frontend's server-side API adapters.
   environment reads, and vendor clients at runtime boundaries. Introduce Effect
   services for actual dependencies; see [Effect](effect.md).
 - `packages/api` owns shared HTTP contracts, not business implementation. There is
-  currently no separate core or database package; extract one when concrete reuse
-  or ownership requires it, not to mirror sirens.
+  no separate core package. `packages/db` owns public-schema models, migrations,
+  and the connection factory; auth configuration and Resend stay in the backend.
 - The frontend forwards same-origin API requests through the `BACKEND` service
   binding. Preserve failure handling and intentional response headers; keep backend
   business rules out of this adapter.
@@ -21,3 +21,7 @@ Applies to `apps/backend` and the frontend's server-side API adapters.
 
 For endpoint changes, follow [API contracts](api-contract.md); select checks from
 [testing](testing.md). Local service binding setup is documented in [README](../README.md).
+
+Better Auth owns its native HTTP protocol behind the allowlist in `auth/handler.ts`;
+custom identity DTOs and the `/api/me` endpoint contract live in `packages/api`.
+Keep SQL provisioning, RLS and configuration instructions in [auth setup](../docs/auth-setup.md).

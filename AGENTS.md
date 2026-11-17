@@ -1,8 +1,8 @@
 # AGENTS.md
 
 BTC Lightning Pay currently contains a frontend, a backend, shared API contracts,
-and shared UI source. The implemented flow is a health check; payment behavior
-and infrastructure must come from this project's requirements.
+shared UI source, and a database package. Health checks and email OTP authentication
+are implemented. The homepage requires a session; payment behavior is not implemented.
 
 ## Task routing
 
@@ -16,6 +16,7 @@ needs the affected documents and their references, not application setup.
 | Frontend, shared components, styling, or client state    | [.patterns/frontend.md](.patterns/frontend.md)         |
 | Effect implementation or API usage                       | [.patterns/effect.md](.patterns/effect.md)             |
 | Tests or validation selection                            | [.patterns/testing.md](.patterns/testing.md)           |
+| Database, migrations, provisioning, or auth setup        | [docs/auth-setup.md](docs/auth-setup.md)               |
 | Local setup, scripts, or current project boundaries      | [README.md](README.md)                                 |
 
 ## Repository constraints
