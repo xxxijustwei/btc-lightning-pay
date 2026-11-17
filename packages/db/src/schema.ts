@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+export { merchant, paymentOrder, settlement } from "./payments";
 import { boolean, check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 const timestamps = () => ({

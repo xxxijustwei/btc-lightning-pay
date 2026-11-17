@@ -127,6 +127,28 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   });
   expect(me.headers.get("cache-control")).toBe("no-store");
   expect(close).toHaveBeenCalled();
+  const adminRequest = new Request(`${config.url}/api/admin/merchants`, { headers: { cookie } });
+  expect((await worker.fetch(adminRequest, bindings)).status).toBe(403);
+  const [signedInUser] = await database.select().from(schema.user);
+  expect(
+    (await worker.fetch(adminRequest, { ...bindings, PAYMENTS_ADMIN_IDS: signedInUser.id })).status,
+  ).toBe(200);
+  expect(
+    (
+      await worker.fetch(
+        new Request(`${config.url}/api/admin/merchants`, {
+          method: "POST",
+          headers: {
+            cookie,
+            origin: "https://untrusted.example",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ id: "forged" }),
+        }),
+        { ...bindings, PAYMENTS_ADMIN_IDS: signedInUser.id },
+      )
+    ).status,
+  ).toBe(403);
   await pg.exec(provision);
   expect((await database.select().from(schema.user))[0].emailVerified).toBe(true);
   const replay = await auth.handler(

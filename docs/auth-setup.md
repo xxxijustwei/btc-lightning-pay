@@ -25,7 +25,7 @@
 | 同上                     | `RESEND_API_KEY`         | Resend 的邮件发送密钥。本地开发可留空，生产必须填写。                                                                             |
 | 同上                     | `AUTH_EMAIL_FROM`        | 已验证域名下的发件地址，可以带显示名称。                                                                                          |
 
-连接串密码里的特殊字符需要 URL 编码。不要把连接串、验证码或密钥放进仓库、日志或 `VITE_` 变量。当前运行连接使用 Supabase 数据库所有者，RLS 保护的是 Data API 的非所有者角色；这个服务端连接具有较高权限，不能交给客户端。
+连接串密码里的特殊字符需要 URL 编码。不要把连接串、验证码或密钥放进仓库、日志或 `VITE_` 变量。早期认证 demo 使用数据库所有者连接。启用多商户业务时，应按 [后端部署说明](backend-setup.md) 配置 `btc_backend` 非所有者、非 BYPASSRLS 运行账号，迁移仍使用所有者连接；超级用户会绕过支付表 RLS。
 
 ## 迁移与开户
 
@@ -41,7 +41,7 @@ pnpm --filter @btc-lightning-pay/db migrate
 
 表全部在 `public`：`user`、`session`、`account`、`verification`，以及迁移记录表。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表及迁移记录启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
 
-删除 `public."user"` 中的某个用户会级联删除该用户的会话和关联账号，从而撤销登录权限；再次访问 `/api/me` 返回 401。这是删除操作，不是临时停用功能。
+删除 `public."user"` 中的某个用户会级联删除该用户的会话和关联账号，从而撤销登录权限；再次访问 `/api/me` 返回 401。这是删除操作，不是临时停用功能。已有结算操作记录的管理员由外键保护，不能直接删除；移出 `PAYMENTS_ADMIN_IDS` 即撤销管理 API 权限，并保留审计归属。
 
 修改 schema 后先生成并审查 SQL，再验证和执行：
 

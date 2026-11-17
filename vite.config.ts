@@ -15,7 +15,12 @@ export default defineConfig({
   lint: { ignorePatterns: ignored },
   test: {
     projects: [
-      { test: { name: "backend", include: ["apps/backend/src/**/*.test.ts"] } },
+      {
+        test: {
+          name: "backend",
+          include: ["apps/backend/src/**/*.test.ts", "apps/gateway/src/**/*.test.ts"],
+        },
+      },
       {
         test: {
           name: "frontend",

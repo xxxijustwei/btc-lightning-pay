@@ -3,6 +3,11 @@
 APP_ENV="development"
 # From the demo container's http-password-limited-access (never the full-access password).
 PHOENIX_HTTP_PASSWORD=""
+# Comma-separated existing user IDs explicitly authorized as platform administrators.
+PAYMENTS_ADMIN_IDS=""
+GATEWAY_URL="http://127.0.0.1:9741"
+GATEWAY_TOKEN=""
+WORKER_SYNC_TOKEN=""
 # Must match the frontend origin used in the browser.
 BETTER_AUTH_URL="http://127.0.0.1:3000"
 BETTER_AUTH_SECRET=""

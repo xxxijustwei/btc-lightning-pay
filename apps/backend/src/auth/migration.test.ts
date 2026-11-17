@@ -13,6 +13,7 @@ test("removing rate limits from an existing database preserves auth data and can
   const pg = new PGlite();
   try {
     const journal = JSON.parse(readFileSync(join(folder, "meta/_journal.json"), "utf8"));
+    const migrationCount = journal.entries.length;
     journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 2);
     mkdirSync(join(previous, "meta"));
     writeFileSync(join(previous, "meta/_journal.json"), JSON.stringify(journal));
@@ -52,7 +53,7 @@ test("removing rate limits from an existing database preserves auth data and can
     const history = await pg.query<{ count: number }>(
       "SELECT count(*)::int AS count FROM public.__btc_lightning_pay_migrations",
     );
-    expect(history.rows[0].count).toBe(journal.entries.length + 1);
+    expect(history.rows[0].count).toBe(migrationCount);
   } finally {
     await pg.close();
     rmSync(previous, { recursive: true, force: true });

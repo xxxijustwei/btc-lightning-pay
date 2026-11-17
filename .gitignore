@@ -13,4 +13,5 @@ dist/
 worker-configuration.d.ts
 routeTree.gen.ts
 *.log
+apps/gateway/data/
 .DS_Store

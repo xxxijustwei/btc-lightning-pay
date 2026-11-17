@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+export * from "./payments";
 
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
