@@ -1,7 +1,13 @@
-import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import {
+  createRootRouteWithContext,
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+} from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
 import { Provider } from "jotai";
-import { UIProvider } from "../providers/ui";
+import { MotionConfig } from "motion/react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import type { ReactNode } from "react";
 import stylesheet from "../styles.css?url";
@@ -16,20 +22,29 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     links: [{ rel: "stylesheet", href: stylesheet }],
   }),
   shellComponent: RootDocument,
+  notFoundComponent: () => (
+    <main className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center px-6 py-16">
+      <h1 className="text-3xl font-semibold">页面不存在</h1>
+      <p className="mt-4 text-muted-foreground">请检查地址，或返回首页继续。</p>
+      <Link to="/" className="mt-6 self-start underline underline-offset-4">
+        返回首页
+      </Link>
+    </main>
+  ),
   component: () => (
     <Provider>
-      <UIProvider>
+      <MotionConfig reducedMotion="user">
         <NuqsAdapter>
           <Outlet />
         </NuqsAdapter>
-      </UIProvider>
+      </MotionConfig>
     </Provider>
   ),
 });
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN" data-theme="light" data-neutral-color="slate">
+    <html lang="zh-CN">
       <head>
         <HeadContent />
       </head>

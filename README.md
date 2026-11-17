@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约；前端直接使用 Lobe UI。当前只实现健康检查，不包含支付业务。
+初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前只实现健康检查，不包含支付业务。
 
 ## 快速开始
 
@@ -32,11 +32,12 @@ apps/
   backend/        Workers + Effect HttpApi
 packages/
   api/            Effect Schema 与 HTTP API 契约
+  ui/             shadcn/ui 组件源码、主题与样式工具
 ```
 
 浏览器请求同源 `/api/health` → 前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
 
-`packages/api` 直接导出 TypeScript 源码，由使用它的应用打包。前端直接依赖 `@lobehub/ui`，不经过内部组件转发包。未来第二个前端也直接依赖同一库，通过 workspace catalog 统一版本；出现实际共享的业务组件或布局后再提取包。
+`packages/api` 和 `packages/ui` 直接导出源码，由使用它们的应用打包。shadcn/ui 组件代码归本项目维护，多个前端从 `@btc-lightning-pay/ui/components/*` 导入同一份源码，通过共享样式入口使用同一主题；应用路由、状态和业务逻辑留在各前端。
 
 ## 常用命令
 
@@ -101,22 +102,32 @@ Vite+ 的内置 Vite fork 版本号是 `1.6.0`，因此只对其 `vitest` 和 `@
 | 图标            | `lucide-react`                                              | 健康检查按钮使用图标                                                                                      |
 | 测试            | Testing Library（React、DOM、user-event）、`happy-dom`      | Vite+ 分开运行 Node 后端测试与 DOM 前端测试                                                               |
 
-Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 `@lobehub/ui 6.16.1`，配套 `@lobehub/icons 6.16.0` 和 `@lobehub/fluent-emoji 5.0.1`，直接声明在 `apps/frontend/package.json` 中，通过 catalog 统一版本；未另外安装 Ant Design、CVA 或 cnfast。Lobe 内部使用的 Base UI 属于传递依赖。
+Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 shadcn/ui，官方 CLI 按 preset `bIkeymG` 初始化（`base-vega`、neutral、Lucide、Inter）。preset 不包含底层 primitive 选择，本项目使用 Base UI（`--base base`）。现阶段只生成 Button 和 Card；日期、表单、二维码等既有依赖继续保留。
 
-当前页面直接从 `@lobehub/ui` 导入 Button 和 Block。应用内的 `apps/frontend/src/providers/ui.tsx` 配置动效运行时、系统减少动态效果偏好，并禁用自动远程字体加载。根路由在 SSR 时写入浅色主题和 slate 中性色属性；`apps/frontend/src/styles.css` 声明 Tailwind 与 Lobe 的层级顺序并加载库样式，不需要额外配置 StyleX 编译器。现有 TanStack Form、日期和二维码库继续保留，暂不改换它们的业务使用方式。
+`packages/ui/src/styles/globals.css` 保存 CLI 生成的主题变量，Inter 字体由本地 npm 包提供；前端样式入口导入共享 CSS，并声明 Tailwind 对应用和共享组件的扫描路径。根路由使用 `MotionConfig reducedMotion="user"`，无需额外 UI Provider。
+
+两个 `components.json` 配置一致的 style、iconLibrary、baseColor；前端的 ui/utils alias 指向共享包。添加组件时从前端运行，CLI 会把共享组件写入 `packages/ui`：
+
+```sh
+pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog --cwd ../../apps/frontend
+```
+
+CLI 安装在 `packages/ui`，也可直接在那里运行：
+
+```sh
+pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
+```
+
+添加后检查生成文件和依赖，将新增依赖的精确版本归入 workspace catalog，再运行 `pnpm ready`。后续第二个前端添加 `@btc-lightning-pay/ui: workspace:*`，复用同样的 components aliases 和样式入口即可。配置依据：[shadcn monorepo 指南](https://ui.shadcn.com/docs/monorepo)。
 
 新增包使用 Motion 14.14.0、Jotai 3.0.2 等稳定版本，没有沿用 sirens 的旧主版本。Query 的 SSR 集成由官方适配器负责，避免重复创建 Provider 或手动做第二次缓存脱水。
-
-新增 Lobe 组件时，遵循 [官方技能说明](https://ui.lobehub.com/skills.md)，先阅读对应组件参考，只使用已记录的 API。样式接入依据 [v6 指南](https://github.com/lobehub/lobe-ui/blob/master/docs/migration-v6.mdx)。未来各前端分别维护自己的 Provider、样式入口和应用状态。
 
 ## 当前边界
 
 未包含数据库、Docker、登录认证、支付协议、钱包、合约、队列、CI/CD 和部署。首页是联调入口，不是支付产品界面。新增业务时再加入对应服务、配置和测试。
 
-本地验证通过：格式/lint、各包类型检查、10 项测试、前后端构建。Lobe UI 接入后验证过浏览器渲染和按钮联调，测试覆盖 Lobe 按钮的加载禁用与失败重试。尚未验证真实云端部署。
+本地验证通过：格式/lint、各包类型检查、10 项测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 
-已知工具链问题：当前 Cloudflare Vite plugin 1.69.1 启动开发环境时会打印两次 `no match for module: node:process` 模块回退报错，随后正常启动。已确认不阻止本骨架的 SSR 和健康检查，但未定位该工具链问题的根因；后续升级插件时需重新检查。
+Cloudflare 从兼容日期 `2026-11-17` 起默认启用新的模块注册机制。当前 Cloudflare Vite plugin 1.69.1 的本地开发组合会因此打印两次 `no match for module: node:process` 模块回退报错。前端通过官方 `legacy_module_registry` 兼容开关保留旧机制，开发和构建使用同一配置；升级工具链后重新验证，再移除此开关。后端未出现该问题，保留默认行为。参见 [Cloudflare 兼容说明](https://developers.cloudflare.com/workers/configuration/compatibility-flags/#new-module-registry)。
 
-Lobe UI 的 `@emoji-mart/react` 传递依赖尚未声明 React 19 兼容范围，因此 `pnpm peers check` 会报告一条警告；没有通过配置隐藏它。当前接入的 Button、Block、Provider 通过类型、交互和构建检查；表情选择器尚未接入或验证。
-
-当前构建包含完整 Lobe 样式，主 JS chunk 约 530 kB（gzip 约 173 kB），会触发 Vite 默认 500 kB 提示。首页已按路由拆分；尚未做专项包体优化，没有调高警告阈值。
+前端根路由配置了统一 404 页面，不存在的页面地址返回 HTTP 404，并提供返回首页的链接。

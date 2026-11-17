@@ -3,7 +3,8 @@
   "name": "btc-lightning-pay-frontend",
   "main": "@tanstack/react-start/server-entry",
   "compatibility_date": "2026-11-17",
-  "compatibility_flags": ["nodejs_compat"],
+  // shortcut: Vite plugin 1.69.1 misroutes node:process with the new registry; recheck after upgrading.
+  "compatibility_flags": ["nodejs_compat", "legacy_module_registry"],
   "services": [{ "binding": "BACKEND", "service": "btc-lightning-pay-backend" }],
   "observability": { "enabled": true, "traces": { "enabled": true } },
 }

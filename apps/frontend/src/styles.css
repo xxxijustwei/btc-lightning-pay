@@ -1,7 +1,4 @@
-@layer theme, base, lobe-base, lobe-popup, lobe-ui, components, utilities;
+@import "@btc-lightning-pay/ui/globals.css";
 
-@import "@lobehub/ui/theme.css";
-@import "@lobehub/ui/style.css";
-@import "@lobehub/ui/global.css";
-@import "tailwindcss";
-@import "tw-animate-css";
+@source ".";
+@source "../../../packages/ui/src";
