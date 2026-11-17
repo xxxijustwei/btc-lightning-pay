@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端，以及双方共用的 API 契约。当前只实现健康检查，不包含支付业务。
+初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约和共享 Lobe UI 包。当前只实现健康检查，不包含支付业务。
 
 ## 快速开始
 
@@ -32,11 +32,12 @@ apps/
   backend/        Workers + Effect HttpApi
 packages/
   api/            Effect Schema 与 HTTP API 契约
+  ui/             Lobe UI 组件出口、Provider、主题和样式
 ```
 
 浏览器请求同源 `/api/health` → 前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
 
-`packages/api` 直接导出 TypeScript 源码，由使用它的应用打包，不需要额外发布或编译产物。尚未出现复用需求的 UI、配置和业务逻辑不拆包。
+`packages/api` 和 `packages/ui` 直接导出 TypeScript 源码，由使用它们的应用打包，不需要额外发布或编译产物。未来第二个前端通过 `workspace:*` 使用同一个 UI 包；接入步骤见 [packages/ui/README.md](packages/ui/README.md)。目前不创建第二个前端。
 
 ## 常用命令
 
@@ -101,7 +102,9 @@ Vite+ 的内置 Vite fork 版本号是 `1.6.0`，因此只对其 `vitest` 和 `@
 | 图标            | `lucide-react`                                              | 健康检查按钮使用图标                                                                                      |
 | 测试            | Testing Library（React、DOM、user-event）、`happy-dom`      | Vite+ 分开运行 Node 后端测试与 DOM 前端测试                                                               |
 
-Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。未添加 Base UI、CVA、cnfast 或 `packages/ui`，也未封装 UI 组件。
+Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 `@lobehub/ui 6.16.1`，配套 `@lobehub/icons 6.16.0` 和 `@lobehub/fluent-emoji 5.0.1`，统一由 `packages/ui` 管理；未另外安装 Ant Design、CVA 或 cnfast。Lobe 内部使用的 Base UI 属于传递依赖。
+
+当前页面通过共享包使用 Lobe Button 和 Block，`UIProvider` 负责组件动效运行时，主题属性在 SSR 时写入 HTML。共享 CSS 声明 Tailwind 与 Lobe 的层级顺序，不需要额外配置 StyleX 编译器。现有 TanStack Form、日期和二维码库继续保留，暂不改换它们的业务使用方式。
 
 新增包使用 Motion 14.14.0、Jotai 3.0.2 等稳定版本，没有沿用 sirens 的旧主版本。Query 的 SSR 集成由官方适配器负责，避免重复创建 Provider 或手动做第二次缓存脱水。
 
@@ -109,6 +112,10 @@ Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 UR
 
 未包含数据库、Docker、登录认证、支付协议、钱包、合约、队列、CI/CD 和部署。首页是联调入口，不是支付产品界面。新增业务时再加入对应服务、配置和测试。
 
-本地验证通过：格式/lint、各包类型检查、9 项测试、前后端构建。初始骨架验证过浏览器按钮联调；新增依赖后再检查 SSR 与同源后端代理响应。尚未验证真实云端部署。
+本地验证通过：格式/lint、各包类型检查、10 项测试、前后端构建。共享 UI 接入后验证了浏览器渲染和按钮联调，测试覆盖 Lobe 按钮的加载禁用与失败重试。尚未验证真实云端部署。
 
 已知工具链问题：当前 Cloudflare Vite plugin 1.69.1 启动开发环境时会打印两次 `no match for module: node:process` 模块回退报错，随后正常启动。已确认不阻止本骨架的 SSR 和健康检查，但未定位该工具链问题的根因；后续升级插件时需重新检查。
+
+Lobe UI 的 `@emoji-mart/react` 传递依赖尚未声明 React 19 兼容范围，因此 `pnpm peers check` 会报告一条警告；没有通过配置隐藏它。当前接入的 Button、Block、Provider 通过类型、交互和构建检查；表情选择器尚未接入或验证。
+
+当前构建包含完整 Lobe 样式，主 JS chunk 约 530 kB（gzip 约 173 kB），会触发 Vite 默认 500 kB 提示。首页已按路由拆分；尚未做专项包体优化，没有调高警告阈值。

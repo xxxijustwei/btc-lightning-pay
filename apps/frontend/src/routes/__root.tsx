@@ -1,7 +1,7 @@
 import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
 import { Provider } from "jotai";
-import { MotionConfig } from "motion/react";
+import { UIProvider, uiThemeAttributes } from "@btc-lightning-pay/ui";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import type { ReactNode } from "react";
 import stylesheet from "../styles.css?url";
@@ -18,18 +18,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   shellComponent: RootDocument,
   component: () => (
     <Provider>
-      <MotionConfig reducedMotion="user">
+      <UIProvider>
         <NuqsAdapter>
           <Outlet />
         </NuqsAdapter>
-      </MotionConfig>
+      </UIProvider>
     </Provider>
   ),
 });
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" {...uiThemeAttributes}>
       <head>
         <HeadContent />
       </head>

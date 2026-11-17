@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@btc-lightning-pay/api": "workspace:*",
+    "@btc-lightning-pay/ui": "workspace:*",
     "@daypicker/react": "catalog:",
     "@tanstack/react-form": "catalog:",
     "@tanstack/react-query": "catalog:",

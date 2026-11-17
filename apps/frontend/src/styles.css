@@ -1,9 +1,3 @@
+@import "@btc-lightning-pay/ui/styles.css";
 @import "tailwindcss";
 @import "tw-animate-css";
-
-@layer base {
-  body {
-    @apply bg-slate-50 text-slate-900 antialiased;
-    font-family: system-ui, sans-serif;
-  }
-}
