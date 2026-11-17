@@ -1,9 +1,12 @@
 # Copy to .dev.vars and fill locally. Health checks work without these values.
+# Local development without a Resend key prints OTPs in the backend console.
+APP_ENV="development"
 # Must match the frontend origin used in the browser.
 BETTER_AUTH_URL="http://127.0.0.1:3000"
 BETTER_AUTH_SECRET=""
 # Supabase direct connection or Session pooler URL; use TLS (sslmode=require).
 # A configured HYPERDRIVE binding takes precedence over DATABASE_URL.
 DATABASE_URL=""
+# Optional locally; required in production.
 RESEND_API_KEY=""
 AUTH_EMAIL_FROM="BTC Lightning Pay <login@your-verified-domain.com>"

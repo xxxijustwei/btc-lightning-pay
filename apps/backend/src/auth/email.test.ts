@@ -7,8 +7,13 @@ vi.mock("resend", () => ({
     emails = { send };
   },
 }));
-afterEach(() => send.mockReset());
-const sender = createOTPSender({ apiKey: "test-key", from: "login@example.com" });
+afterEach(() => {
+  send.mockReset();
+  vi.restoreAllMocks();
+});
+const sender = createOTPSender({
+  emailDelivery: { mode: "resend", apiKey: "test-key", from: "login@example.com" },
+});
 test("Resend receives the code as text and HTML from the configured sender", async () => {
   send.mockResolvedValue({ error: null });
   await sender({ email: "user@example.com", otp: "012345" });
@@ -31,4 +36,24 @@ test("delivery failures propagate and generated HTML accepts only numeric codes"
     "Invalid generated code",
   );
   expect(send).not.toHaveBeenCalled();
+});
+
+test("local console delivery prints the code without calling Resend", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const localSender = createOTPSender({ emailDelivery: { mode: "console" } });
+  await localSender({ email: "user@example.com", otp: "012345" });
+  expect(log).toHaveBeenCalledWith(
+    "[auth] Local sign-in code for user@example.com: 012345 (expires in 5 minutes)",
+  );
+  expect(send).not.toHaveBeenCalled();
+  log.mockClear();
+  await expect(localSender({ email: "user@example.com", otp: "invalid" })).rejects.toThrow();
+  expect(log).not.toHaveBeenCalled();
+});
+
+test("Resend delivery errors never fall back to console output", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  send.mockResolvedValue({ error: { message: "delivery failure" } });
+  await expect(sender({ email: "user@example.com", otp: "123456" })).rejects.toThrow();
+  expect(log).not.toHaveBeenCalled();
 });

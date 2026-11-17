@@ -38,3 +38,32 @@ test("Hyperdrive takes precedence over the local connection", () => {
       .databaseUrl,
   ).toBe("postgres://localhost/hyperdrive");
 });
+
+test("local development without Resend uses console delivery", () => {
+  expect(
+    parseAuthConfig({
+      ...env,
+      APP_ENV: "development",
+      BETTER_AUTH_URL: "http://localhost:3000",
+      RESEND_API_KEY: "",
+      AUTH_EMAIL_FROM: "",
+    }).emailDelivery,
+  ).toEqual({ mode: "console" });
+});
+test("production and public origins cannot fall back to logging codes", () => {
+  for (const overrides of [
+    { APP_ENV: "production", BETTER_AUTH_URL: "http://localhost:3000" },
+    { APP_ENV: "development", BETTER_AUTH_URL: "https://pay.example.com" },
+  ])
+    expect(() => parseAuthConfig({ ...env, ...overrides, RESEND_API_KEY: "" })).toThrow();
+});
+
+test("configured Resend takes precedence over development console delivery", () => {
+  expect(
+    parseAuthConfig({ ...env, APP_ENV: "development", BETTER_AUTH_URL: "http://localhost:3000" })
+      .emailDelivery,
+  ).toEqual({ mode: "resend", apiKey: env.RESEND_API_KEY, from: env.AUTH_EMAIL_FROM });
+  expect(() => parseAuthConfig({ ...env, APP_ENV: "unknown" })).toThrow(
+    "Invalid application environment",
+  );
+});

@@ -23,7 +23,6 @@ beforeEach(() => {
   signOut.mockReset();
   navigate.mockResolvedValue(undefined);
 });
-afterEach(() => vi.useRealTimers());
 const clients: QueryClient[] = [];
 afterEach(() => {
   for (const client of clients.splice(0)) client.clear();
@@ -49,7 +48,7 @@ test("invalid emails never send; delivery errors remain recoverable and do not e
   await user.clear(screen.getByLabelText("邮箱地址"));
   send.mockResolvedValueOnce({ error: { status: 503, message: "private backend details" } });
   await requestCode(user);
-  expect(await screen.findByText("验证码发送失败，请稍后重试或联系管理员。")).toBeTruthy();
+  expect(await screen.findByText("验证码发送失败，请稍后重试。")).toBeTruthy();
   expect(screen.queryByText("private backend details")).toBeNull();
   expect(screen.getByRole("button", { name: "发送验证码" }).hasAttribute("disabled")).toBe(false);
 });
@@ -71,7 +70,7 @@ test("sending disables duplicate requests and normalizes email", async () => {
   expect(send).toHaveBeenCalledWith({ email: "user@example.com", type: "sign-in" });
   await act(async () => finish({ error: null }));
   expect(await screen.findByLabelText("六位验证码")).toBeTruthy();
-  expect(screen.getByRole("status").textContent).toContain("如果 user@example.com 已开通");
+  expect(screen.getByRole("status").textContent).toBe("user@example.com");
 });
 test("pasting six digits submits once, clears private cache and returns home", async () => {
   send.mockResolvedValue({ error: null });
@@ -101,30 +100,29 @@ test("invalid OTP stays on the code step and can be retried", async () => {
   await user.paste("654321");
   await waitFor(() => expect(navigate).toHaveBeenCalled());
 });
-test("resend cooldown survives changing email and becomes available after elapsed time", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+test("codes can be resent immediately and after changing email", async () => {
   send.mockResolvedValue({ error: null });
   mount();
   const user = userEvent.setup();
   await requestCode(user);
   await screen.findByLabelText("六位验证码");
-  expect(screen.getByRole("button", { name: "60 秒后重发" }).hasAttribute("disabled")).toBe(true);
-  await user.click(screen.getByRole("button", { name: "更换邮箱" }));
-  expect(screen.getByRole("button", { name: "60 秒后可发送" }).hasAttribute("disabled")).toBe(true);
-  await act(async () => {
-    vi.advanceTimersByTime(60_000);
-  });
-  await user.click(screen.getByRole("button", { name: "发送验证码" }));
+  await user.click(screen.getByRole("button", { name: "重新发送" }));
   expect(send).toHaveBeenCalledTimes(2);
+  await user.click(screen.getByRole("button", { name: "更换邮箱" }));
+  await user.clear(screen.getByLabelText("邮箱地址"));
+  await requestCode(user, "other@example.com");
+  expect(send).toHaveBeenCalledTimes(3);
+  expect(send).toHaveBeenLastCalledWith({ email: "other@example.com", type: "sign-in" });
 });
-test("rate limiting displays a cooldown while leaving email editable", async () => {
-  send.mockResolvedValue({ error: { status: 429 } });
+test("upstream errors do not introduce a client cooldown", async () => {
+  send.mockResolvedValueOnce({ error: { status: 429 } }).mockResolvedValueOnce({ error: null });
   mount();
   const user = userEvent.setup();
   await requestCode(user);
-  expect(await screen.findByText("请求过于频繁，请稍后重新发送。")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "60 秒后可发送" }).hasAttribute("disabled")).toBe(true);
-  expect(screen.getByLabelText("邮箱地址").hasAttribute("disabled")).toBe(false);
+  expect(await screen.findByText("验证码发送失败，请稍后重试。")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "发送验证码" }));
+  expect(await screen.findByLabelText("六位验证码")).toBeTruthy();
+  expect(send).toHaveBeenCalledTimes(2);
 });
 test("logout only clears cache and redirects after server success", async () => {
   signOut.mockResolvedValueOnce({ error: { status: 503 } }).mockResolvedValueOnce({ error: null });

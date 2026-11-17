@@ -15,6 +15,13 @@
       "when": 1794907904913,
       "tag": "0001_protect-migration-history",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794916130377,
+      "tag": "0002_remove-rate-limit",
+      "breakpoints": true
     }
   ]
 }

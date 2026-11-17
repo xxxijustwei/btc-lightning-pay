@@ -5,7 +5,7 @@
 ## 准备与配置顺序
 
 1. 新建本项目专用的 Supabase 数据库，保存数据库连接串。不要使用 sirens 或其他业务已经使用的数据库：本项目会在 `public` 创建通用名称的认证表。
-2. 在 Resend 添加并验证发信域名（按控制台配置 DNS），创建仅发送邮件的 API key，确定发件地址，例如 `BTC Lightning Pay <login@example.com>`。Resend 测试域名只能发往自己的邮箱，正式登录要使用已验证域名。
+2. 本地开发可以不填 Resend key：`APP_ENV=development` 且登录 origin 为本机 HTTP 地址时，验证码输出到后端控制台。需要真实投递或准备生产环境时，在 Resend 添加并验证发信域名（按控制台配置 DNS），创建仅发送邮件的 API key，确定发件地址，例如 `BTC Lightning Pay <login@example.com>`。Resend 测试域名只能发往自己的邮箱，正式登录要使用已验证域名。
 3. 从仓库根目录复制示例；真实文件均已被 Git 忽略：
 
    ```sh
@@ -21,7 +21,8 @@
 | `apps/backend/.dev.vars` | `DATABASE_URL`           | 本地运行连接串，Direct connection 或 Session pooler；包含 `sslmode=require`。                                                     |
 | 同上                     | `BETTER_AUTH_SECRET`     | 至少 32 字符的随机值，可用 `openssl rand -base64 32` 生成。生产与开发分开，轮换会影响现有登录。                                   |
 | 同上                     | `BETTER_AUTH_URL`        | 唯一受信任的浏览器 origin，不含路径。本地设为 `http://127.0.0.1:3000`，浏览器也使用该地址。生产必须 HTTPS。                       |
-| 同上                     | `RESEND_API_KEY`         | Resend 的邮件发送密钥。                                                                                                           |
+| 同上                     | `APP_ENV`                | 本地设为 `development`；生产设为 `production`。未填写时按生产处理。                                                               |
+| 同上                     | `RESEND_API_KEY`         | Resend 的邮件发送密钥。本地开发可留空，生产必须填写。                                                                             |
 | 同上                     | `AUTH_EMAIL_FROM`        | 已验证域名下的发件地址，可以带显示名称。                                                                                          |
 
 连接串密码里的特殊字符需要 URL 编码。不要把连接串、验证码或密钥放进仓库、日志或 `VITE_` 变量。当前运行连接使用 Supabase 数据库所有者，RLS 保护的是 Data API 的非所有者角色；这个服务端连接具有较高权限，不能交给客户端。
@@ -38,7 +39,7 @@ pnpm --filter @btc-lightning-pay/db migrate
 
 在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换邮箱和姓名后执行。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
 
-表全部在 `public`：`user`、`session`、`account`、`verification`、`rate_limit`，以及迁移记录表。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表及迁移记录启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
+表全部在 `public`：`user`、`session`、`account`、`verification`，以及迁移记录表。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表及迁移记录启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
 
 删除 `public."user"` 中的某个用户会级联删除该用户的会话和关联账号，从而撤销登录权限；再次访问 `/api/me` 返回 401。这是删除操作，不是临时停用功能。
 
@@ -63,15 +64,17 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 只允许预开户用户登录。未开户邮箱的发送请求也返回相同成功响应，但不发送邮件、不创建账号。邮件服务明确报错时返回 503；请求被 Resend 接受不代表已投递到收件箱。
 
-验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。数据库持久化 IP 限流：发送每 60 秒 1 次，验证每 60 秒最多 5 次；Cloudflare 生产环境使用其提供的 `CF-Connecting-IP`。应用限流是登录防护的一层，不能替代平台级恶意流量防护。
+验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。应用层请求限流已关闭，发送和验证接口不限制请求频率；邮件供应商和平台自身的配额仍适用。`rate_limit` 表已从当前 schema 移除；已有数据库需执行新增的 `0002_remove-rate-limit` 迁移删除该表及历史计数。先确保运行中的后端已关闭限流，再执行上述迁移命令；用户、会话和验证码数据不受影响。
 
-会话使用 HttpOnly cookie；HTTPS 下启用 Secure，关闭 cookie 中的会话缓存，身份查询以数据库为准。认证响应 `Cache-Control: no-store`；日志只记录故障类别，不记录邮箱、验证码、cookie、数据库连接或供应商原始错误。
+会话 cookie 使用项目独立前缀 `btc-lightning-pay`，避免与其他 localhost 应用的默认 `better-auth` cookie 冲突。更改前缀后旧会话需重新登录，不清除其他项目的 cookie。
+
+会话使用 HttpOnly cookie；HTTPS 下启用 Secure，关闭 cookie 中的会话缓存，身份查询以数据库为准。认证响应 `Cache-Control: no-store`；生产日志只记录故障类别，不记录邮箱、验证码、cookie、数据库连接或供应商原始错误。显式本地开发且未填 Resend key 时，后端控制台会打印登录邮箱和验证码，格式为 `[auth] Local sign-in code for ...`；仍须预开户，验证码有效期和尝试次数限制不变。已配置 Resend 时优先发邮件，投递失败不会改为打印验证码。
 
 本地启动 `pnpm dev:backend` 后，可以用 HTTP 客户端测试。POST 请求需包含与 `BETTER_AUTH_URL` 一致的 `Origin` 和 `Content-Type: application/json`；保留登录响应的所有 `Set-Cookie` 并在后续请求中携带 cookie。不要把验证码或 cookie 放进可分享的命令记录。
 
 ## Cloudflare 部署前
 
-本次不创建云资源或部署。部署时把后端变量配置为 Worker secrets/vars，并将 `BETTER_AUTH_URL` 设为实际浏览器访问的 HTTPS origin。
+本次不创建云资源或部署。部署时设置 `APP_ENV=production`、Resend key 和发件地址，把后端变量配置为 Worker secrets/vars，并将 `BETTER_AUTH_URL` 设为实际浏览器访问的 HTTPS origin。
 
 使用 Hyperdrive 时，连接 Supabase **Direct connection**，不要再套 Supavisor 连接池；认证专用 Hyperdrive 必须关闭查询缓存，否则退出登录后可能读到旧会话。创建资源后在 `apps/backend/wrangler.jsonc` 添加真实绑定，再运行 `pnpm typegen`：
 
@@ -85,9 +88,9 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 ## 前端登录流程
 
-运行 `pnpm dev`，打开 `http://127.0.0.1:3000`：未登录跳转到 `/sign-in`，已登录访问登录页则返回 `/`。先输入已开通的邮箱，再输入或粘贴六位数字验证码；输满会自动提交，也可以点击按钮。验证码发送后等待 60 秒才能重发，更换邮箱不会绕过冷却，刷新后仍由后端限流兜底。
+运行 `pnpm dev`，打开 `http://127.0.0.1:3000`：未登录跳转到 `/sign-in`，已登录访问登录页则返回 `/`。先输入已开通的邮箱，再输入或粘贴六位数字验证码；输满会自动提交，也可以点击按钮。发送完成后可以立即重发或更换邮箱；请求处理中禁用按钮，避免重复提交。
 
-首页保留健康检查，并显示用户信息和退出按钮。退出请求失败时显示错误，保留当前页面和缓存供重试。登录页只说明已开户邮箱会收到邮件，不暴露账号是否存在。不提供注册、密码登录或第三方登录。
+首页保留健康检查，并显示用户信息和退出按钮。退出请求失败时显示错误，保留当前页面和缓存供重试。登录页保持精简，验证码步骤只展示当前邮箱；不暴露账号是否存在。不提供注册、密码登录或第三方登录。
 
 前端没有 Supabase/Resend 密钥，也无需 `VITE_` API 地址。组件通过 shadcn 官方 CLI 生成到 `packages/ui`，保留现有 preset；页面和登录状态逻辑位于 `apps/frontend/src/modules/auth` 与 `lib/auth`。
 
@@ -95,7 +98,7 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 后端测试使用隔离的 PGlite PostgreSQL 执行仓库迁移和开户 SQL，再通过真实 Better Auth + Drizzle 验证登录、过期、错误次数、验证码复用、退出、用户隔离和 RLS。数据库连接与邮件发送在测试边界替换，不访问真实 Supabase 或 Resend。
 
-前端测试覆盖表单校验、验证码粘贴与重复提交、错误重试、重发冷却、登录/退出缓存处理。SSR 和代理测试在 Node 环境验证会话隔离与多条 cookie 转发；浏览器验证登录页、校验/服务故障反馈和窄屏布局。
+前端测试覆盖表单校验、验证码粘贴与重复提交、错误重试、立即重发和更换邮箱、登录/退出缓存处理。SSR 和代理测试在 Node 环境验证会话隔离与多条 cookie 转发；浏览器验证登录页、校验/服务故障反馈和窄屏布局。
 
 本地检查通过后，仍需填写真实环境，执行远端迁移/开户，并检查邮件投递、生产 HTTPS cookie、Hyperdrive 缓存配置和云端网络连接。
 

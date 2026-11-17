@@ -1,3 +1,4 @@
+import { AUTH_COOKIE_PREFIX } from "@btc-lightning-pay/api";
 import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins";
@@ -22,15 +23,12 @@ export function createAuth(
     emailAndPassword: { enabled: false },
     session: { cookieCache: { enabled: false } },
     advanced: {
+      cookiePrefix: AUTH_COOKIE_PREFIX,
       disableOriginCheck: false,
       useSecureCookies: config.url.startsWith("https:"),
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
     },
-    rateLimit: {
-      enabled: true,
-      storage: "database",
-      customRules: { "/sign-in/email-otp": { window: 60, max: 5 } },
-    },
+    rateLimit: { enabled: false },
     logger: { disabled: true },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
@@ -46,7 +44,6 @@ export function createAuth(
         expiresIn: OTP_EXPIRATION_SECONDS,
         allowedAttempts: 3,
         storeOTP: "hashed",
-        rateLimit: { max: 1, window: 60 },
         sendVerificationOTP: async ({ email, otp }) => sendOTP({ email, otp }),
       }),
     ],

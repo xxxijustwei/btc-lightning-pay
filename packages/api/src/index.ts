@@ -7,6 +7,8 @@ export const Api = HttpApi.make("LightningPayApi").add(
   HttpApiGroup.make("health").add(HttpApiEndpoint.get("get", "/api/health", { success: Health })),
 );
 
+export const AUTH_COOKIE_PREFIX = "btc-lightning-pay";
+
 export const AuthUser = Schema.Struct({
   id: Schema.String,
   email: Schema.String,

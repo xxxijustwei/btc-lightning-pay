@@ -23,7 +23,7 @@ test("SSR forwards only the request cookie, projects the user and appends all re
   headers.append("set-cookie", "old=; Max-Age=0");
   const fetchBackend = vi.fn(async (request: Request) => {
     expect(request.url).toBe("https://backend/api/me");
-    expect(request.headers.get("cookie")).toBe("better-auth.session_token=user-one");
+    expect(request.headers.get("cookie")).toBe("btc-lightning-pay.session_token=user-one");
     expect(request.headers.get("authorization")).toBeNull();
     return Response.json({ ...user, secret: "must-not-reach-client" }, { headers });
   });
@@ -31,7 +31,7 @@ test("SSR forwards only the request cookie, projects the user and appends all re
   expect(
     await readCurrentUser(
       new Request("https://app.example/", {
-        headers: { cookie: "better-auth.session_token=user-one", authorization: "private" },
+        headers: { cookie: "btc-lightning-pay.session_token=user-one", authorization: "private" },
       }),
       fetchBackend,
       append,
@@ -41,7 +41,7 @@ test("SSR forwards only the request cookie, projects the user and appends all re
 });
 test("only 401 means signed out; service failures and malformed payloads remain errors", async () => {
   const request = new Request("https://app.example/", {
-    headers: { cookie: "better-auth.session_token=old" },
+    headers: { cookie: "btc-lightning-pay.session_token=old" },
   });
   const append = vi.fn();
   expect(
@@ -76,7 +76,7 @@ test("concurrent SSR requests retain their own identity", async () => {
     ["one", "two"].map((cookie) =>
       readCurrentUser(
         new Request("https://app.example/", {
-          headers: { cookie: `better-auth.session_token=${cookie}` },
+          headers: { cookie: `btc-lightning-pay.session_token=${cookie}` },
         }),
         fetchBackend,
         vi.fn(),
@@ -91,11 +91,22 @@ test("secure cookie presence still requires successful backend verification", as
   expect(
     await readCurrentUser(
       new Request("https://app.example/", {
-        headers: { cookie: "__Secure-better-auth.session_token=untrusted" },
+        headers: { cookie: "__Secure-btc-lightning-pay.session_token=untrusted" },
       }),
       fetchBackend,
       vi.fn(),
     ),
   ).toBeNull();
   expect(fetchBackend).toHaveBeenCalledTimes(1);
+});
+
+test("another localhost app's default auth cookie does not block this login page", async () => {
+  const fetchBackend = vi.fn(async () =>
+    Response.json({ code: "AUTH_NOT_CONFIGURED" }, { status: 503 }),
+  );
+  const request = new Request("http://localhost:3000/sign-in", {
+    headers: { cookie: "better-auth.session_token=another-app" },
+  });
+  expect(await readCurrentUser(request, fetchBackend, vi.fn())).toBeNull();
+  expect(fetchBackend).not.toHaveBeenCalled();
 });

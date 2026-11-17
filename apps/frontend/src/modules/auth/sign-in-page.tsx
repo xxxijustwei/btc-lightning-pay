@@ -33,31 +33,14 @@ export function SignInPage() {
   const [error, setError] = useState("");
   const lock = useRef(false);
   const codeInput = useRef<HTMLInputElement>(null);
-  const [deadline, setDeadline] = useState(0);
-  const [now, setNow] = useState(0);
-  const remaining = Math.max(0, Math.ceil((deadline - now) / 1000));
   const queryClient = useQueryClient();
   const router = useRouter();
 
   useEffect(() => {
-    if (!deadline) return;
-    const timer = setInterval(() => {
-      const current = Date.now();
-      setNow(current);
-      if (current >= deadline) clearInterval(timer);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [deadline]);
-  useEffect(() => {
     if (step === "code" && !pending) codeInput.current?.focus();
   }, [step, pending]);
-  function startCooldown() {
-    const current = Date.now();
-    setNow(current);
-    setDeadline(current + 60_000);
-  }
   async function sendCode(address: string) {
-    if (lock.current || Date.now() < deadline) return;
+    if (lock.current) return;
     lock.current = true;
     setPending("send");
     setError("");
@@ -67,18 +50,12 @@ export function SignInPage() {
         type: "sign-in",
       });
       if (result.error) {
-        if (result.error.status === 429) startCooldown();
-        setError(
-          result.error.status === 429
-            ? "请求过于频繁，请稍后重新发送。"
-            : "验证码发送失败，请稍后重试或联系管理员。",
-        );
+        setError("验证码发送失败，请稍后重试。");
         return;
       }
       setEmail(address);
       codeForm.reset();
       setStep("code");
-      startCooldown();
     } catch {
       setError("无法连接登录服务，请稍后重试。");
     } finally {
@@ -103,11 +80,9 @@ export function SignInPage() {
         const result = await authClient.signIn.emailOtp({ email, otp: value.code });
         if (result.error) {
           setError(
-            result.error.status === 429
-              ? "验证过于频繁，请稍后重试。"
-              : result.error.status >= 500
-                ? "登录服务暂时不可用，请稍后重试。"
-                : "验证码无效、已过期或尝试次数过多，请重新获取。",
+            result.error.status >= 500
+              ? "登录服务暂时不可用，请稍后重试。"
+              : "验证码无效、已过期或尝试次数过多，请重新获取。",
           );
           codeForm.reset();
           return;
@@ -137,11 +112,8 @@ export function SignInPage() {
               BTC Lightning Pay
             </p>
             <h1 id="sign-in-title" className="text-2xl font-semibold tracking-tight">
-              {isCode ? "查看你的邮箱" : "欢迎回来"}
+              {isCode ? "输入验证码" : "登录"}
             </h1>
-            <p className="text-sm leading-6 text-muted-foreground">
-              {isCode ? "输入六位验证码，完成安全登录。" : "使用已开通的邮箱登录。"}
-            </p>
           </div>
         </div>
         <div
@@ -158,8 +130,7 @@ export function SignInPage() {
               }}
             >
               <p role="status" className="text-center text-sm leading-6 text-muted-foreground">
-                如果 <span className="break-all font-medium text-foreground">{email}</span>{" "}
-                已开通，验证码将发送到该邮箱，5 分钟内有效。
+                <span className="break-all">{email}</span>
               </p>
               <codeForm.Field name="code">
                 {(field) => {
@@ -246,14 +217,10 @@ export function SignInPage() {
                   type="button"
                   variant="link"
                   size="sm"
-                  disabled={pending !== null || remaining > 0}
+                  disabled={pending !== null}
                   onClick={() => void sendCode(email)}
                 >
-                  {remaining > 0
-                    ? `${remaining} 秒后重发`
-                    : pending === "send"
-                      ? "正在发送…"
-                      : "重新发送"}
+                  {pending === "send" ? "正在发送…" : "重新发送"}
                 </Button>
               </div>
             </form>
@@ -308,25 +275,18 @@ export function SignInPage() {
                 <Button
                   size="lg"
                   type="submit"
-                  disabled={pending !== null || remaining > 0}
+                  disabled={pending !== null}
                   aria-busy={pending === "send"}
                 >
                   {pending === "send" && (
                     <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
                   )}
-                  {pending === "send"
-                    ? "正在发送…"
-                    : remaining > 0
-                      ? `${remaining} 秒后可发送`
-                      : "发送验证码"}
+                  {pending === "send" ? "正在发送…" : "发送验证码"}
                 </Button>
               </FieldGroup>
             </form>
           )}
         </div>
-        <p className="text-center text-xs leading-5 text-muted-foreground">
-          仅限已开通账号。需要访问权限，请联系管理员。
-        </p>
       </section>
     </main>
   );

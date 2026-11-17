@@ -72,7 +72,7 @@ afterAll(async () => {
 afterEach(() => vi.restoreAllMocks());
 beforeEach(async () => {
   await database.execute(
-    sql`TRUNCATE public."user", public.session, public.account, public.verification, public.rate_limit CASCADE`,
+    sql`TRUNCATE public."user", public.session, public.account, public.verification CASCADE`,
   );
   send.mockReset();
   close.mockClear();
@@ -113,7 +113,8 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   );
   expect(login.status).toBe(200);
   const cookie = cookieOf(login);
-  expect(cookie).toContain("session_token=");
+  expect(cookie).toContain("btc-lightning-pay.session_token=");
+  expect(cookie).not.toContain("better-auth.session_token=");
   expect(login.headers.get("set-cookie")).toContain("HttpOnly");
   const meRequest = new Request(`${config.url}/api/me`, { headers: { cookie } });
   const me = await worker.fetch(meRequest, bindings);
@@ -135,11 +136,17 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   expect((await auth.handler(request("/sign-out", {}, cookie))).status).toBe(200);
   expect((await handleAuth(meRequest, bindings)).status).toBe(401);
 });
-test("send limits survive new auth instances", async () => {
+test("sending and signing in are not rate limited across auth instances", async () => {
   await pg.exec(provision);
-  expect((await makeAuth().handler(sendRequest())).status).toBe(200);
-  expect((await makeAuth().handler(sendRequest())).status).toBe(429);
-  expect(send).toHaveBeenCalledTimes(1);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    expect((await makeAuth().handler(sendRequest())).status).toBe(200);
+    const otp = send.mock.calls[attempt][0].otp;
+    expect(
+      (await makeAuth().handler(request("/sign-in/email-otp", { email: "user@example.com", otp })))
+        .status,
+    ).toBe(200);
+  }
+  expect(send).toHaveBeenCalledTimes(6);
 });
 test("expired codes fail", async () => {
   await pg.exec(provision);
@@ -205,7 +212,6 @@ test("RLS blocks public API roles even if Supabase grants table access", async (
       "account",
       "session",
       "verification",
-      "rate_limit",
       "__btc_lightning_pay_migrations",
     ]) {
       const result = await pg.query<{ count: number }>(
