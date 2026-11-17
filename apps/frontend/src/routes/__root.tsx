@@ -1,7 +1,7 @@
 import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
 import { Provider } from "jotai";
-import { UIProvider, uiThemeAttributes } from "@btc-lightning-pay/ui";
+import { UIProvider } from "../providers/ui";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import type { ReactNode } from "react";
 import stylesheet from "../styles.css?url";
@@ -29,7 +29,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-CN" {...uiThemeAttributes}>
+    <html lang="zh-CN" data-theme="light" data-neutral-color="slate">
       <head>
         <HeadContent />
       </head>

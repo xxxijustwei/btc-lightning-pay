@@ -1,5 +1,0 @@
-@layer theme, base, lobe-base, lobe-popup, lobe-ui, components, utilities;
-
-@import "@lobehub/ui/theme.css";
-@import "@lobehub/ui/style.css";
-@import "@lobehub/ui/global.css";

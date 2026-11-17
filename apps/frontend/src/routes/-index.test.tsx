@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vite-plus/test";
 import { Home } from "../pages/home";
-import { UIProvider } from "@btc-lightning-pay/ui";
+import { UIProvider } from "../providers/ui";
 
 test("health check runs on demand, reports failure and supports retry", async () => {
   const fetchMock = vi
@@ -45,7 +45,7 @@ test("a successful HTTP response with an invalid contract is still a failure", a
   client.clear();
 });
 
-test("the shared Lobe button prevents duplicate requests while loading", async () => {
+test("the Lobe button prevents duplicate requests while loading", async () => {
   let complete!: (response: Response) => void;
   const fetchMock = vi.fn(
     () =>

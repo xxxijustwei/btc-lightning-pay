@@ -1,5 +1,5 @@
 import { Health } from "@btc-lightning-pay/api";
-import { Block, Button } from "@btc-lightning-pay/ui";
+import { Block, Button } from "@lobehub/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Schema } from "effect";
 import { RefreshCw } from "lucide-react";
