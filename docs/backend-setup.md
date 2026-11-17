@@ -1,6 +1,6 @@
 # 第一阶段后端接入与部署
 
-`apps/backend` 是 Cloudflare Worker 业务后端，`apps/gateway` 是 phoenixd 同机的标准独立后端服务。二者使用共享 Effect HttpApi 契约。Gateway 的 HTTP 层、业务服务、SQLite 持久化、phoenixd/Worker 客户端、配置和启动生命周期分别位于 `app.ts`、`gateway.ts`、`store.ts`、`phoenix.ts`、`config.ts` 和 `server.ts`。
+`apps/backend` 是 Cloudflare Worker 业务后端，`apps/gateway` 是 phoenixd 同机的标准独立后端服务。二者使用共享 Effect HttpApi 契约。Gateway 的 HTTP 层、业务服务、phoenixd 客户端、配置和启动生命周期分别位于 `app.ts`、`gateway.ts`、`phoenix.ts`、`config.ts` 和 `server.ts`。
 
 本次只实现本地代码、迁移与部署模板；没有执行远端迁移、服务器部署、转账或真实 Cash App 付款。旧 demo 保留，不删除钱包或 OrbStack 数据卷。第一阶段范围见 [业务方案](backend-phase-one.md)。
 
@@ -9,21 +9,17 @@
 1. 使用 Node.js 26，在仓库根目录执行 `pnpm install --frozen-lockfile`。
 2. 按 [认证配置](auth-setup.md) 准备项目数据库和管理员邮箱账号。审查迁移后，用迁移所有者连接执行 `pnpm --filter @btc-lightning-pay/db migrate`。迁移会增加商户、订单和结算表，不删除认证数据。
 3. 由数据库所有者执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql)，安全设置 `btc_backend` 的登录密码。Worker 的 `DATABASE_URL`／Hyperdrive 使用此账号，不能使用超级用户或具有 BYPASSRLS 的账号。SQL 为认证表授予后台所需访问，为支付表保留事务级 RLS；不授予迁移记录表访问或删除支付历史权限。迁移账号保持独立。Hyperdrive 查询缓存必须关闭，避免支付状态和登录状态陈旧。
-4. 在已有 `apps/backend/.dev.vars` 中**合并**新增变量，不覆盖现有配置。复制 `apps/gateway/.env.example` 为 `.env` 并填写下表。两个服务间 token 使用不同的随机值，各至少 32 字符，可分别用 `openssl rand -hex 32` 生成。
+4. 在已有 `apps/backend/.dev.vars` 中**合并**新增变量，不覆盖现有配置。复制 `apps/gateway/.env.example` 为 `.env` 并填写下表。服务间 `GATEWAY_TOKEN` 至少 32 字符，可用 `openssl rand -hex 32` 生成。
 5. 启动已有 OrbStack phoenixd（见 [demo 文档](phoenixd-demo.md)）；`PHOENIX_HTTP_PASSWORD` 使用其 limited-access 密码。不要复制助记词或完整权限密码到 Worker。
 6. 两个终端分别运行 `pnpm dev:backend` 和 `pnpm dev:gateway`。前端需要时再运行 `pnpm dev:frontend`。Gateway 默认只监听 `127.0.0.1:9741`；`GET /health` 是进程存活检查，不证明钱包具备收款流动性。
 
-| 变量                     | 放置位置 | 说明                                                                                         |
-| ------------------------ | -------- | -------------------------------------------------------------------------------------------- |
-| `PAYMENTS_ADMIN_IDS`     | Worker   | 已预开户用户的数据库 `user.id`，多个以逗号分隔；不填则无人拥有管理权限                       |
-| `GATEWAY_URL`            | Worker   | 本地 `http://127.0.0.1:9741`，线上为 Gateway HTTPS origin                                    |
-| `GATEWAY_TOKEN`          | 两端     | Worker 调用 Gateway 的 Bearer token                                                          |
-| `WORKER_SYNC_TOKEN`      | 两端     | Gateway 回写 Worker 的独立 Bearer token                                                      |
-| `WORKER_URL`             | Gateway  | 本地 `http://127.0.0.1:8787`；线上为可达的 Worker HTTPS origin，不能填仅做页面代理的前端域名 |
-| `PHOENIX_URL`            | Gateway  | `http://127.0.0.1:9740`，phoenixd 不开放公网                                                 |
-| `PHOENIX_HTTP_PASSWORD`  | Gateway  | phoenixd limited-access 密码                                                                 |
-| `PHOENIX_WEBHOOK_SECRET` | Gateway  | 可选，需与 phoenixd 相同；为空时 webhook 拒绝请求，后台查询仍运行                            |
-| `GATEWAY_DATABASE`       | Gateway  | SQLite 路径，默认 `data/gateway.sqlite`；必须放持久化存储                                    |
+| 变量                    | 放置位置 | 说明                                                                   |
+| ----------------------- | -------- | ---------------------------------------------------------------------- |
+| `PAYMENTS_ADMIN_IDS`    | Worker   | 已预开户用户的数据库 `user.id`，多个以逗号分隔；不填则无人拥有管理权限 |
+| `GATEWAY_URL`           | Worker   | 本地 `http://127.0.0.1:9741`，线上为 Gateway HTTPS origin              |
+| `GATEWAY_TOKEN`         | 两端     | Worker 调用 Gateway 的 Bearer token                                    |
+| `PHOENIX_URL`           | Gateway  | `http://127.0.0.1:9740`，phoenixd 不开放公网                           |
+| `PHOENIX_HTTP_PASSWORD` | Gateway  | phoenixd limited-access 密码                                           |
 
 URL 配置只接受 origin，不允许路径、用户名、查询参数。除 localhost／127.0.0.1 的本地 HTTP 外须使用 HTTPS。业务端创建订单需要登录配置之外的 Gateway 配置，实际开票采用实时 Coinbase 公共行情；没有行情时返回 503，不悄悄改为固定汇率。测试中的固定行情仅由依赖替换提供。
 
@@ -81,7 +77,7 @@ HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代
 
 每次 1–100 笔同商户的已支付、未结算订单，金额必须等于整笔订单 sats 之和，凭证 1–1000 字符。重复键与相同内容返回原记录；已被其他结算占用则 409。此 API **只登记已在线下完成的转账，不执行转账**。不要在一次外部转账失败后仍登记成功。退款不在本阶段范围内。
 
-业务错误返回 `{ "code": "...", "message": "..." }`；Schema 输入校验的 400 使用 Effect 的校验错误结构，前端按 HTTP 状态显示输入错误，不解析内部校验文本。
+业务错误与输入校验错误统一返回 `{ "code": "...", "message": "..." }`。无效 JSON、Schema 输入校验失败返回 400 `INVALID_INPUT`；内部响应编码错误返回 500 `INTERNAL_ERROR`，不暴露原始校验内容。Worker 支付响应和 Gateway 响应带 `X-Request-Id`，可用于关联日志。
 
 | HTTP      | 常见 code / 含义                                                                      |
 | --------- | ------------------------------------------------------------------------------------- |
@@ -92,26 +88,38 @@ HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代
 | 429       | `RATE_LIMITED`：每商户每秒最多 5 个新订单；重试使用原幂等键                           |
 | 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                             |
 
-## 持久化与恢复
+## 付款查询与恢复
 
-Worker 先写业务订单，Gateway 先持久化订单执行占位，再调用不具备幂等性的 phoenixd `/createinvoice`。相同订单号只尝试一次创建；之后以 `externalId` 查询原结果。Worker 每分钟 Cron 补查最多 50 笔 `creating` 订单，按上次尝试时间轮转。Gateway 每轮取最多 100 个到期任务，完成后等 10 秒继续；支付未过期时持续查，过期后每小时查以补晚到账。查询失败延后重试，重复同步不会重复计账。健康检查不会扫描所有历史订单。
+调用方向始终是 Worker → Gateway → phoenixd。Gateway 无数据库、无后台轮询、无 Worker 回调凭证。两个接口均要求 `Authorization: Bearer <GATEWAY_TOKEN>`：`POST /v1/invoices` 接受 `{orderId, amountSat}`；`POST /v1/payments/query` 接受 `{orderId, amountSat, paymentHash}`，查询指定 invoice 并验证订单和金额。旧 webhook 和 Worker `/api/internal/payments/sync` 已移除。
 
-Gateway 查询真实 phoenixd 数据后以 `WORKER_SYNC_TOKEN` 回写 `/api/internal/payments/sync`。webhook 是加速提示：验证原始 body 的 `X-Phoenix-Signature` HMAC-SHA256 十六进制签名，再查询真实数据，不用事件里的金额直接入账。没有 webhook 也会轮询恢复。到期高峰或大量积压时，查询延迟可能超过 10 秒，需要观察积压与完成时间。
+Worker 先保存订单和报价，再在该订单的行锁内创建并保存 invoice；仅此步骤持锁等待上游，超时后释放。已保存的 invoice 永不替换。创建响应丢失、数据库保存失败且 invoice 尚未展示时允许重试创建，接受 phoenixd 留下未使用 invoice。它们不纳入业务订单的付款确认；查询使用已保存的 payment hash，不能假设 externalId 唯一。后端提交成功后才向前端返回 invoice。
 
-创建调用超时、连接失败或进程在占位后崩溃时，可能留下长期 `creating`。管理员用订单 ID 对照 Gateway 执行日志和 phoenixd 的 `externalId` 查询人工核实；不要删除占位、换订单号自动重试或把它直接标记未支付。若查到原 invoice，后续轮询自动恢复；若始终没有 invoice，当前版本保留待确认，不提供强制重开接口。
+公开订单查询会刷新尚未支付订单；已支付订单直接读取数据库。Worker 每分钟 Cron 按上次尝试时间轮转补查最多 50 笔 creating/pending 订单，包括已过期但尚未确认付款的 invoice；页面关闭后仍会更新到账。失败保留原状态，下次查询或 Cron 重试，不把网络失败当作支付失败。积压会增加确认延迟，当前不是高吞吐调度系统。
 
-Gateway 仅单实例运行，SQLite 不跨服务器共享。正常停机先停止接新请求／后台任务并等待当前任务结束，再关闭数据库。需要备份两个不同的数据集：phoenixd 钱包目录，以及 Gateway SQLite（含 WAL，使用一致性备份或停服务后复制）。业务 PostgreSQL 也应按托管方方案备份。仅恢复钱包、丢失执行日志可能破坏开票幂等保障，不能直接恢复服务接流量。
+## Dokploy 部署与人工步骤
 
-## 北美部署模板与人工步骤
+服务器侧使用 [Compose](../apps/gateway/deploy/compose.yaml) 与 [Gateway Dockerfile](../apps/gateway/Dockerfile)。Worker 继续部署在 Cloudflare。systemd 和 Caddy 模板已移除。
 
-提供 [systemd unit](../apps/gateway/deploy/gateway.service) 和 [Caddy 入口模板](../apps/gateway/deploy/Caddyfile)。选择北美 Linux 主机后，安装 Node 26、固定版本 pnpm 与依赖，放置仓库到 `/opt/btc-lightning-pay`，创建无特权 `btc-pay` 用户。将 Gateway 变量安全写入 `/etc/btc-lightning-pay/gateway.env`，替换实际域名、Node 可执行文件路径，按模板配置服务。SQLite 放在 systemd 管理的 `/var/lib/btc-lightning-pay`。不在环境文件中使用开发 `.dev.vars` 的所有者数据库密码。
+1. 在 Dokploy 创建 Git 来源的 Docker Compose 项目，选择 `apps/gateway/deploy/compose.yaml`；构建上下文为仓库根目录。
+2. 为项目设置随机 `GATEWAY_TOKEN` 和 phoenixd 的 limited-access `PHOENIX_HTTP_PASSWORD`。新钱包应先单独启动 phoenixd，备份助记词，再从其私有配置取得 limited-access 密码；不要把完整权限密码配置给 Gateway。
+3. 两个服务走 Compose 内部网络，Gateway 使用 `http://phoenixd:9740`。在 Dokploy Domains 中把 Gateway HTTPS 域名路由至 gateway 服务的 9741 端口。phoenixd 不添加域名、不映射主机端口。Gateway 除公开 health 外，业务接口均鉴权。
+4. Worker 配置 HTTPS `GATEWAY_URL` 与相同 `GATEWAY_TOKEN`，配置业务数据库角色、管理员及 Cron 后部署。Gateway 不再需要 Worker 地址或同步 token。
+5. `phoenixd-data` 必须持久化并备份。Compose 项目名改变会改变默认卷名，迁移已有钱包时必须显式复用或恢复目标卷，不能误启动成新钱包。不要删除现有 OrbStack demo 卷。Gateway 本身无需数据卷。
 
-Caddy 只向 Gateway 转发 `/v1/invoices`；认证由业务服务验证。webhook 和健康检查留在本机，phoenixd 的 9740 与 Gateway 的 9741 均不开放公网。Worker 配置 HTTPS `GATEWAY_URL`，Gateway 配置可访问的 Worker URL 和两端匹配的独立密钥。默认模板不要求额外购买或配置 Cloudflare Access。
+模板保留关闭自动流动性与手续费额度的保守配置。真实收款前必须单独确认通道／流动性费用预算、钱包备份及可收款能力，再启用适合生产的流动性配置，并由用户完成一笔确认金额的 Cash App 真机付款。部署模板不是已具备主网收款能力的承诺。
 
-模板依据：[Caddy 路由匹配](https://caddyserver.com/docs/caddyfile/directives/handle)、[systemd 运行环境与持久化目录](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)。这些 Linux 部署模板仍需在选定服务器上验证；本地进程测试使用 macOS Node 运行时。
+升级时先停旧 Gateway，确认数据库中已展示 invoice 的 payment hash 完整，再切换 Worker 和 Gateway 新接口。现有 Gateway SQLite 文件应保留备份用于核对，但新服务不会打开或删除它；创建结果未展示的历史订单允许重新开票。旧 demo 保留，生产设置 `APP_ENV=production`。
 
-phoenixd 的主网版本仍使用现有固定镜像。真实收款前须由用户确认通道／流动性费用预算、备份助记词，以及钱包实际可收款。手续费额度应保持关闭（`--max-fee-credit=off`），否则付款可能只形成费用额度而没有符合当前记账模型的净收款；demo 的 `--auto-liquidity=off` 不能直接当作生产接款配置。如何充值或启用流动性，待部署与费用预算另行确认。
+## 后端边界与验证
 
-Cloudflare 上先迁移数据库、配置运行角色及 secrets，再部署 Worker 与 Cron；Gateway 启动前先配置 phoenixd 和持久化目录。上线前按预计峰值做负载验证并配置 Cloudflare 入口防滥用规则：当前内建的是每商户限流，不是全站／每 IP 防刷或容量承诺。最后由用户用真实 Cash App 完成一笔经确认金额的付款，核对净到账、费用、订单归属和页面成功状态。
+Worker 的 `app.ts` 只适配 HTTP，`service.ts` 编排报价、订单和开票，`rules.ts` 维护纯业务校验，`store.ts` 负责事务、锁和 SQL，`projection.ts` 生成公开／管理响应。外部报价在事务外获取，进入事务后重新验证幂等键、商户启用状态和限流。业务错误使用类型化错误码，由 HTTP 边界映射状态码。
 
-本阶段没有删除旧 demo；生产保持 `APP_ENV=production`，旧开票接口会拒绝使用开发直连凭证的模式。没有实现退款、自动提现、商户后台、多钱包或自动扩容。
+请求取消时，数据库任务等待当前事务提交／回滚结束后才释放连接；已观察到取消的事务在提交前回滚。取消不撤销已经提交的订单。失败日志保留请求 ID、操作和脱敏上游错误分类，不记录 token、完整 invoice 或上游响应正文。
+
+常规验证使用 `rtk proxy pnpm ready`。真实 PostgreSQL 并发测试默认跳过，显式设置 `PAYMENT_TEST_DATABASE_URL` 后运行：
+
+```sh
+rtk proxy env PAYMENT_TEST_DATABASE_URL="$PAYMENT_TEST_DATABASE_URL" pnpm test --project backend apps/backend/src/payments/payments.postgres.test.ts
+```
+
+此变量只能指向本机独占的临时 `payments_test` 数据库，使用测试容器的迁移所有者账号；不要填写项目数据库连接。测试执行迁移及角色配置，以三个独立的非所有者 `btc_backend` 连接验证锁竞争、重复下单、结算冲突、事务取消、RLS 作用域复位及报价期间的商户停用。用例只清理自身测试数据，测试完成后由创建者销毁临时容器。

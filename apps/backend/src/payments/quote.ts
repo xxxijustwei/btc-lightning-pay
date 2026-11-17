@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { UpstreamFailure } from "./errors";
 
 const Rate = Schema.String.check(Schema.isPattern(/^[0-9]{1,12}(\.[0-9]{1,8})?$/));
 const Price = Schema.Struct({
@@ -17,16 +18,34 @@ export function quoteSats(cents: number, price: string): number {
 }
 export function createQuoteSource(fetcher: typeof fetch = fetch, now = Date.now) {
   let cached: { rateUsd: string; quotedAt: Date } | undefined;
-  return async () => {
+  return async (signal?: AbortSignal) => {
     if (cached && now() - cached.quotedAt.getTime() < 60_000) return cached;
-    const response = await fetcher("https://api.coinbase.com/v2/prices/BTC-USD/spot", {
-      redirect: "manual",
-      signal: AbortSignal.timeout(5000),
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("Quote unavailable");
-    const value = Schema.decodeUnknownSync(Price)(await response.json());
-    quoteSats(1000, value.data.amount);
+    let response: Response;
+    try {
+      response = await fetcher("https://api.coinbase.com/v2/prices/BTC-USD/spot", {
+        redirect: "manual",
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]),
+        cache: "no-store",
+      });
+    } catch (error) {
+      throw new UpstreamFailure({
+        dependency: "coinbase",
+        reason: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network",
+      });
+    }
+    if (!response.ok)
+      throw new UpstreamFailure({
+        dependency: "coinbase",
+        reason: "http",
+        upstreamStatus: response.status,
+      });
+    let value;
+    try {
+      value = Schema.decodeUnknownSync(Price)(await response.json());
+      quoteSats(1000, value.data.amount);
+    } catch {
+      throw new UpstreamFailure({ dependency: "coinbase", reason: "invalid_response" });
+    }
     cached = { rateUsd: value.data.amount, quotedAt: new Date(now()) };
     return cached;
   };

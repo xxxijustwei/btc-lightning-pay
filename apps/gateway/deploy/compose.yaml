@@ -1,0 +1,36 @@
+services:
+  gateway:
+    build:
+      context: ../../..
+      dockerfile: apps/gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: "9741"
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:?Set GATEWAY_TOKEN}
+      PHOENIX_URL: http://phoenixd:9740
+      PHOENIX_HTTP_PASSWORD: ${PHOENIX_HTTP_PASSWORD:?Set phoenixd limited-access password}
+    expose:
+      - "9741"
+    depends_on:
+      - phoenixd
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9741/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  phoenixd:
+    image: acinq/phoenixd:0.9.3@sha256:f5cbe046104b430052438668b2383416fe1df3c1d808fea1eb76dc139144a32b
+    restart: unless-stopped
+    # Enable liquidity only after the wallet and fee budget have been confirmed.
+    command: ["--chain=mainnet", "--auto-liquidity=off", "--max-fee-credit=off"]
+    volumes:
+      - phoenixd-data:/phoenix/.phoenix
+volumes:
+  phoenixd-data:

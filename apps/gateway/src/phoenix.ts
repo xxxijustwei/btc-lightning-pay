@@ -1,5 +1,6 @@
-import { GatewayInvoice, GatewayPayment, Sats, Millisats } from "@btc-lightning-pay/api/payments";
+import { GatewayPayment, Sats, Millisats } from "@btc-lightning-pay/api/payments";
 import { Schema } from "effect";
+import { GatewayDependencyFailure } from "./errors.ts";
 import type { GatewayConfig } from "./config.ts";
 const Incoming = Schema.Struct({
   externalId: Schema.NullOr(Schema.String),
@@ -14,19 +15,38 @@ const Incoming = Schema.Struct({
 });
 export function createPhoenixClient(config: GatewayConfig, fetcher: typeof fetch = fetch) {
   async function call(path: string, body?: URLSearchParams) {
-    const response = await fetcher(`${config.phoenixUrl}${path}`, {
-      method: body ? "POST" : "GET",
-      body,
-      headers: { authorization: `Basic ${Buffer.from(`:${config.password}`).toString("base64")}` },
-      redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error("Phoenix unavailable");
-    return response.json();
+    let response: Response;
+    try {
+      response = await fetcher(`${config.phoenixUrl}${path}`, {
+        method: body ? "POST" : "GET",
+        body,
+        headers: {
+          authorization: `Basic ${Buffer.from(`:${config.password}`).toString("base64")}`,
+        },
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      throw new GatewayDependencyFailure({
+        dependency: "phoenix",
+        reason: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network",
+      });
+    }
+    if (!response.ok)
+      throw new GatewayDependencyFailure({
+        dependency: "phoenix",
+        reason: "http",
+        upstreamStatus: response.status,
+      });
+    try {
+      return await response.json();
+    } catch {
+      throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "invalid_response" });
+    }
   }
   return {
     async create(orderId: string, amountSat: number) {
-      await call(
+      const result = await call(
         "/createinvoice",
         new URLSearchParams({
           amountSat: String(amountSat),
@@ -35,28 +55,36 @@ export function createPhoenixClient(config: GatewayConfig, fetcher: typeof fetch
           expirySeconds: "3600",
         }),
       );
+      let paymentHash: string;
+      try {
+        paymentHash = Schema.decodeUnknownSync(
+          Schema.Struct({ paymentHash: GatewayPayment.fields.paymentHash }),
+        )(result).paymentHash;
+      } catch {
+        throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "invalid_response" });
+      }
+      return this.find(orderId, amountSat, paymentHash);
     },
-    async find(orderId: string, amountSat: number): Promise<typeof GatewayPayment.Type | null> {
-      const list = Schema.decodeUnknownSync(Schema.Array(Incoming))(
-        await call(`/payments/incoming?externalId=${encodeURIComponent(orderId)}&all=true&limit=2`),
-      );
-      if (!list.length) return null;
-      if (list.length !== 1) throw new Error("Multiple invoices require reconciliation");
-      const payment = list[0];
+    async find(
+      orderId: string,
+      amountSat: number,
+      paymentHash: string,
+    ): Promise<typeof GatewayPayment.Type | null> {
+      const raw = await call(`/payments/incoming/${encodeURIComponent(paymentHash)}`);
+      let payment;
+      try {
+        payment = Schema.decodeUnknownSync(Incoming)(raw);
+      } catch {
+        throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "invalid_response" });
+      }
       if (
         payment.externalId !== orderId ||
+        payment.paymentHash !== paymentHash ||
         payment.requestedSat !== amountSat ||
         !payment.invoice ||
         !payment.expiresAt
       )
-        throw new Error("Invoice mismatch");
-      const invoice = Schema.decodeUnknownSync(GatewayInvoice)({
-        orderId,
-        amountSat,
-        paymentHash: payment.paymentHash,
-        invoice: payment.invoice,
-        expiresAt: new Date(payment.expiresAt).toISOString(),
-      });
+        throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "mismatch" });
       const net = amountSat * 1000 - payment.fees;
       const paid =
         payment.isPaid &&
@@ -64,25 +92,22 @@ export function createPhoenixClient(config: GatewayConfig, fetcher: typeof fetch
         Number.isSafeInteger(net) &&
         net > 0 &&
         Math.floor(net / 1000) === payment.receivedSat;
-      if (payment.isPaid && !paid) throw new Error("Payment requires reconciliation");
-      return Schema.decodeUnknownSync(GatewayPayment)({
-        ...invoice,
-        paidAt: paid ? new Date(payment.completedAt!).toISOString() : null,
-        receivedMsat: paid ? net : null,
-        feeMsat: paid ? payment.fees : null,
-      });
+      if (payment.isPaid && !paid)
+        throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "mismatch" });
+      try {
+        return Schema.decodeUnknownSync(GatewayPayment)({
+          orderId,
+          amountSat,
+          paymentHash: payment.paymentHash,
+          invoice: payment.invoice,
+          expiresAt: new Date(payment.expiresAt).toISOString(),
+          paidAt: paid ? new Date(payment.completedAt!).toISOString() : null,
+          receivedMsat: paid ? net : null,
+          feeMsat: paid ? payment.fees : null,
+        });
+      } catch {
+        throw new GatewayDependencyFailure({ dependency: "phoenix", reason: "invalid_response" });
+      }
     },
-  };
-}
-export function createWorkerClient(config: GatewayConfig, fetcher: typeof fetch = fetch) {
-  return async (payment: typeof GatewayPayment.Type) => {
-    const response = await fetcher(`${config.workerUrl}/api/internal/payments/sync`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${config.syncToken}`, "content-type": "application/json" },
-      body: JSON.stringify(payment),
-      redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error("Worker sync unavailable");
   };
 }

@@ -1,44 +1,52 @@
-import { GatewayPayment, PaymentsApi } from "@btc-lightning-pay/api";
-import { Context, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import { PaymentsApi } from "@btc-lightning-pay/api";
+import { Context, Effect, Layer } from "effect";
+import { HttpRouter, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import { adminOrder, createPaymentStore, PaymentFailure, publicOrder } from "./store";
+import type { createPaymentStore } from "./store";
+import { adminOrder, publicOrder } from "./projection";
+import { PaymentFailure, type PaymentError } from "./errors";
+import { createPaymentService } from "./service";
+import { paymentTask } from "./runtime";
+import { errorFields, type PaymentLog } from "./logging";
+import { errorBoundary, problem } from "./http";
 
 export class PaymentRuntime extends Context.Service<
   PaymentRuntime,
   {
     store: ReturnType<typeof createPaymentStore>;
     actor?: string;
-    quote: () => Promise<{ rateUsd: string; quotedAt: Date }>;
-    gateway: (id: string, amountSat: number) => Promise<typeof GatewayPayment.Type | null>;
+    payments: ReturnType<typeof createPaymentService>;
+    log: PaymentLog;
   }
 >()("backend/PaymentRuntime") {}
 
-const run = <A>(work: (runtime: typeof PaymentRuntime.Service) => Promise<A>, admin = false) =>
+const run = <A>(
+  operation: string,
+  work: (runtime: typeof PaymentRuntime.Service) => Effect.Effect<A, PaymentError>,
+  admin = false,
+) =>
   Effect.gen(function* () {
     const runtime = yield* PaymentRuntime;
-    return yield* Effect.tryPromise({
-      try: () => {
-        if (admin && !runtime.actor) throw new PaymentFailure(403, "ADMIN_REQUIRED");
-        return work(runtime);
-      },
-      catch: (error) => error,
-    }).pipe(
+    if (admin && !runtime.actor) return problem("ADMIN_REQUIRED");
+    const started = Date.now();
+    return yield* work(runtime).pipe(
       Effect.catch((error) => {
-        const known = error instanceof PaymentFailure;
-        if (!known) console.error(JSON.stringify({ event: "payments_request_failed" }));
+        runtime.log({ operation, durationMs: Date.now() - started, ...errorFields(error) });
         return Effect.succeed(
-          HttpServerResponse.jsonUnsafe(
-            {
-              code: known ? error.code : "PAYMENTS_UNAVAILABLE",
-              message: known ? error.code : "Payment service unavailable",
-            },
-            { status: known ? error.status : 503 },
-          ),
+          problem(error instanceof PaymentFailure ? error.code : "PAYMENTS_UNAVAILABLE"),
         );
       }),
     );
   });
+const read = <A>(
+  operation: string,
+  work: (runtime: typeof PaymentRuntime.Service) => Promise<A>,
+  admin = false,
+) => run(operation, (runtime) => paymentTask(operation, () => work(runtime)), admin);
+const dated = <A extends { createdAt: Date }>(row: A) => ({
+  ...row,
+  createdAt: row.createdAt.toISOString(),
+});
 function paging(query: { limit?: string; offset?: string }) {
   const limit = Number(query.limit ?? 50),
     offset = Number(query.offset ?? 0);
@@ -50,13 +58,13 @@ function paging(query: { limit?: string; offset?: string }) {
     offset < 0 ||
     offset > 100000
   )
-    throw new PaymentFailure(400, "INVALID_PAGINATION");
+    throw new PaymentFailure({ code: "INVALID_PAGINATION" });
   return [limit, offset] as const;
 }
 const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers) =>
   handlers.handleAll({
     merchant: ({ params }) =>
-      run(async (r) => {
+      read("read_merchant", async (r) => {
         const m = await r.store.merchant(params.merchantId);
         return {
           merchantId: m.id,
@@ -67,75 +75,65 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
         };
       }),
     createOrder: ({ params, payload, headers }) =>
-      run(async (r) => {
-        let row = await r.store.createOrder(
-          params.merchantId,
-          headers["idempotency-key"],
-          payload,
-          r.quote,
-        );
-        if (!row.invoice) {
-          let result;
-          try {
-            result = await r.gateway(row.id, row.amountSat);
-          } catch {
-            return publicOrder(row);
-          }
-          if (result) row = await r.store.sync(result);
-        }
-        return publicOrder(row);
-      }),
-    order: ({ params }) => run(async (r) => publicOrder(await r.store.getOrder(params.orderId))),
+      run("create_order", (r) =>
+        r.payments
+          .createOrder(params.merchantId, headers["idempotency-key"], payload)
+          .pipe(Effect.map(publicOrder)),
+      ),
+    order: ({ params }) =>
+      run("read_order", (r) => r.payments.order(params.orderId).pipe(Effect.map(publicOrder))),
   }),
 );
 const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) =>
   handlers.handleAll({
-    createMerchant: ({ payload }) => run((r) => r.store.createMerchant(payload.id), true),
-    merchants: ({ query }) => run((r) => r.store.merchants(...paging(query)), true),
+    createMerchant: ({ payload }) =>
+      read("create_merchant", async (r) => dated(await r.store.createMerchant(payload.id)), true),
+    merchants: ({ query }) =>
+      read(
+        "list_merchants",
+        async (r) => (await r.store.merchants(...paging(query))).map(dated),
+        true,
+      ),
     updateMerchant: ({ params, payload }) =>
-      run((r) => r.store.updateMerchant(params.merchantId, payload.enabled), true),
-    orders: ({ query }) => run((r) => r.store.orders(query, ...paging(query)), true),
+      read(
+        "update_merchant",
+        async (r) => dated(await r.store.updateMerchant(params.merchantId, payload.enabled)),
+        true,
+      ),
+    orders: ({ query }) =>
+      read(
+        "list_orders",
+        async (r) => (await r.store.orders(query, ...paging(query))).map(adminOrder),
+        true,
+      ),
     order: ({ params }) =>
-      run(async (r) => adminOrder(await r.store.getOrder(params.orderId, true)), true),
-    summary: ({ params }) => run((r) => r.store.summary(params.merchantId), true),
+      read(
+        "read_admin_order",
+        async (r) => adminOrder(await r.store.getOrder(params.orderId, true)),
+        true,
+      ),
+    summary: ({ params }) =>
+      read("merchant_summary", (r) => r.store.summary(params.merchantId), true),
     settle: ({ payload, headers }) =>
-      run((r) => r.store.settle(headers["idempotency-key"], payload, r.actor!), true),
+      run(
+        "settle_orders",
+        (r) =>
+          r.payments.settle(headers["idempotency-key"], payload, r.actor!).pipe(Effect.map(dated)),
+        true,
+      ),
     settlements: ({ query }) =>
-      run((r) => r.store.settlements(query.merchantId, ...paging(query)), true),
+      read(
+        "list_settlements",
+        async (r) => (await r.store.settlements(query.merchantId, ...paging(query))).map(dated),
+        true,
+      ),
   }),
 );
 export const paymentApp = HttpRouter.toWebHandler(
   HttpApiBuilder.layer(PaymentsApi).pipe(
     Layer.provide([PublicLive, AdminLive]),
     Layer.provide(HttpServer.layerServices),
+    Layer.provide(errorBoundary),
   ),
+  { disableLogger: true },
 );
-export function createGatewayClient(url: string, token: string, fetcher: typeof fetch = fetch) {
-  const target = new URL(url);
-  if (
-    target.username ||
-    target.password ||
-    target.pathname !== "/" ||
-    target.search ||
-    target.hash ||
-    (target.protocol !== "https:" &&
-      !(target.protocol === "http:" && ["127.0.0.1", "localhost"].includes(target.hostname))) ||
-    token.length < 32
-  )
-    throw new Error("Invalid gateway configuration");
-  return async (orderId: string, amountSat: number) => {
-    const response = await fetcher(`${target.origin}/v1/invoices`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ orderId, amountSat }),
-      redirect: "manual",
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.status === 202) return null;
-    if (!response.ok) throw new Error("Gateway unavailable");
-    const result = Schema.decodeUnknownSync(GatewayPayment)(await response.json());
-    if (result.orderId !== orderId || result.amountSat !== amountSat)
-      throw new Error("Gateway mismatch");
-    return result;
-  };
-}

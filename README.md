@@ -10,7 +10,7 @@ AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUD
 
 ## 快速开始
 
-使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Gateway 使用 Node 原生 TypeScript 与 SQLite，要求 Node 26；其他应用也支持满足根 `package.json` engines 的 Node.js 22/24。
+使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Gateway 使用 Node 原生 TypeScript，要求 Node 26；其他应用也支持满足根 `package.json` engines 的 Node.js 22/24。
 
 ```sh
 pnpm install --frozen-lockfile

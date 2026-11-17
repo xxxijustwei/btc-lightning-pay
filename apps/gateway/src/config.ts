@@ -1,12 +1,8 @@
 import { Schema } from "effect";
 export type GatewayConfig = {
   token: string;
-  syncToken: string;
-  workerUrl: string;
   phoenixUrl: string;
   password: string;
-  webhookSecret?: string;
-  database: string;
   host: string;
   port: number;
 };
@@ -31,7 +27,10 @@ export function parseConfig(env: NodeJS.ProcessEnv): GatewayConfig {
       value.search ||
       value.hash ||
       (value.protocol !== "https:" &&
-        !(value.protocol === "http:" && ["localhost", "127.0.0.1"].includes(value.hostname)))
+        !(
+          value.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "phoenixd"].includes(value.hostname)
+        ))
     )
       throw new Error(`Invalid ${name}`);
     return value.origin;
@@ -42,19 +41,13 @@ export function parseConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     return value;
   };
   const token = secret("GATEWAY_TOKEN");
-  const syncToken = secret("WORKER_SYNC_TOKEN");
-  if (token === syncToken) throw new Error("Service tokens must be different");
   const port = Schema.decodeUnknownSync(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
   )(Number(env.GATEWAY_PORT ?? 9741));
   return {
     token,
-    syncToken,
-    workerUrl: origin("WORKER_URL"),
     phoenixUrl: origin("PHOENIX_URL"),
     password: required("PHOENIX_HTTP_PASSWORD"),
-    webhookSecret: env.PHOENIX_WEBHOOK_SECRET,
-    database: env.GATEWAY_DATABASE ?? "data/gateway.sqlite",
     host: env.GATEWAY_HOST ?? "127.0.0.1",
     port,
   };

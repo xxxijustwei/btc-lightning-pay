@@ -3,14 +3,18 @@ import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { Context, Schema } from "effect";
-import { PublicOrder } from "@btc-lightning-pay/api";
+import { Context, Effect, Schema } from "effect";
+import { PaymentProblem, PublicOrder } from "@btc-lightning-pay/api";
 import type { Database } from "@btc-lightning-pay/db/client";
 import * as schema from "@btc-lightning-pay/db/schema";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/test";
-import { createPaymentStore, publicOrder } from "./store";
-import { paymentApp, PaymentRuntime, createGatewayClient } from "./app";
+import { createPaymentStore } from "./store";
+import { publicOrder } from "./projection";
+import { createPaymentService, type GatewayClient } from "./service";
+import { createGatewayClient } from "./gateway-client";
+import { paymentApp, PaymentRuntime } from "./app";
 import worker from "../index";
+import { recoverOrders } from "./recovery";
 
 const pg = new PGlite();
 const database = drizzle(pg, { schema });
@@ -19,16 +23,23 @@ vi.mock("@btc-lightning-pay/db/client", () => ({ createDatabase: () => ({ databa
 const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
 const key = "test-order-key-0001";
-const bindings = { DATABASE_URL: "postgres://local/test", WORKER_SYNC_TOKEN: "s".repeat(32) };
-const gateway = vi.fn<typeof PaymentRuntime.Service.gateway>(async () => null);
+const bindings = { DATABASE_URL: "postgres://local/test" };
+const gateway = vi.fn<GatewayClient>(async () => null);
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { "content-type": "application/json", ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+const log = vi.fn();
+const payments = createPaymentService(store, quote, gateway, log);
+const createOrder = (
+  merchant: string,
+  key: string,
+  input: { amountUsdCents: number; reference?: string },
+) => Effect.runPromise(payments.createOrder(merchant, key, input));
 const call = (req: Request, actor?: string) =>
-  paymentApp.handler(req, Context.make(PaymentRuntime, { store, quote, gateway, actor }));
+  paymentApp.handler(req, Context.make(PaymentRuntime, { store, payments, log, actor }));
 const invoice = (id: string, amountSat = 10000) => ({
   orderId: id,
   amountSat,
@@ -88,26 +99,27 @@ afterAll(async () => {
 
 test("idempotency survives repeated requests, conflicts reject and disabled merchants preserve existing orders", async () => {
   const rows = await Promise.all([
-    store.createOrder("onne", key, { amountUsdCents: 1000 }, quote),
-    store.createOrder("onne", key, { amountUsdCents: 1000 }, quote),
+    createOrder("onne", key, { amountUsdCents: 1000 }),
+    createOrder("onne", key, { amountUsdCents: 1000 }),
   ]);
   expect(rows[0].id).toBe(rows[1].id);
-  expect(quote).toHaveBeenCalledTimes(1);
-  await expect(
-    store.createOrder("onne", key, { amountUsdCents: 1500 }, quote),
-  ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
-  const other = await store.createOrder("other", key, { amountUsdCents: 1000 }, quote);
+  expect(quote.mock.calls.length).toBeGreaterThan(0);
+  const quoteCalls = quote.mock.calls.length;
+  await createOrder("onne", key, { amountUsdCents: 1000 });
+  expect(quote).toHaveBeenCalledTimes(quoteCalls);
+  await expect(createOrder("onne", key, { amountUsdCents: 1500 })).rejects.toMatchObject({
+    code: "IDEMPOTENCY_CONFLICT",
+  });
+  const other = await createOrder("other", key, { amountUsdCents: 1000 });
   expect(other.id).not.toBe(rows[0].id);
   await store.updateMerchant("onne", false);
-  expect((await store.createOrder("onne", key, { amountUsdCents: 1000 }, quote)).id).toBe(
-    rows[0].id,
-  );
+  expect((await createOrder("onne", key, { amountUsdCents: 1000 })).id).toBe(rows[0].id);
   await expect(
-    store.createOrder("onne", "new-order-key-0001", { amountUsdCents: 1000 }, quote),
+    createOrder("onne", "new-order-key-0001", { amountUsdCents: 1000 }),
   ).rejects.toMatchObject({ code: "MERCHANT_DISABLED" });
 });
 test("payment updates are monotonic, late payments are credited and net cost is separate from merchant payable", async () => {
-  const row = await store.createOrder("onne", key, { amountUsdCents: 1000 }, quote);
+  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
   const pending = { ...invoice(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
   expect(publicOrder(await store.sync(pending)).status).toBe("expired");
   const payment = { ...paid(row.id), expiresAt: pending.expiresAt };
@@ -127,8 +139,8 @@ test("payment updates are monotonic, late payments are credited and net cost is 
   });
 });
 test("settlement is atomic, tenant-bound, attributed to its admin and cannot settle an order twice", async () => {
-  const a = await store.createOrder("onne", key, { amountUsdCents: 1000 }, quote);
-  const b = await store.createOrder("other", key, { amountUsdCents: 1000 }, quote);
+  const a = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const b = await createOrder("other", key, { amountUsdCents: 1000 });
   await store.sync(paid(a.id));
   await store.sync(paid(b.id));
   const input = {
@@ -153,8 +165,8 @@ test("settlement is atomic, tenant-bound, attributed to its admin and cannot set
   expect(await store.summary("other")).toMatchObject({ settledSat: 0, unsettledSat: 10000 });
 });
 test("real non-owner RLS isolates merchants and public orders and resets on the pooled connection", async () => {
-  const a = await store.createOrder("onne", key, { amountUsdCents: 1000 }, quote);
-  await store.createOrder("other", key, { amountUsdCents: 1000 }, quote);
+  const a = await createOrder("onne", key, { amountUsdCents: 1000 });
+  await createOrder("other", key, { amountUsdCents: 1000 });
   for (const table of ["merchant", "payment_order", "settlement"])
     expect((await pg.query(`SELECT * FROM ${table}`)).rows).toHaveLength(0);
   await pg.exec("BEGIN; SELECT set_config('app.merchant_id','onne',true);");
@@ -207,30 +219,20 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   expect((await call(request("/api/admin/orders"))).status).toBe(403);
   expect((await call(request("/api/admin/orders"), "admin")).status).toBe(200);
 });
-test("Worker sync authenticates, validates financial data and acknowledges only persisted payments", async () => {
-  const row = await store.createOrder("onne", key, { amountUsdCents: 1000 }, quote);
-  const path = "/api/internal/payments/sync";
-  expect((await worker.fetch(request(path, paid(row.id)), bindings)).status).toBe(401);
-  const headers = { authorization: `Bearer ${bindings.WORKER_SYNC_TOKEN}` };
-  expect(
-    (await worker.fetch(request(path, { ...paid(row.id), receivedMsat: 1 }, headers), bindings))
-      .status,
-  ).toBe(409);
-  expect((await worker.fetch(request(path, paid(row.id), headers), bindings)).status).toBe(200);
-  expect((await store.getOrder(row.id)).status).toBe("paid");
+test("removed sync endpoint cannot mutate orders", async () => {
+  expect((await worker.fetch(request("/api/internal/payments/sync", {}), bindings)).status).toBe(
+    404,
+  );
 });
 test("admission bounds per-merchant invoice creation without charging duplicate requests", async () => {
-  // Freeze only the application clock so all six checks share the same one-second window.
+  // Application clock skew must not weaken admission; the database owns this window.
   vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
   try {
-    for (let i = 0; i < 5; i++)
-      await store.createOrder("onne", `${key}-${i}`, { amountUsdCents: 1000 }, quote);
-    await expect(
-      store.createOrder("onne", `${key}-6`, { amountUsdCents: 1000 }, quote),
-    ).rejects.toMatchObject({ code: "RATE_LIMITED" });
-    expect(
-      (await store.createOrder("onne", `${key}-0`, { amountUsdCents: 1000 }, quote)).amountSat,
-    ).toBe(10000);
+    for (let i = 0; i < 5; i++) await createOrder("onne", `${key}-${i}`, { amountUsdCents: 1000 });
+    await expect(createOrder("onne", `${key}-6`, { amountUsdCents: 1000 })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    });
+    expect((await createOrder("onne", `${key}-0`, { amountUsdCents: 1000 })).amountSat).toBe(10000);
   } finally {
     vi.restoreAllMocks();
   }
@@ -245,7 +247,127 @@ test("Worker gateway client refuses redirects and mismatched order data", async 
   const client = createGatewayClient("https://gateway.example", "g".repeat(32), fetcher);
   await expect(client(id, 10000)).rejects.toThrow();
   fetcher.mockResolvedValueOnce(Response.json(invoice(crypto.randomUUID())));
-  await expect(client(id, 10000)).rejects.toThrow("mismatch");
+  await expect(client(id, 10000)).rejects.toMatchObject({ reason: "mismatch" });
   fetcher.mockResolvedValueOnce(Response.json(null, { status: 202 }));
   expect(await client(id, 10000)).toBeNull();
+});
+
+test.each(["{", JSON.stringify({ amountUsdCents: -1 })])(
+  "Worker input failures return a JSON problem and request ID: %s",
+  async (body) => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await worker.fetch(
+        new Request("http://localhost/api/public/merchants/onne/orders", {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": key },
+          body,
+        }),
+        { ...bindings, GATEWAY_URL: "https://gateway.example", GATEWAY_TOKEN: "g".repeat(32) },
+      );
+      expect(response.status).toBe(400);
+      expect(Schema.decodeUnknownSync(PaymentProblem)(await response.json())).toEqual({
+        code: "INVALID_INPUT",
+        message: "INVALID_INPUT",
+      });
+      expect(response.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.stringContaining(response.headers.get("x-request-id")!),
+      );
+      expect(quote).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  },
+);
+
+test("scheduled recovery records safe upstream context and retries the same durable order", async () => {
+  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response("sensitive-upstream-response", { status: 502 }))
+    .mockResolvedValueOnce(Response.json(invoice(row.id)));
+  const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    const env = {
+      ...bindings,
+      GATEWAY_URL: "https://gateway.example",
+      GATEWAY_TOKEN: "g".repeat(32),
+    };
+    await recoverOrders(env);
+    expect((await store.getOrder(row.id)).status).toBe("creating");
+    const entry = JSON.parse(String(errorLog.mock.calls[0][0]));
+    expect(entry).toMatchObject({
+      operation: "recover_order",
+      orderId: row.id,
+      dependency: "gateway",
+      reason: "http",
+      upstreamStatus: 502,
+      durationMs: expect.any(Number),
+      requestId: expect.any(String),
+    });
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain("sensitive-upstream-response");
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(env.GATEWAY_TOKEN);
+    await recoverOrders(env);
+    expect((await store.getOrder(row.id)).status).toBe("pending");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[1][1]?.body);
+  } finally {
+    vi.unstubAllGlobals();
+    errorLog.mockRestore();
+  }
+});
+
+test("concurrent requests retain one displayed invoice and queries never recreate it", async () => {
+  gateway.mockImplementation(async (id) => invoice(id));
+  const [a, b] = await Promise.all([
+    createOrder("onne", key, { amountUsdCents: 1000 }),
+    createOrder("onne", key, { amountUsdCents: 1000 }),
+  ]);
+  expect(a.paymentHash).toBe(b.paymentHash);
+  expect(gateway.mock.calls.filter((call) => !call[3])).toHaveLength(1);
+  gateway.mockImplementation(async (id) => paid(id));
+  const response = await call(request(`/api/public/orders/${a.id}`));
+  expect(await response.json()).toMatchObject({ status: "paid", invoice: a.invoice });
+  expect(gateway).toHaveBeenLastCalledWith(
+    a.id,
+    a.amountSat,
+    expect.any(AbortSignal),
+    a.paymentHash,
+  );
+  gateway.mockClear();
+  await call(request(`/api/public/orders/${a.id}`));
+  expect(gateway).not.toHaveBeenCalled();
+});
+
+test("cron checks pending and expired invoices after the browser closes", async () => {
+  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const expired = { ...paid(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
+  await store.sync({ ...expired, paidAt: null, receivedMsat: null, feeMsat: null });
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(expired));
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    await recoverOrders({
+      ...bindings,
+      GATEWAY_URL: "https://gateway.example",
+      GATEWAY_TOKEN: "g".repeat(32),
+    });
+    expect((await store.getOrder(row.id)).status).toBe("paid");
+    expect(fetcher.mock.calls[0][0]).toBe("https://gateway.example/v1/payments/query");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test("a failed unexposed creation can retry on the same order", async () => {
+  gateway.mockRejectedValueOnce(new Error("creation response lost"));
+  const first = await createOrder("onne", key, { amountUsdCents: 1000 });
+  expect(first.invoice).toBeNull();
+  gateway.mockImplementation(async (id) => invoice(id));
+  const retry = await createOrder("onne", key, { amountUsdCents: 1000 });
+  expect(retry.id).toBe(first.id);
+  expect(retry.invoice).toBe("lnbc100u1test");
+  expect(gateway.mock.calls.filter((call) => !call[3])).toHaveLength(2);
 });

@@ -73,8 +73,43 @@ export const Summary = Schema.Struct({
   settledSat: Schema.Int,
   unsettledSat: Schema.Int,
 });
-export const PaymentProblem = Schema.Struct({ code: Schema.String, message: Schema.String });
-const errors = [400, 401, 403, 404, 409, 429, 503].map((httpApiStatus) =>
+export const paymentErrorStatus = {
+  INVALID_INPUT: 400,
+  INVALID_BODY: 400,
+  INVALID_EVENT: 400,
+  BODY_TOO_LARGE: 400,
+  INVALID_DATE: 400,
+  INVALID_PAGINATION: 400,
+  DUPLICATE_ORDER: 400,
+  UNAUTHORIZED: 401,
+  ADMIN_REQUIRED: 403,
+  ORIGIN_REJECTED: 403,
+  NOT_FOUND: 404,
+  MERCHANT_NOT_FOUND: 404,
+  ORDER_NOT_FOUND: 404,
+  METHOD_NOT_ALLOWED: 405,
+  IDEMPOTENCY_CONFLICT: 409,
+  MERCHANT_DISABLED: 409,
+  MERCHANT_EXISTS: 409,
+  SETTLEMENT_CONFLICT: 409,
+  PAYMENT_MISMATCH: 409,
+  RATE_LIMITED: 429,
+  INTERNAL_ERROR: 500,
+  QUOTE_UNAVAILABLE: 503,
+  SYNC_NOT_CONFIGURED: 503,
+  GATEWAY_NOT_CONFIGURED: 503,
+  PAYMENTS_NOT_CONFIGURED: 503,
+  WEBHOOK_NOT_CONFIGURED: 503,
+  PAYMENTS_UNAVAILABLE: 503,
+  GATEWAY_UNAVAILABLE: 503,
+  AMOUNT_OVERFLOW: 503,
+} as const;
+export type PaymentErrorCode = keyof typeof paymentErrorStatus;
+export const PaymentProblem = Schema.Struct({
+  code: Schema.Literals(Object.keys(paymentErrorStatus) as PaymentErrorCode[]),
+  message: Schema.String,
+});
+const errors = [400, 401, 403, 404, 405, 409, 429, 500, 503].map((httpApiStatus) =>
   PaymentProblem.annotate({ httpApiStatus }),
 );
 const paging = { limit: Schema.optional(Schema.String), offset: Schema.optional(Schema.String) };
@@ -170,9 +205,9 @@ export const GatewayPayment = Schema.Struct({
   receivedMsat: Schema.NullOr(Millisats),
   feeMsat: Schema.NullOr(Millisats),
 });
-export const PhoenixEvent = Schema.Struct({
-  type: Schema.Literal("payment_received"),
-  externalId: Schema.NullOr(OrderId),
+export const GatewayLookup = Schema.Struct({
+  ...GatewayRequest.fields,
+  paymentHash: GatewayInvoice.fields.paymentHash,
 });
 export const GatewayApi = HttpApi.make("LightningGatewayApi").add(
   HttpApiGroup.make("gateway").add(
@@ -185,9 +220,10 @@ export const GatewayApi = HttpApi.make("LightningGatewayApi").add(
       success: [GatewayPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
       error: errors,
     }),
-    HttpApiEndpoint.post("webhook", "/v1/phoenix/webhook", {
-      payload: Schema.Unknown,
-      success: Schema.Struct({ ok: Schema.Literal(true) }),
+    HttpApiEndpoint.post("lookup", "/v1/payments/query", {
+      headers: { authorization: Schema.optional(Schema.String) },
+      payload: GatewayLookup,
+      success: [GatewayPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
       error: errors,
     }),
   ),
