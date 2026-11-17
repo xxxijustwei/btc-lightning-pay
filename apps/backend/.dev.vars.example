@@ -1,6 +1,8 @@
 # Copy to .dev.vars and fill locally. Health checks work without these values.
 # Local development without a Resend key prints OTPs in the backend console.
 APP_ENV="development"
+# From the demo container's http-password-limited-access (never the full-access password).
+PHOENIX_HTTP_PASSWORD=""
 # Must match the frontend origin used in the browser.
 BETTER_AUTH_URL="http://127.0.0.1:3000"
 BETTER_AUTH_SECRET=""

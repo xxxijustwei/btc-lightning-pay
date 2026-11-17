@@ -1,6 +1,8 @@
 # BTC Lightning Pay
 
-初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前实现健康检查和前后端邮箱验证码认证，不包含支付业务。
+初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前实现健康检查、前后端邮箱验证码认证，以及本地 phoenixd 开票 demo。
+
+本地开票演示：使用 OrbStack 运行 phoenixd，打开 `/demo` 即可创建主网 BOLT11 invoice、查看二维码并复制，无需登录。部署、钱包备份与验收步骤见 [phoenixd demo](docs/phoenixd-demo.md)。此阶段不执行付款或验证到账。
 
 AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUDE.md) 引用同一份规则；按任务阅读 `.patterns/` 中的工程规范。Skills 由开发者单独安装和维护。
 
@@ -127,7 +129,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-未包含 Docker、支付协议、钱包、合约、队列、CI/CD 和部署。首页是联调入口，不是支付产品界面。新增业务时再加入对应服务、配置和测试。
+已包含 OrbStack/Docker Compose 下的 phoenixd 本地部署和公开开票 demo；未包含订单、支付状态、用户钱包、提现、合约、队列、CI/CD 和云端部署。首页是联调入口，`/demo` 是无需认证的开票演示。新增业务时再加入对应服务、配置和测试。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

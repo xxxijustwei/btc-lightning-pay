@@ -30,7 +30,7 @@ export async function proxyBackendRequest(
     return new Response(response.body, { status: response.status, headers });
   } catch {
     return Response.json(
-      { code: "BACKEND_UNAVAILABLE", message: "登录服务暂时不可用，请稍后重试。" },
+      { code: "BACKEND_UNAVAILABLE", message: "后端服务暂时不可用，请稍后重试。" },
       { status: 502, headers: { "cache-control": "no-store" } },
     );
   }

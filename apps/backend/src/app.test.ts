@@ -1,7 +1,10 @@
 import { afterAll, expect, test } from "vite-plus/test";
-import { Schema } from "effect";
+import { Context, Schema } from "effect";
 import { Health } from "@btc-lightning-pay/api";
-import { dispose, handler } from "./app";
+import { dispose, handler as appHandler } from "./app";
+import { createPhoenix, Phoenix } from "./phoenix";
+
+const handler = (request: Request) => appHandler(request, Context.make(Phoenix, createPhoenix({})));
 
 afterAll(dispose);
 

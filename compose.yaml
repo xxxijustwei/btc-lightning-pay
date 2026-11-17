@@ -1,0 +1,11 @@
+name: btc-lightning-pay-demo
+services:
+  phoenixd:
+    image: acinq/phoenixd:0.9.3@sha256:f5cbe046104b430052438668b2383416fe1df3c1d808fea1eb76dc139144a32b
+    command: ["--chain=mainnet", "--auto-liquidity=off", "--max-fee-credit=off"]
+    ports:
+      - "127.0.0.1:9740:9740"
+    volumes:
+      - phoenixd-data:/phoenix/.phoenix
+volumes:
+  phoenixd-data:
