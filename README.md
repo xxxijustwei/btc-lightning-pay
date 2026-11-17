@@ -2,6 +2,8 @@
 
 初始 monorepo：一个 TanStack Start 前端、一个 Cloudflare Workers 后端、共享 API 契约与 shadcn/ui 源码包。当前只实现健康检查，不包含支付业务。
 
+AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUDE.md) 引用同一份规则；按任务阅读 `.patterns/` 中的工程规范。Skills 由开发者单独安装和维护。
+
 ## 快速开始
 
 使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。也支持满足根 `package.json` engines 的 Node.js 22/24。
