@@ -8,7 +8,12 @@ DO $$ BEGIN
     CREATE ROLE btc_backend LOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
 END $$;
-ALTER ROLE btc_backend NOSUPERUSER NOBYPASSRLS;
+-- Supabase's postgres role cannot ALTER BYPASSRLS; verify existing roles instead.
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'btc_backend' AND (rolsuper OR rolbypassrls)) THEN
+    RAISE EXCEPTION 'btc_backend must not be superuser or bypass RLS';
+  END IF;
+END $$;
 GRANT USAGE ON SCHEMA public TO btc_backend;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public."user", public.session, public.account, public.verification TO btc_backend;
 GRANT SELECT, INSERT, UPDATE ON public.merchant, public.payment_order, public.settlement TO btc_backend;
