@@ -8,4 +8,11 @@
   // Stores the Coinbase BTC/USD quote that order creation reads (payments/quote-job.ts).
   "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true, "traces": { "enabled": true } },
+  // Run request handlers next to the business database: one order makes about a dozen sequential
+  // queries, so each must be a short round trip. Keep this equal to DATABASE_URL's Supabase region.
+  // Placement applies to fetch handlers only; the cron makes a single write and is unaffected.
+  "placement": { "region": "aws:ap-south-1" },
+  // Pooled connections remove the per-request connect cost. Create the config first (see
+  // docs/backend-setup.md), then uncomment with its real id and run `pnpm typegen`:
+  // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive-config-id>" }],
 }

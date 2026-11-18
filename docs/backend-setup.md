@@ -138,6 +138,18 @@ Worker 在一个事务里读取商户、按幂等键查已有订单、检查准�
 
 报价由 Worker Cron（`*/5 * * * *`）获取 Coinbase 现货价并写入 `btc_quote` 单行表，旧报价不会覆盖新报价，成功时输出 `quote_refreshed` 日志。下单使用不超过 10 分钟的入库报价；报价缺失、过旧或时间异常时实时获取（同一实例缓存 60 秒），都失败才返回 `QUOTE_UNAVAILABLE`。本地 `wrangler dev` 不会自动触发 Cron，需要时用 `pnpm --filter @btc-lightning-pay/backend exec wrangler dev --local --test-scheduled --port 8787` 启动，再请求 `http://127.0.0.1:8787/__scheduled?cron=*/5+*+*+*+*`。写库失败或并发重复请求落败时，这张 invoice 从未展示给付款人，只会闲置到期。已展示的 invoice 永不替换。创建或重取订单以及 `GET /api/public/orders/:id` 会刷新当前订单。没有 Cron 定时补查或 webhook；页面关闭且无人查询后，业务库不会自动更新到账状态。再次请求公开订单接口会核验并补记到账；查询失败保留订单，后续查询可重试。管理端订单列表、详情、汇总及结算读取数据库记录，不主动向钱包核验。过期不是不可逆支付终态，晚发现的完成记录仍能入账。
 
+## Worker 部署位置与连接池
+
+一次创建订单约有十几次顺序数据库往返，耗时主要取决于 Worker 到业务库的距离。`apps/backend/wrangler.jsonc` 的 `placement.region` 让请求处理固定在业务库所在区域运行，目前是 `aws:ap-south-1`；更换 Supabase 区域时必须同步修改。Placement 只作用于 fetch 请求，Cron 不受影响。`wrangler dev` 仍在本机运行，本地耗时不会因此变化。
+
+Hyperdrive 复用数据库连接，省去每个请求新建连接的耗时。按 [认证接入](auth-setup.md#cloudflare-部署前) 的要求使用 Supabase Direct connection 和 `btc_backend` 账号，并关闭查询缓存（订单和会话都是先写后读）。在自己的终端运行下面的命令，密码只在本地终端输入，不要写进仓库或聊天记录：
+
+```bash
+pnpm --filter @btc-lightning-pay/backend exec wrangler hyperdrive create btc-lightning-pay-db --caching-disabled --connection-string="postgres://btc_backend:<密码>@<Direct connection 主机>:5432/postgres?sslmode=require"
+```
+
+把输出的 id 填入 `wrangler.jsonc` 中已注释的 `hyperdrive` 绑定并取消注释，然后运行 `pnpm typegen`。启用绑定后，本地 `wrangler dev` 需要设置 `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`（与 `DATABASE_URL` 相同）作为本地连接。
+
 ## Dokploy / OrbStack
 
 使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件；保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。只有 wallet-service 容器；SDK 数据库可使用 Dokploy 管理的 PostgreSQL 中的独立库。通过内部网络连接数据库，数据库不需要公网入口。
