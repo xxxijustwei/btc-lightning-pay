@@ -39,12 +39,12 @@
   "slug": "onne",
   "enabled": true,
   "currency": "USD",
-  "minAmountUsdCents": 1000,
+  "minAmountUsdCents": 100,
   "maxAmountUsdCents": 30000
 }
 ```
 
-创建订单：`POST /api/public/merchants/onne/orders`，`Idempotency-Key` 使用一次用户提交产生的 UUID，重试复用该值；请求体为 `{"amountUsdCents":1500,"reference":"可选订单号"}`。金额以整数美分传输，范围 1000–30000。备注最多 128 字符。行情为 100000 USD/BTC 时的示例响应：
+创建订单：`POST /api/public/merchants/onne/orders`，`Idempotency-Key` 使用一次用户提交产生的 UUID，重试复用该值；请求体为 `{"amountUsdCents":1500,"reference":"可选订单号"}`。金额以整数美分传输，范围 100–30000。备注最多 128 字符。行情为 100000 USD/BTC 时的示例响应：
 
 ```json
 {
@@ -52,29 +52,29 @@
   "merchantId": "11111111-1111-4111-8111-111111111111",
   "amountUsdCents": 1500,
   "amountSat": 15000,
-  "status": "creating",
-  "invoice": null,
-  "expiresAt": null,
+  "status": "pending",
+  "invoice": "lnbc150u1...",
+  "expiresAt": "2026-11-17T13:00:00.000Z",
   "serverTime": "2026-11-17T12:00:00.000Z"
 }
 ```
 
-HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代表已经拿到 invoice。若开票成功，返回 `pending` 和完整 BOLT11、到期时间；否则查询同一订单。前端路由建议 `/pay/invoice/:id`，每 3 秒调用 `GET /api/public/orders/:id`，页面不可见时放缓；失败退避，不把网络失败画成未支付或已过期。用 `serverTime` 校正倒计时，只有后端 `paid` 才显示成功。`expired` 后仅由用户主动新建订单，使用新幂等键。`failed` 为预留终态，目前不自动把超时判定为失败。
+HTTP 200 时订单和 invoice 都已保存，状态为 `pending`（同一幂等键重试可能返回已 `paid` 或 `expired` 的原订单），前端可直接展示二维码，无需再查一次。钱包开票失败返回 503 `WALLET_UNAVAILABLE`，不保存订单；前端停留在金额页提示重试，并复用同一幂等键。前端路由建议 `/pay/invoice/:id`，每 3 秒调用 `GET /api/public/orders/:id`，页面不可见时放缓；失败退避，不把网络失败画成未支付或已过期。用 `serverTime` 校正倒计时，只有后端 `paid` 才显示成功。`expired` 后仅由用户主动新建订单，使用新幂等键。订单状态只有 `pending`、`paid`、`expired`。
 
-`invoice` 和 `expiresAt` 在 `creating` 时为空。公开响应不包含备注、payment hash、费用或结算信息；链接持有者可以查看本笔付款信息，不可列出商户历史。支付状态说明见 [方案](backend-phase-one.md)。Cash App 入口按参考页使用 `https://cash.app/launch/lightning/{invoice}`；这一跳转仍待真机验证。
+公开响应不包含备注、payment hash、费用或结算信息；链接持有者可以查看本笔付款信息，不可列出商户历史。支付状态说明见 [方案](backend-phase-one.md)。Cash App 入口按参考页使用 `https://cash.app/launch/lightning/{invoice}`；这一跳转仍待真机验证。
 
 商户和订单列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、实际到账金额 `receivedMsat`、到账时间及 `settlementId`、`settlementStatus`；到账金额单位是 millisatoshi，1 sat = 1000 msat。
 
 `GET /api/admin/merchants/:merchantId/summary` 返回 `merchantId` 和以下口径（金额单位 sats）：
 
-| 字段                     | 含义                                                                              |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| `paidSat`                | 全部已确认支付订单的商户应付                                                      |
-| `settledSat`             | 已确认结算完成的金额                                                              |
-| `unsettledSat`           | 未结清金额，包括待付款批次                                                        |
-| `pendingSettlementSat`   | 已生成结算单、尚未确认付款的占用金额                                              |
-| `availableSettlementSat` | 未被批次占用，可以生成新结算单的金额                                              |
-| `unconfirmedOrderCount`  | creating/pending 订单数量，包含到期后尚未确认付款的订单；不代表这些订单实际已付款 |
+| 字段                     | 含义                                                                     |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `paidSat`                | 全部已确认支付订单的商户应付                                             |
+| `settledSat`             | 已确认结算完成的金额                                                     |
+| `unsettledSat`           | 未结清金额，包括待付款批次                                               |
+| `pendingSettlementSat`   | 已生成结算单、尚未确认付款的占用金额                                     |
+| `availableSettlementSat` | 未被批次占用，可以生成新结算单的金额                                     |
+| `unconfirmedOrderCount`  | pending 订单数量，包含到期后尚未确认付款的订单；不代表这些订单实际已付款 |
 
 恒等式：`unsettledSat = paidSat - settledSat`，`availableSettlementSat = unsettledSat - pendingSettlementSat`。这些数值不是钱包可用余额，平台节点成本不从商户应付扣除。
 
@@ -134,7 +134,9 @@ Content-Type: application/json
 
 钱包服务通过 SDK 分页读取已完成的 BTC 收款，构建内存 hash 索引；并发查询合并，10 秒内复用索引。重启后从 SDK PostgreSQL 重建，不依赖内存保证正确性。当前全量索引的耗时和内存随历史收款增长；接近 100,000 笔历史收款前需压测并改成持久化增量索引。SDK 网络同步与该本地索引刷新是两层不同的工作；同步故障或查询故障不会自动把订单标成支付失败。
 
-Worker 先保存订单报价，再创建和保存 invoice。已展示的 invoice 永不替换。未保存、未展示的开票结果丢失时允许重试，接受遗留未使用 invoice。页面查询刷新当前订单；每分钟 Cron 认领最多 500 笔到期任务，以最多 10 个并发补查。普通订单间隔至少一分钟，过期订单间隔十五分钟；失败保留订单，后续重试。过期不是不可逆支付终态，晚发现的完成记录仍能入账。
+Worker 在一个事务里读取商户、按幂等键查已有订单、检查准入并读取入库报价；随后向钱包申请 invoice，成功后才在同一请求里加锁保存订单，订单从保存起就带有 invoice。每次创建成功输出一条 `order_created` 日志，含总耗时、报价来源 `quote`（`stored` 或 `live`）和 `openMs`、`quoteMs`（仅实时获取时）、`invoiceMs`、`storeMs` 分步耗时，不含备注等付款人信息。
+
+报价由 Worker Cron（`*/5 * * * *`）获取 Coinbase 现货价并写入 `btc_quote` 单行表，旧报价不会覆盖新报价，成功时输出 `quote_refreshed` 日志。下单使用不超过 10 分钟的入库报价；报价缺失、过旧或时间异常时实时获取（同一实例缓存 60 秒），都失败才返回 `QUOTE_UNAVAILABLE`。本地 `wrangler dev` 不会自动触发 Cron，需要时用 `pnpm --filter @btc-lightning-pay/backend exec wrangler dev --local --test-scheduled --port 8787` 启动，再请求 `http://127.0.0.1:8787/__scheduled?cron=*/5+*+*+*+*`。写库失败或并发重复请求落败时，这张 invoice 从未展示给付款人，只会闲置到期。已展示的 invoice 永不替换。创建或重取订单以及 `GET /api/public/orders/:id` 会刷新当前订单。没有 Cron 定时补查或 webhook；页面关闭且无人查询后，业务库不会自动更新到账状态。再次请求公开订单接口会核验并补记到账；查询失败保留订单，后续查询可重试。管理端订单列表、详情、汇总及结算读取数据库记录，不主动向钱包核验。过期不是不可逆支付终态，晚发现的完成记录仍能入账。
 
 ## Dokploy / OrbStack
 
@@ -148,6 +150,6 @@ Worker 先保存订单报价，再创建和保存 invoice。已展示的 invoice
 
 本地自动检查：`pnpm ready`。钱包 runtime 测试由 Vite+ 启动 Bun 子进程，验证共享 API、真实 Breez WASM、公钥推导、HTTP 鉴权以及服务资源释放；不读取真实钱包环境或访问资金。Breez 的官方入口仍为 `/nodejs`，升级 Bun 或 SDK 后需要重新验证，不能仅凭 Node 下的单元测试通过判断兼容。真实 PostgreSQL 并发测试需要设置 `PAYMENT_TEST_DATABASE_URL`，只允许本机独占的空 `payments_test` 数据库。测试会初始化基线和角色，不可指向业务库。`BREEZ_TEST_DATABASE_URL` 可指向独立本地 `wallet_test`，验证真实 SDK PostgreSQL 的初始化、重连和关闭（公开测试助记词、regtest、不交易）。
 
-正式收款前手动完成：主网小额 Cash App 支付、页面关闭后的补记、重启恢复、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。人工结算仍仅登记已完成的外部付款；本服务没有转账 API，实际资金转出流程需另行验收。
+正式收款前手动完成：主网小额 Cash App 支付、页面关闭后再次查询的到账补记、重启后查询、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。人工结算仍仅登记已完成的外部付款；本服务没有转账 API，实际资金转出流程需另行验收。
 
 官方参考：[服务端 Treasury](https://sdk-doc-spark.breez.technology/guide/treasury.html)、[PostgreSQL 存储](https://sdk-doc-spark.breez.technology/guide/customizing.html#with-postgresql-backend)、[收款](https://sdk-doc-spark.breez.technology/guide/receive_payment.html)。

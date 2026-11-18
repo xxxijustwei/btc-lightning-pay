@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-export { merchant, paymentOrder, settlement, settlementItem } from "./payments";
+export { btcQuote, merchant, paymentOrder, settlement, settlementItem } from "./payments";
 import {
   boolean,
   check,

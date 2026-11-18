@@ -3,10 +3,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { ORDER_ID, json, merchant, order, stubFetch } from "../../test/fixtures";
+import { orderQueryKey } from "../../lib/public-api";
 import { AmountPage } from "./amount-page";
 
+let queryClient: QueryClient;
+
 function renderPage(onOrderCreated = vi.fn()) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <AmountPage slug="onne" onOrderCreated={onOrderCreated} />
@@ -33,6 +36,8 @@ describe("AmountPage", () => {
     await user.click(screen.getByRole("button", { name: "Pay $25.00 →" }));
 
     await waitFor(() => expect(onOrderCreated).toHaveBeenCalledWith(ORDER_ID));
+    // The invoice page reads this instead of fetching the order again.
+    expect(queryClient.getQueryData(orderQueryKey(ORDER_ID))).toMatchObject({ status: "pending" });
     const post = calls.find((call) => call.key.startsWith("POST"));
     expect(JSON.parse(String(post?.init?.body))).toEqual({ amountUsdCents: 2500 });
     expect(new Headers(post?.init?.headers).get("idempotency-key")).toMatch(
@@ -47,7 +52,7 @@ describe("AmountPage", () => {
       "POST /api/public/merchants/onne/orders": () =>
         ++attempts === 1
           ? json({ code: "QUOTE_UNAVAILABLE", message: "No quote" }, 503)
-          : json(order("creating")),
+          : json(order("pending")),
     });
     const user = userEvent.setup();
     const onOrderCreated = renderPage();
@@ -67,19 +72,56 @@ describe("AmountPage", () => {
     expect(keys[0]).toBe(keys[1]);
   });
 
+  it("shows the wallet card and amount placeholders while the merchant loads", async () => {
+    let release: (response: Response) => void = () => {};
+    stubFetch({
+      "GET /api/public/merchants/onne": () =>
+        new Promise<Response>((resolve) => (release = resolve)),
+    });
+    renderPage();
+
+    const loading = screen.getByRole("status", { name: "Loading amounts" });
+    expect(loading.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(14);
+    expect(screen.getByText("Cash App")).toBeTruthy();
+    release(json(merchant()));
+    expect(await screen.findByRole("button", { name: "Choose an amount" })).toBeTruthy();
+    expect(screen.queryByRole("status", { name: "Loading amounts" })).toBeNull();
+  });
+
+  it("stays on the amount page when the invoice can't be created", async () => {
+    stubFetch({
+      "GET /api/public/merchants/onne": () => json(merchant()),
+      "POST /api/public/merchants/onne/orders": () =>
+        json({ code: "WALLET_UNAVAILABLE", message: "Wallet unavailable" }, 503),
+    });
+    const user = userEvent.setup();
+    const onOrderCreated = renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "$50" }));
+    await user.click(screen.getByRole("button", { name: "Pay $50.00 →" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Couldn't create the invoice. Please try again.",
+    );
+    expect(onOrderCreated).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Pay $50.00 →" })).toHaveProperty("disabled", false);
+  });
+
   it("validates a custom amount before allowing payment", async () => {
     stubFetch({ "GET /api/public/merchants/onne": () => json(merchant()) });
     const user = userEvent.setup();
     renderPage();
 
     const input = await screen.findByLabelText("Custom amount in USD");
-    await user.type(input, "5");
-    expect(screen.getByRole("alert").textContent).toContain("$10.00 to $300.00");
+    await user.type(input, "0.99");
+    expect(screen.getByRole("alert").textContent).toContain("$1.00 to $300.00");
     expect(screen.getByRole("button", { name: "Choose an amount" })).toHaveProperty(
       "disabled",
       true,
     );
 
+    await user.clear(input);
+    await user.type(input, "1");
+    expect(screen.getByRole("button", { name: "Pay $1.00 →" })).toHaveProperty("disabled", false);
     await user.clear(input);
     await user.type(input, "12.50");
     expect(screen.getByRole("button", { name: "Pay $12.50 →" })).toHaveProperty("disabled", false);

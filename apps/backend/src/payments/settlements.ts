@@ -187,7 +187,7 @@ export function createSettlementStore(transaction: TransactionRunner) {
             paid: sql<string>`coalesce(sum(case when ${paymentOrder.status}='paid' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             settled: sql<string>`coalesce(sum(case when ${settlement.status}='settled' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             pending: sql<string>`coalesce(sum(case when ${settlement.status}='pending' then ${paymentOrder.amountSat} else 0 end),0)::text`,
-            unconfirmed: sql<number>`count(*) filter (where ${paymentOrder.status} in ('creating','pending'))::int`,
+            unconfirmed: sql<number>`count(*) filter (where ${paymentOrder.status} = 'pending')::int`,
           })
           .from(paymentOrder)
           .leftJoin(settlement, eq(paymentOrder.settlementId, settlement.id))

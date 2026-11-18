@@ -5,8 +5,9 @@ test("USD cents convert exactly to sats, rounding upward once", () => {
   expect(quoteSats(1500, "100000")).toBe(15000);
   expect(quoteSats(1000, "60000")).toBe(16667);
   expect(quoteSats(1001, "99999.99999999")).toBe(10011);
+  expect(quoteSats(100, "60000")).toBe(1667);
   for (const [cents, price] of [
-    [999, "100000"],
+    [99, "100000"],
     [30001, "100000"],
     [1000.1, "100000"],
     [1000, "0"],

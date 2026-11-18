@@ -10,7 +10,7 @@ export function publicOrder(row: OrderRow) {
     amountSat: row.amountSat,
     status: statusOf(row),
     invoice: row.invoice,
-    expiresAt: row.expiresAt?.toISOString() ?? null,
+    expiresAt: row.expiresAt.toISOString(),
     serverTime: new Date().toISOString(),
   };
 }
@@ -37,9 +37,7 @@ export function adminOrder(row: OrderRow & { settlementStatus?: string | null })
 }
 export function statusOf(row: OrderRow): typeof PaymentStatus.Type {
   if (row.paidAt) return "paid";
-  if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return "expired";
-  if (row.invoice) return "pending";
-  return row.status === "failed" ? "failed" : "creating";
+  return row.expiresAt.getTime() <= Date.now() ? "expired" : "pending";
 }
 
 export function settlementView(

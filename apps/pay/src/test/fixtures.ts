@@ -11,12 +11,12 @@ export function merchant(enabled = true) {
     slug: "onne",
     enabled,
     currency: "USD",
-    minAmountUsdCents: 1000,
+    minAmountUsdCents: 100,
     maxAmountUsdCents: 30000,
   };
 }
 
-export function order(status: "creating" | "pending" | "paid" | "expired" | "failed") {
+export function order(status: "pending" | "paid" | "expired") {
   const now = new Date();
   return {
     id: ORDER_ID,
@@ -24,8 +24,8 @@ export function order(status: "creating" | "pending" | "paid" | "expired" | "fai
     amountUsdCents: 2500,
     amountSat: 27400,
     status,
-    invoice: status === "creating" ? null : INVOICE,
-    expiresAt: status === "creating" ? null : new Date(now.getTime() + 52 * 60_000).toISOString(),
+    invoice: INVOICE,
+    expiresAt: new Date(now.getTime() + 52 * 60_000).toISOString(),
     serverTime: now.toISOString(),
   };
 }

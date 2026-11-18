@@ -75,6 +75,9 @@ export function createOrder(
   );
 }
 
+/** Cache key shared by the invoice page and the amount page, which seeds it with the created order. */
+export const orderQueryKey = (orderId: string) => ["public-order", orderId] as const;
+
 export function getOrder(orderId: string, signal?: AbortSignal) {
   return request(`/api/public/orders/${encodeURIComponent(orderId)}`, { signal }, decodeOrder);
 }

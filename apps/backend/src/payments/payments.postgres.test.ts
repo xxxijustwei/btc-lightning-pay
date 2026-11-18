@@ -44,6 +44,19 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   const merchantIds: string[] = [];
   const price = { rateUsd: "100000", quotedAt: new Date(), amountSat: 10000 };
   const input = { amountUsdCents: 1000 };
+  // Every stored order carries its invoice; each create call gets a fresh one.
+  const payment = () => {
+    const orderId = crypto.randomUUID();
+    return {
+      orderId,
+      amountSat: 10000,
+      invoice: `lnbc100u1${orderId.replaceAll("-", "")}`,
+      paymentHash: orderId.replaceAll("-", "").repeat(2),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      paidAt: null,
+      receivedMsat: null,
+    };
+  };
   const fixture = async () => {
     const slug = `m${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
     const { id } = await createPaymentStore(clients[0].database).createMerchant(
@@ -132,7 +145,13 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const pending = clients
       .slice(0, 2)
       .map((client) =>
-        createPaymentStore(client.database).createOrder(id, "same-order-key-0001", input, price),
+        createPaymentStore(client.database).createOrder(
+          id,
+          "same-order-key-0001",
+          input,
+          price,
+          payment(),
+        ),
       );
     try {
       await blocked(2);
@@ -146,48 +165,12 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     }
   });
 
-  test("concurrent invoice attachment creates once and never replaces the saved invoice", async () => {
-    const merchantId = await fixture();
-    const store = createPaymentStore(clients[0].database);
-    const order = await store.createOrder(merchantId, "attach-order-key", input, price);
-    const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);
-    const create = vi.fn(async () => ({
-      orderId: order.id,
-      amountSat: 10000,
-      invoice: "lnbc100u1test",
-      paymentHash: order.id.replaceAll("-", "").repeat(2),
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-      paidAt: null,
-      receivedMsat: null,
-    }));
-    const pending = clients
-      .slice(0, 2)
-      .map((client) => createPaymentStore(client.database).attachInvoice(order.id, create));
-    try {
-      await blocked(2);
-    } finally {
-      await release();
-    }
-    const [a, b] = await Promise.all(pending);
-    expect(a.paymentHash).toBe(b.paymentHash);
-    expect(create).toHaveBeenCalledOnce();
-    await store.attachInvoice(order.id, create);
-    expect(create).toHaveBeenCalledOnce();
-  });
-
   test("overlapping settlements cannot both claim the same paid order", async () => {
     const id = await fixture();
     const store = createPaymentStore(clients[0].database);
-    const order = await store.createOrder(id, "paid-order-key-0001", input, price);
-    await store.sync({
-      orderId: order.id,
-      amountSat: 10000,
-      invoice: "lnbc100u1test",
-      paymentHash: order.id.replaceAll("-", "").repeat(2),
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-      paidAt: new Date().toISOString(),
-      receivedMsat: 10000000,
-    });
+    const issued = payment();
+    const order = await store.createOrder(id, "paid-order-key-0001", input, price, issued);
+    await store.sync({ ...issued, paidAt: new Date().toISOString(), receivedMsat: 10000000 });
     const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);
     const pending = Promise.allSettled(
       clients
@@ -320,7 +303,9 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const release = await hold(sql`SELECT id FROM merchant WHERE id=${id} FOR UPDATE`);
     const cleanup = vi.fn();
     const pending = Effect.runPromise(
-      paymentTask("create_order", () => store.createOrder(id, "cancelled-order-key", input, price)),
+      paymentTask("create_order", () =>
+        store.createOrder(id, "cancelled-order-key", input, price, payment()),
+      ),
       { signal: controller.signal },
     )
       .then(
@@ -344,11 +329,13 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     expect(await clients[0].database.execute(sql`SELECT id FROM merchant`)).toHaveLength(0);
   });
 
-  test("waiting for a quote holds no merchant lock and admission rechecks disabled merchants", async () => {
+  test("waiting for a quote holds no merchant lock and the locked insert refuses a merchant disabled meanwhile", async () => {
     const id = await fixture();
+    const { slug } = await createPaymentStore(clients[0].database).adminMerchant(id);
     const entered = deferred<void>(),
       quote = deferred<typeof price>();
-    const wallet = vi.fn(async () => null);
+    // The invoice is requested before the locked insert; a merchant disabled meanwhile only wastes it.
+    const wallet = vi.fn(async (orderId: string) => ({ ...payment(), orderId }));
     const service = createPaymentService(
       createPaymentStore(clients[0].database),
       async () => {
@@ -358,7 +345,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       wallet,
       vi.fn(),
     );
-    const pending = Effect.runPromise(service.createOrder(id, "delayed-quote-key", input)).then(
+    const pending = Effect.runPromise(service.createOrder(slug, "delayed-quote-key", input)).then(
       () => null,
       (error) => error,
     );
@@ -374,7 +361,9 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       quote.resolve(price);
     }
     expect(await pending).toMatchObject({ code: "MERCHANT_DISABLED" });
-    expect(wallet).not.toHaveBeenCalled();
+    expect(
+      await createPaymentStore(clients[0].database).findOrder(id, "delayed-quote-key"),
+    ).toBeNull();
   });
   test("concurrent disable requests preserve one enabled admin", async () => {
     const store = createPaymentStore(clients[0].database);

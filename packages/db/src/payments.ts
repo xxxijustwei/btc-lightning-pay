@@ -101,16 +101,15 @@ export const paymentOrder = pgTable(
     reference: text("reference").notNull().default(""),
     rateUsd: text("rate_usd").notNull(),
     quotedAt: timestamp("quoted_at", { withTimezone: true }).notNull(),
-    status: text("status").notNull().default("creating"),
-    invoice: text("invoice"),
-    paymentHash: text("payment_hash"),
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    status: text("status").notNull().default("pending"),
+    invoice: text("invoice").notNull(),
+    paymentHash: text("payment_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     receivedMsat: bigint("received_msat", { mode: "number" }),
 
     settlementId: uuid("settlement_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     unique("order_tenant_id").on(t.merchantId, t.id),
@@ -122,26 +121,21 @@ export const paymentOrder = pgTable(
     index("order_merchant_created").on(t.merchantId, t.createdAt),
     index("order_created").on(t.createdAt),
     index("order_settlement").on(t.merchantId, t.settlementId),
-    index("order_recovery")
-      .on(t.attemptedAt, t.id)
-      .where(sql`${t.status} IN ('creating','pending')`),
     foreignKey({
       columns: [t.merchantId, t.settlementId],
       foreignColumns: [settlement.merchantId, settlement.id],
       name: "order_settlement_tenant",
     }).onDelete("restrict"),
-    check("order_usd", sql`${t.amountUsdCents} BETWEEN 1000 AND 30000`),
+    check("order_usd", sql`${t.amountUsdCents} BETWEEN 100 AND 30000`),
     check("order_sats", sql`${t.amountSat} BETWEEN 1 AND 9007199254740`),
     check("order_reference", sql`length(${t.reference}) <= 128`),
     check("order_rate", sql`${t.rateUsd} ~ '^[0-9]+([.][0-9]+)?$' AND ${t.rateUsd}::numeric > 0`),
-    check("order_status", sql`${t.status} IN ('creating','pending','paid','expired','failed')`),
-    check(
-      "order_invoice_consistency",
-      sql`(${t.invoice} IS NULL AND ${t.paymentHash} IS NULL AND ${t.expiresAt} IS NULL AND ${t.status} IN ('creating','failed')) OR (${t.invoice} IS NOT NULL AND ${t.paymentHash} IS NOT NULL AND ${t.paymentHash} ~ '^[0-9a-f]{64}$' AND ${t.expiresAt} IS NOT NULL AND ${t.status} IN ('pending','paid','expired'))`,
-    ),
+    // Expiry is derived from expires_at, so only pending and paid are stored.
+    check("order_status", sql`${t.status} IN ('pending','paid')`),
+    check("order_payment_hash_format", sql`${t.paymentHash} ~ '^[0-9a-f]{64}$'`),
     check(
       "order_paid_consistency",
-      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.paymentHash} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.receivedMsat} > 0 AND ${t.receivedMsat} = ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL)`,
+      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.receivedMsat} > 0 AND ${t.receivedMsat} = ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL)`,
     ),
     check("order_settled_paid", sql`${t.settlementId} IS NULL OR ${t.status} = 'paid'`),
     pgPolicy("order_access", {
@@ -176,5 +170,25 @@ export const settlementItem = pgTable(
     }).onDelete("restrict"),
     check("settlement_item_amount", sql`${t.amountSat} > 0 AND ${t.amountSat} <= 9007199254740`),
     pgPolicy("settlement_item_access", { for: "all", using: admin, withCheck: admin }),
+  ],
+).enableRLS();
+
+/** Latest BTC/USD spot price, refreshed by the Worker's cron; one row per source. */
+export const btcQuote = pgTable(
+  "btc_quote",
+  {
+    source: text("source").primaryKey(),
+    rateUsd: text("rate_usd").notNull(),
+    quotedAt: timestamp("quoted_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    check("btc_quote_source", sql`${t.source} = 'coinbase'`),
+    check(
+      "btc_quote_rate",
+      sql`${t.rateUsd} ~ '^[0-9]+([.][0-9]+)?$' AND ${t.rateUsd}::numeric > 0`,
+    ),
+    // The spot price is public; only the admin-scoped cron writes it.
+    pgPolicy("btc_quote_read", { for: "select", using: sql`true` }),
+    pgPolicy("btc_quote_write", { for: "all", using: admin, withCheck: admin }),
   ],
 ).enableRLS();

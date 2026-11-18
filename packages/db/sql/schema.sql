@@ -25,6 +25,15 @@ CREATE TABLE "admin_audit" (
 );
 
 ALTER TABLE "admin_audit" ENABLE ROW LEVEL SECURITY;
+CREATE TABLE "btc_quote" (
+	"source" text PRIMARY KEY NOT NULL,
+	"rate_usd" text NOT NULL,
+	"quoted_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "btc_quote_source" CHECK ("btc_quote"."source" = 'coinbase'),
+	CONSTRAINT "btc_quote_rate" CHECK ("btc_quote"."rate_usd" ~ '^[0-9]+([.][0-9]+)?$' AND "btc_quote"."rate_usd"::numeric > 0)
+);
+
+ALTER TABLE "btc_quote" ENABLE ROW LEVEL SECURITY;
 CREATE TABLE "merchant" (
 	"id" text PRIMARY KEY NOT NULL,
 	"slug" text NOT NULL,
@@ -49,24 +58,23 @@ CREATE TABLE "payment_order" (
 	"reference" text DEFAULT '' NOT NULL,
 	"rate_usd" text NOT NULL,
 	"quoted_at" timestamp with time zone NOT NULL,
-	"status" text DEFAULT 'creating' NOT NULL,
-	"invoice" text,
-	"payment_hash" text,
-	"expires_at" timestamp with time zone,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"invoice" text NOT NULL,
+	"payment_hash" text NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
 	"paid_at" timestamp with time zone,
 	"received_msat" bigint,
 	"settlement_id" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"attempted_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "order_tenant_id" UNIQUE("merchant_id","id"),
 	CONSTRAINT "order_idempotency" UNIQUE("merchant_id","idempotency_key"),
-	CONSTRAINT "order_usd" CHECK ("payment_order"."amount_usd_cents" BETWEEN 1000 AND 30000),
+	CONSTRAINT "order_usd" CHECK ("payment_order"."amount_usd_cents" BETWEEN 100 AND 30000),
 	CONSTRAINT "order_sats" CHECK ("payment_order"."amount_sat" BETWEEN 1 AND 9007199254740),
 	CONSTRAINT "order_reference" CHECK (length("payment_order"."reference") <= 128),
 	CONSTRAINT "order_rate" CHECK ("payment_order"."rate_usd" ~ '^[0-9]+([.][0-9]+)?$' AND "payment_order"."rate_usd"::numeric > 0),
-	CONSTRAINT "order_status" CHECK ("payment_order"."status" IN ('creating','pending','paid','expired','failed')),
-	CONSTRAINT "order_invoice_consistency" CHECK (("payment_order"."invoice" IS NULL AND "payment_order"."payment_hash" IS NULL AND "payment_order"."expires_at" IS NULL AND "payment_order"."status" IN ('creating','failed')) OR ("payment_order"."invoice" IS NOT NULL AND "payment_order"."payment_hash" IS NOT NULL AND "payment_order"."payment_hash" ~ '^[0-9a-f]{64}$' AND "payment_order"."expires_at" IS NOT NULL AND "payment_order"."status" IN ('pending','paid','expired'))),
-	CONSTRAINT "order_paid_consistency" CHECK (("payment_order"."status" = 'paid' AND "payment_order"."paid_at" IS NOT NULL AND "payment_order"."payment_hash" IS NOT NULL AND "payment_order"."received_msat" IS NOT NULL AND "payment_order"."received_msat" > 0 AND "payment_order"."received_msat" = "payment_order"."amount_sat" * 1000) OR ("payment_order"."status" <> 'paid' AND "payment_order"."paid_at" IS NULL AND "payment_order"."received_msat" IS NULL)),
+	CONSTRAINT "order_status" CHECK ("payment_order"."status" IN ('pending','paid')),
+	CONSTRAINT "order_payment_hash_format" CHECK ("payment_order"."payment_hash" ~ '^[0-9a-f]{64}$'),
+	CONSTRAINT "order_paid_consistency" CHECK (("payment_order"."status" = 'paid' AND "payment_order"."paid_at" IS NOT NULL AND "payment_order"."received_msat" IS NOT NULL AND "payment_order"."received_msat" > 0 AND "payment_order"."received_msat" = "payment_order"."amount_sat" * 1000) OR ("payment_order"."status" <> 'paid' AND "payment_order"."paid_at" IS NULL AND "payment_order"."received_msat" IS NULL)),
 	CONSTRAINT "order_settled_paid" CHECK ("payment_order"."settlement_id" IS NULL OR "payment_order"."status" = 'paid')
 );
 
@@ -170,7 +178,6 @@ CREATE UNIQUE INDEX "order_payment_hash" ON "payment_order" USING btree ("paymen
 CREATE INDEX "order_merchant_created" ON "payment_order" USING btree ("merchant_id","created_at");
 CREATE INDEX "order_created" ON "payment_order" USING btree ("created_at");
 CREATE INDEX "order_settlement" ON "payment_order" USING btree ("merchant_id","settlement_id");
-CREATE INDEX "order_recovery" ON "payment_order" USING btree ("attempted_at","id") WHERE "payment_order"."status" IN ('creating','pending');
 CREATE INDEX "session_user_idx" ON "session" USING btree ("user_id");
 CREATE INDEX "settlement_confirmer_idx" ON "settlement" USING btree ("confirmed_by");
 CREATE INDEX "settlement_canceller_idx" ON "settlement" USING btree ("cancelled_by");
@@ -180,6 +187,8 @@ CREATE INDEX "settlement_item_order_idx" ON "settlement_item" USING btree ("merc
 CREATE INDEX "settlement_item_batch_idx" ON "settlement_item" USING btree ("merchant_id","settlement_id");
 CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("identifier");
 CREATE POLICY "admin_audit_access" ON "admin_audit" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
+CREATE POLICY "btc_quote_read" ON "btc_quote" AS PERMISSIVE FOR SELECT TO public USING (true);
+CREATE POLICY "btc_quote_write" ON "btc_quote" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
 CREATE POLICY "merchant_access" ON "merchant" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true' OR "merchant"."id" = nullif(current_setting('app.merchant_id', true), '') OR "merchant"."slug" = nullif(current_setting('app.merchant_slug', true), '')) WITH CHECK (current_setting('app.payment_admin', true) = 'true');
 CREATE POLICY "order_access" ON "payment_order" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true' OR "payment_order"."merchant_id" = nullif(current_setting('app.merchant_id', true), '') OR "payment_order"."id"::text = nullif(current_setting('app.order_id', true), '')) WITH CHECK (current_setting('app.payment_admin', true) = 'true' OR "payment_order"."merchant_id" = nullif(current_setting('app.merchant_id', true), ''));
 CREATE POLICY "settlement_access" ON "settlement" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
@@ -193,6 +202,7 @@ ALTER TABLE public."merchant" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."payment_order" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."settlement" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."settlement_item" FORCE ROW LEVEL SECURITY;
+ALTER TABLE public."btc_quote" FORCE ROW LEVEL SECURITY;
 -- Greenfield baseline invariants, included by generate.ts.
 CREATE FUNCTION preserve_user_identity() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

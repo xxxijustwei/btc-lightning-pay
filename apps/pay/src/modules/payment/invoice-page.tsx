@@ -1,11 +1,15 @@
 import { useQuery, type Query } from "@tanstack/react-query";
-import { Check, Copy, Info, Lock, RotateCcw, Timer, WifiOff, Zap } from "lucide-react";
+import { Check, Info, Lock, RotateCcw, Timer, WifiOff, Zap } from "lucide-react";
 import QRCode from "qrcode";
 import { useEffect, useState, type ReactNode } from "react";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
-import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
 import { formatCountdown, formatUsd } from "../../lib/amount";
-import { PublicApiError, getOrder, type PublicOrderData } from "../../lib/public-api";
+import {
+  PublicApiError,
+  getOrder,
+  orderQueryKey,
+  type PublicOrderData,
+} from "../../lib/public-api";
 import { PayShell, primaryActionClass } from "./pay-shell";
 import { UnavailableScreen } from "./unavailable-screen";
 
@@ -20,7 +24,7 @@ export function orderPollInterval(query: Query<PublicOrderData, Error>): number 
   if (error instanceof PublicApiError && error.status === 404) return false;
   if (fetchFailureCount > 0)
     return Math.min(ACTIVE_POLL_MS * 2 ** fetchFailureCount, MAX_BACKOFF_MS);
-  if (data?.status === "paid" || data?.status === "failed") return false;
+  if (data?.status === "paid") return false;
   if (data?.status === "expired") return EXPIRED_POLL_MS;
   if (typeof document !== "undefined" && document.visibilityState === "hidden")
     return HIDDEN_POLL_MS;
@@ -37,14 +41,16 @@ export function InvoicePage({
 }) {
   const newInvoiceHref = merchantSlug ? `/${merchantSlug}` : undefined;
   const order = useQuery({
-    queryKey: ["public-order", orderId],
+    queryKey: orderQueryKey(orderId),
     queryFn: ({ signal }) => getOrder(orderId, signal),
+    // The amount page seeds a fresh order; don't fetch it again on arrival, the poll takes over.
+    staleTime: ACTIVE_POLL_MS,
     refetchInterval: orderPollInterval,
     refetchIntervalInBackground: true,
     retry: false,
   });
 
-  if (order.isPending) return <CreatingView />;
+  if (order.isPending) return <LoadingView />;
   if (!order.data) {
     if (order.error instanceof PublicApiError && order.error.status === 404) {
       return <UnavailableScreen variant="notfound" />;
@@ -58,10 +64,8 @@ export function InvoicePage({
   const clockOffset = Date.parse(data.serverTime) - order.dataUpdatedAt;
 
   switch (data.status) {
-    case "creating":
-      return <CreatingView amountUsdCents={data.amountUsdCents} reconnecting={reconnecting} />;
     case "pending":
-      return data.invoice && data.expiresAt ? (
+      return (
         <PendingView
           amountUsdCents={data.amountUsdCents}
           invoice={data.invoice}
@@ -69,8 +73,6 @@ export function InvoicePage({
           clockOffset={clockOffset}
           reconnecting={reconnecting}
         />
-      ) : (
-        <CreatingView amountUsdCents={data.amountUsdCents} reconnecting={reconnecting} />
       );
     case "paid":
       return (
@@ -88,8 +90,6 @@ export function InvoicePage({
           reconnecting={reconnecting}
         />
       );
-    case "failed":
-      return <FailedView newInvoiceHref={newInvoiceHref} />;
   }
 }
 
@@ -113,59 +113,42 @@ function AmountCard({
   muted,
   children,
 }: {
-  amountUsdCents?: number;
+  amountUsdCents: number;
   muted?: boolean;
   children?: ReactNode;
 }) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-[18px] border border-pay-line px-5 py-[18px]">
-      {amountUsdCents === undefined ? (
-        <Skeleton className="h-10 w-32" />
-      ) : (
-        <p
-          className={`text-4xl leading-tight font-black tracking-tight ${muted ? "text-pay-muted" : ""}`}
-        >
-          <span className="sr-only">Amount </span>
-          {formatUsd(amountUsdCents)}
-        </p>
-      )}
+      <p
+        className={`text-4xl leading-tight font-black tracking-tight ${muted ? "text-pay-muted" : ""}`}
+      >
+        <span className="sr-only">Amount </span>
+        {formatUsd(amountUsdCents)}
+      </p>
       <div className="flex flex-wrap items-center justify-center gap-2">{children}</div>
     </div>
   );
 }
 
-function CreatingView({
-  amountUsdCents,
-  reconnecting,
-}: {
-  amountUsdCents?: number;
-  reconnecting?: boolean;
-}) {
+/** Order not loaded yet (refresh or opened link): placeholders only. */
+function LoadingView() {
+  const placeholder = "motion-reduce:animate-none";
   return (
-    <PayShell
-      footer={
-        <button type="button" disabled className={primaryActionClass}>
-          <Spinner aria-hidden="true" className="size-4" />
-          Preparing invoice
-        </button>
-      }
-    >
-      {reconnecting ? <ReconnectingBanner /> : null}
-      <AmountCard amountUsdCents={amountUsdCents}>
-        <span
-          role="status"
-          className="inline-flex h-[26px] items-center gap-1.5 rounded-full bg-[#f3f4f6] px-3 text-[13px] font-extrabold text-[#374151]"
-        >
-          <Spinner aria-hidden="true" className="size-3.5" />
-          Creating invoice
-        </span>
-      </AmountCard>
-      <div className="flex flex-col items-center gap-3.5 rounded-[18px] border border-pay-line px-4 py-5">
-        <Skeleton className="size-56" />
-        <Skeleton className="h-12 w-full" />
-        <p className="text-center text-[13px] font-bold text-[#4b5563]">
-          Please wait. This may take a few seconds.
-        </p>
+    <PayShell footer={<Skeleton className={`h-14 rounded-full bg-[#f3f4f6] ${placeholder}`} />}>
+      <div
+        role="status"
+        aria-busy="true"
+        aria-label="Loading payment"
+        className="flex flex-col gap-4"
+      >
+        <div className="flex flex-col items-center gap-2 rounded-[18px] border border-pay-line px-5 py-[18px]">
+          <Skeleton className={`h-10 w-32 bg-[#f3f4f6] ${placeholder}`} />
+          <Skeleton className={`h-[26px] w-[148px] rounded-full bg-[#f3f4f6] ${placeholder}`} />
+        </div>
+        <div className="flex flex-col items-center gap-3.5 rounded-[18px] bg-pay-panel px-4 pt-[18px] pb-4">
+          <Skeleton className={`size-[250px] rounded-[14px] bg-white ${placeholder}`} />
+          <Skeleton className={`h-12 w-full rounded-full bg-white ${placeholder}`} />
+        </div>
       </div>
     </PayShell>
   );
@@ -259,6 +242,11 @@ function InvoiceQr({ invoice }: { invoice: string }) {
   );
 }
 
+/** First and last ten characters; Copy still copies the whole invoice. */
+export function shortInvoice(invoice: string) {
+  return invoice.length > 23 ? `${invoice.slice(0, 10)}…${invoice.slice(-10)}` : invoice;
+}
+
 function CopyInvoice({ invoice }: { invoice: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   useEffect(() => {
@@ -267,10 +255,15 @@ function CopyInvoice({ invoice }: { invoice: string }) {
     return () => clearTimeout(timer);
   }, [state]);
   return (
-    <div className="flex h-12 w-full items-center gap-2 rounded-full border border-pay-edge bg-white pr-1.5 pl-[17px]">
-      <p className="min-w-0 flex-1 truncate font-mono text-[13px] text-[#374151]">
-        <span className="sr-only">Invoice </span>
-        {invoice}
+    <div className="flex h-12 w-full items-center gap-1.5 rounded-full border border-pay-edge bg-white pr-1.5 pl-3">
+      <p className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="inline-flex shrink-0 items-center gap-1 text-xs font-extrabold text-pay-text">
+          <Zap aria-hidden="true" className="size-[13px]" strokeWidth={2.4} />
+          Invoice
+        </span>
+        <span className="min-w-0 truncate font-mono text-xs text-[#374151]">
+          {shortInvoice(invoice)}
+        </span>
       </p>
       <button
         type="button"
@@ -280,17 +273,12 @@ function CopyInvoice({ invoice }: { invoice: string }) {
             () => setState("failed"),
           );
         }}
-        className={
+        className={`shrink-0 ${
           state === "copied"
-            ? "inline-flex h-9 items-center gap-1.5 rounded-full bg-pay-action px-3.5 text-[13px] font-black text-white"
-            : "inline-flex h-9 items-center gap-1.5 rounded-full bg-pay-toggle px-3.5 text-[13px] font-black text-pay-text-strong"
-        }
+            ? "inline-flex h-9 items-center rounded-full bg-pay-action px-3.5 text-[13px] font-black text-white"
+            : "inline-flex h-9 items-center rounded-full bg-pay-toggle px-3.5 text-[13px] font-black text-pay-text-strong"
+        }`}
       >
-        {state === "copied" ? (
-          <Check aria-hidden="true" className="size-3.5" strokeWidth={2.8} />
-        ) : (
-          <Copy aria-hidden="true" className="size-3.5" strokeWidth={2.4} />
-        )}
         <span aria-live="polite">
           {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy"}
         </span>
@@ -393,19 +381,6 @@ function ExpiredView({
           Paid just before it expired? Keep this page open — it updates if the payment arrives.
         </p>
       </div>
-    </PayShell>
-  );
-}
-
-function FailedView({ newInvoiceHref }: { newInvoiceHref?: string }) {
-  return (
-    <PayShell footer={<NewInvoiceAction href={newInvoiceHref} />}>
-      <section className="flex flex-1 flex-col items-center justify-center gap-3 rounded-[18px] bg-pay-surface px-6 py-10 text-center">
-        <h1 className="text-[22px] font-black tracking-tight">This invoice couldn't be created</h1>
-        <p className="max-w-[300px] text-[15px] leading-relaxed font-bold text-[#4b5563]">
-          Nothing was charged. Start again to get a new invoice.
-        </p>
-      </section>
     </PayShell>
   );
 }

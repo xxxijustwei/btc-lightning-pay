@@ -264,7 +264,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
               <Info aria-hidden="true" />
               <AlertTitle>还有 {data.unconfirmedOrderCount} 笔订单尚未确认到账</AlertTitle>
               <AlertDescription>
-                包括开票中、待支付和到期后仍未确认的订单，不代表已实际付款。它们不会进入本次结算单；如有疑问，可稍后补查到账后再生成。
+                包括待支付和到期后仍未确认的订单，不代表已实际付款。它们不会进入本次结算单；如有疑问，可稍后补查到账后再生成。
               </AlertDescription>
             </Alert>
           ) : null}

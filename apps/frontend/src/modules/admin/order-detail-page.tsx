@@ -128,7 +128,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
           <Card>
             <CardHeader>
               <CardTitle>Invoice</CardTitle>
-              <CardDescription>以 payment hash 标识；开票中时以下字段为空。</CardDescription>
+              <CardDescription>以 payment hash 标识。</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-5">
               <dl className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-x-6 gap-y-4">
@@ -271,20 +271,13 @@ type TimelineEvent = { label: string; at: string | null; tone: string; detail?: 
 
 /** Order history from the timestamps the order and its settlement record. */
 function timeline(order: AdminOrderData, settlement: SettlementData | undefined): TimelineEvent[] {
+  // The invoice is issued first; the order is stored only once it exists.
   const events: TimelineEvent[] = [
-    { label: "订单创建，报价锁定", at: order.createdAt, tone: "bg-primary" },
+    { label: "Invoice 已创建，订单生成", at: order.createdAt, tone: "bg-primary" },
   ];
-  if (order.invoice)
-    events.push({
-      label: "Invoice 已创建",
-      at: invoiceCreatedAt(order.invoice),
-      tone: "bg-primary",
-    });
   if (order.paidAt) events.push({ label: "后端核实到账", at: order.paidAt, tone: "bg-success" });
   else if (order.status === "expired")
     events.push({ label: "Invoice 已过期", at: order.expiresAt, tone: "bg-muted-foreground" });
-  else if (order.status === "failed")
-    events.push({ label: "开票失败", at: null, tone: "bg-destructive" });
   if (order.settlementId) {
     const pending = order.settlementStatus === "pending";
     events.push({

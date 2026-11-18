@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import { INVOICE, ORDER_ID, json, order, stubFetch } from "../../test/fixtures";
+import { orderQueryKey } from "../../lib/public-api";
 import { InvoicePage } from "./invoice-page";
 
 function renderPage(merchantSlug?: string) {
@@ -27,11 +28,44 @@ describe("InvoicePage", () => {
       `https://cash.app/launch/lightning/${INVOICE}`,
     );
     expect(await screen.findByRole("img", { name: "Lightning invoice QR code" })).toBeTruthy();
+    expect(
+      screen.getByText(`${INVOICE.slice(0, 10)}…${INVOICE.slice(-10)}`, { exact: false }),
+    ).toBeTruthy();
     expect(screen.queryByText("Payment received")).toBeNull();
 
     await act(() => queryClient.refetchQueries());
     expect(await screen.findByRole("heading", { name: "Payment received" })).toBeTruthy();
     expect(screen.getByText("Paid to").nextElementSibling?.textContent).toBe("onne");
+  });
+
+  it("shows neutral placeholders, not invoice creation, while the order loads", async () => {
+    let release: (response: Response) => void = () => {};
+    stubFetch({
+      [`GET /api/public/orders/${ORDER_ID}`]: () =>
+        new Promise<Response>((resolve) => (release = resolve)),
+    });
+    renderPage();
+
+    expect(screen.getByRole("status", { name: "Loading payment" })).toBeTruthy();
+    expect(screen.queryByText(/Creating invoice|Preparing invoice/)).toBeNull();
+    release(json(order("pending")));
+    expect(await screen.findByText("Awaiting payment")).toBeTruthy();
+  });
+
+  it("shows an order seeded by the amount page without fetching it again", () => {
+    const calls = stubFetch({
+      [`GET /api/public/orders/${ORDER_ID}`]: () => json(order("pending")),
+    });
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(orderQueryKey(ORDER_ID), order("pending"));
+    render(
+      <QueryClientProvider client={queryClient}>
+        <InvoicePage orderId={ORDER_ID} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Awaiting payment")).toBeTruthy();
+    expect(calls).toHaveLength(0);
   });
 
   it("keeps the invoice on screen and says it is reconnecting when a refresh fails", async () => {

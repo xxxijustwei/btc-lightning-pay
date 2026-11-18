@@ -32,6 +32,7 @@ export class PaymentFailure extends Schema.TaggedError<PaymentFailure>()("Paymen
     "WALLET_NOT_CONFIGURED",
     "PAYMENTS_NOT_CONFIGURED",
     "INVALID_INPUT",
+    "WALLET_UNAVAILABLE",
   ]),
 }) {}
 export class StorageFailure extends Schema.TaggedError<StorageFailure>()("StorageFailure", {

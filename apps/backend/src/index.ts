@@ -2,11 +2,12 @@ import { handler } from "./app";
 import { handleAuth } from "./auth/handler";
 import type { AuthBindings } from "./auth/config";
 import { handlePayments, type PaymentsBindings } from "./payments/handler";
-import { recoverOrders } from "./payments/recovery";
+import { refreshQuote } from "./payments/quote-job";
 
 export default {
-  scheduled(_event: ScheduledController, env: PaymentsBindings, context: ExecutionContext) {
-    context.waitUntil(recoverOrders(env));
+  // Every five minutes (wrangler.jsonc): store the BTC quote that order creation reads.
+  scheduled(_controller: ScheduledController, env: PaymentsBindings, context: ExecutionContext) {
+    context.waitUntil(refreshQuote(env));
   },
   fetch(request: Request, env: AuthBindings & PaymentsBindings) {
     const path = new URL(request.url).pathname;

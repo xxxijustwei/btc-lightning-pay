@@ -31,6 +31,7 @@ try {
     "payment_order",
     "settlement",
     "settlement_item",
+    "btc_quote",
   ];
   const sql = readFileSync(join(dir, file), "utf8").replaceAll("--> statement-breakpoint", "");
   writeFileSync(

@@ -1,9 +1,9 @@
 import type { Database } from "@btc-lightning-pay/db/client";
-import { merchant, paymentOrder, settlement } from "@btc-lightning-pay/db/schema";
+import { btcQuote, merchant, paymentOrder, settlement } from "@btc-lightning-pay/db/schema";
 import type { WalletPayment, NewOrder } from "@btc-lightning-pay/api";
-import { getTableColumns, and, desc, eq, gte, inArray, lt, lte, sql, type SQL } from "drizzle-orm";
+import { getTableColumns, and, desc, eq, gte, lt, sql, type SQL } from "drizzle-orm";
 import { PaymentFailure } from "./errors";
-import { assertSameOrder, paymentUpdate } from "./rules";
+import { assertSameOrder, newInvoice, paymentUpdate } from "./rules";
 
 export type OrderRow = typeof paymentOrder.$inferSelect;
 export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -20,6 +20,20 @@ export type TransactionRunner = <T>(
 ) => Promise<T>;
 import { createAdministrationStore } from "./administration";
 import { createSettlementStore } from "./settlements";
+/** Admission allows five new orders per merchant per second, timed by the database clock. */
+async function isFlooded(tx: Transaction, merchantId: string) {
+  const recent = await tx
+    .select({ id: paymentOrder.id })
+    .from(paymentOrder)
+    .where(
+      and(
+        eq(paymentOrder.merchantId, merchantId),
+        gte(paymentOrder.createdAt, sql`clock_timestamp() - interval '1 second'`),
+      ),
+    )
+    .limit(5);
+  return recent.length >= 5;
+}
 export function createPaymentStore(db: Database, signal?: AbortSignal) {
   async function transaction<T>(scope: Scope, body: (tx: Transaction) => Promise<T>) {
     return db.transaction(async (tx) => {
@@ -47,30 +61,6 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
   }
   return {
     getOrder,
-    async attachInvoice(
-      id: string,
-      create: (row: OrderRow) => Promise<typeof WalletPayment.Type | null>,
-    ) {
-      // Lock only this order so concurrent requests cannot replace an invoice already returned to a payer.
-      return transaction({ admin: true }, async (tx) => {
-        const [row] = await tx
-          .select()
-          .from(paymentOrder)
-          .where(eq(paymentOrder.id, id))
-          .for("update");
-        if (!row) throw new PaymentFailure({ code: "ORDER_NOT_FOUND" });
-        if (row.invoice) return row;
-        const payment = await create(row);
-        if (!payment) return row;
-        const update = paymentUpdate(row, payment);
-        const [saved] = await tx
-          .update(paymentOrder)
-          .set(update!)
-          .where(eq(paymentOrder.id, id))
-          .returning();
-        return saved;
-      });
-    },
     async findOrder(merchantId: string, key: string) {
       return transaction({ merchantId }, async (tx) => {
         const [row] = await tx
@@ -80,40 +70,42 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         return row ?? null;
       });
     },
-    async recoveryBatch() {
-      return transaction({ admin: true }, async (tx) => {
-        const rows = await tx
-          .select()
-          .from(paymentOrder)
-          .where(
-            and(
-              inArray(paymentOrder.status, ["creating", "pending"]),
-              lte(paymentOrder.attemptedAt, sql`clock_timestamp()`),
-            ),
-          )
-          .orderBy(paymentOrder.attemptedAt, paymentOrder.id)
-          .limit(500)
-          .for("update", { skipLocked: true });
-        if (rows.length)
-          await tx
-            .update(paymentOrder)
-            .set({
-              attemptedAt: sql`clock_timestamp() + CASE WHEN ${paymentOrder.expiresAt} < clock_timestamp() THEN interval '15 minutes' ELSE interval '1 minute' END`,
-            })
-            .where(
-              inArray(
-                paymentOrder.id,
-                rows.map((r) => r.id),
-              ),
-            );
-        return rows;
-      });
-    },
-    async merchant(id: string) {
-      return transaction({ merchantId: id }, async (tx) => {
-        const [row] = await tx.select().from(merchant).where(eq(merchant.id, id));
-        if (!row) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
-        return row;
+    /**
+     * Everything a create request needs before invoicing, in one transaction: the merchant by
+     * slug, an order already stored under this key, whether admission would refuse a new one,
+     * and the latest stored BTC quote.
+     */
+    async openOrder(slug: string, key: string) {
+      return transaction({ slug }, async (tx) => {
+        // Reading the merchant also scopes the rest of this transaction to it.
+        const [m] = await tx
+          .select({
+            id: merchant.id,
+            enabled: merchant.enabled,
+            scoped: sql<string>`set_config('app.merchant_id', ${merchant.id}, true)`,
+          })
+          .from(merchant)
+          .where(eq(merchant.slug, slug));
+        if (!m) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
+        // Independent reads under the scope set above, sent together to save a round trip.
+        const [[order], flooded, [quote]] = await Promise.all([
+          tx
+            .select()
+            .from(paymentOrder)
+            .where(and(eq(paymentOrder.merchantId, m.id), eq(paymentOrder.key, key))),
+          isFlooded(tx, m.id),
+          tx
+            .select({ rateUsd: btcQuote.rateUsd, quotedAt: btcQuote.quotedAt })
+            .from(btcQuote)
+            .where(eq(btcQuote.source, "coinbase")),
+        ]);
+        return {
+          merchantId: m.id,
+          enabled: m.enabled,
+          order: order ?? null,
+          flooded,
+          quote: quote ?? null,
+        };
       });
     },
     async createOrder(
@@ -121,7 +113,9 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
       key: string,
       input: typeof NewOrder.Type,
       price: { rateUsd: string; quotedAt: Date; amountSat: number },
+      payment: typeof WalletPayment.Type,
     ) {
+      const invoice = newInvoice(payment, price.amountSat);
       // Serialize a merchant's admission and idempotency checks across Worker instances.
       return transaction({ merchantId }, async (tx) => {
         const [m] = await tx
@@ -130,30 +124,25 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
           .where(eq(merchant.id, merchantId))
           .for("update");
         if (!m) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
-        const [old] = await tx
-          .select()
-          .from(paymentOrder)
-          .where(and(eq(paymentOrder.merchantId, merchantId), eq(paymentOrder.key, key)));
+        // Both reads run after the lock above is held, so sending them together stays serialized.
+        const [[old], flooded] = await Promise.all([
+          tx
+            .select()
+            .from(paymentOrder)
+            .where(and(eq(paymentOrder.merchantId, merchantId), eq(paymentOrder.key, key))),
+          isFlooded(tx, merchantId),
+        ]);
         if (old) {
+          // A concurrent retry won; its invoice is the one the payer sees, this one is never shown.
           assertSameOrder(old, input);
           return old;
         }
         if (!m.enabled) throw new PaymentFailure({ code: "MERCHANT_DISABLED" });
-        const recent = await tx
-          .select({ id: paymentOrder.id })
-          .from(paymentOrder)
-          .where(
-            and(
-              eq(paymentOrder.merchantId, merchantId),
-              gte(paymentOrder.createdAt, sql`clock_timestamp() - interval '1 second'`),
-            ),
-          )
-          .limit(5);
-        if (recent.length >= 5) throw new PaymentFailure({ code: "RATE_LIMITED" });
+        if (flooded) throw new PaymentFailure({ code: "RATE_LIMITED" });
         const [row] = await tx
           .insert(paymentOrder)
           .values({
-            id: crypto.randomUUID(),
+            ...invoice,
             merchantId,
             key,
             amountUsdCents: input.amountUsdCents,
@@ -165,6 +154,19 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
           })
           .returning();
         return row;
+      });
+    },
+    /** Stores the latest quote; an older quote never replaces a newer one. */
+    async saveQuote(quote: { rateUsd: string; quotedAt: Date }) {
+      return transaction({ admin: true }, async (tx) => {
+        await tx
+          .insert(btcQuote)
+          .values({ source: "coinbase", ...quote })
+          .onConflictDoUpdate({
+            target: btcQuote.source,
+            set: { rateUsd: sql`excluded.rate_usd`, quotedAt: sql`excluded.quoted_at` },
+            setWhere: sql`${btcQuote.quotedAt} < excluded.quoted_at`,
+          });
       });
     },
     async sync(payment: typeof WalletPayment.Type) {

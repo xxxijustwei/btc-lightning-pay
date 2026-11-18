@@ -37,19 +37,20 @@ export const Sats = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 9_0
 export const Millisats = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
-export const UsdCents = Schema.Int.check(Schema.isBetween({ minimum: 1000, maximum: 30000 }));
+export const UsdCents = Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 30000 }));
 export const Reference = Schema.String.check(Schema.isMaxLength(128));
 export const NewOrder = Schema.Struct({
   amountUsdCents: UsdCents,
   reference: Schema.optional(Reference),
 });
-export const PaymentStatus = Schema.Literals(["creating", "pending", "paid", "expired", "failed"]);
+// An order is stored only once its invoice exists, so every order starts pending.
+export const PaymentStatus = Schema.Literals(["pending", "paid", "expired"]);
 export const PublicMerchant = Schema.Struct({
   merchantId: MerchantId,
   slug: MerchantSlug,
   enabled: Schema.Boolean,
   currency: Schema.Literal("USD"),
-  minAmountUsdCents: Schema.Literal(1000),
+  minAmountUsdCents: Schema.Literal(100),
   maxAmountUsdCents: Schema.Literal(30000),
 });
 export const PublicOrder = Schema.Struct({
@@ -58,8 +59,8 @@ export const PublicOrder = Schema.Struct({
   amountUsdCents: UsdCents,
   amountSat: Sats,
   status: PaymentStatus,
-  invoice: Schema.NullOr(Schema.String),
-  expiresAt: Schema.NullOr(Schema.String),
+  invoice: Schema.String,
+  expiresAt: Schema.String,
   serverTime: Schema.String,
 });
 export const Merchant = Schema.Struct({
@@ -79,7 +80,7 @@ export const AdminOrder = Schema.Struct({
   quotedAt: Schema.String,
   createdAt: Schema.String,
   paidAt: Schema.NullOr(Schema.String),
-  paymentHash: Schema.NullOr(Schema.String),
+  paymentHash: Schema.String,
   receivedMsat: Schema.NullOr(Millisats),
 
   settlementId: Schema.NullOr(OrderId),

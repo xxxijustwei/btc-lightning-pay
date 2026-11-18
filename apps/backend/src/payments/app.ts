@@ -71,16 +71,15 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
           slug: m.slug,
           enabled: m.enabled,
           currency: "USD" as const,
-          minAmountUsdCents: 1000 as const,
+          minAmountUsdCents: 100 as const,
           maxAmountUsdCents: 30000 as const,
         };
       }),
     createOrder: ({ params, payload, headers }) =>
       run("create_order", (r) =>
-        paymentTask("resolve_merchant", () => r.store.merchantBySlug(params.slug)).pipe(
-          Effect.flatMap((m) => r.payments.createOrder(m.id, headers["idempotency-key"], payload)),
-          Effect.map(publicOrder),
-        ),
+        r.payments
+          .createOrder(params.slug, headers["idempotency-key"], payload)
+          .pipe(Effect.map(publicOrder)),
       ),
     order: ({ params }) =>
       run("read_order", (r) => r.payments.order(params.orderId).pipe(Effect.map(publicOrder))),

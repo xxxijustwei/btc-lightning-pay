@@ -20,13 +20,11 @@ import {
 
 const orderStatus: Record<
   PaymentStatusValue,
-  { label: string; variant: "info" | "warning" | "success" | "outline" | "destructive" }
+  { label: string; variant: "warning" | "success" | "outline" }
 > = {
-  creating: { label: "开票中", variant: "info" },
   pending: { label: "待支付", variant: "warning" },
   paid: { label: "已支付", variant: "success" },
   expired: { label: "已过期", variant: "outline" },
-  failed: { label: "失败", variant: "destructive" },
 };
 
 export const orderStatusOptions = Object.entries(orderStatus).map(([value, { label }]) => ({

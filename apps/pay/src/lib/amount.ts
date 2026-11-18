@@ -1,6 +1,7 @@
 export const PRESET_AMOUNTS_USD = [10, 15, 20, 25, 50, 75, 100, 150, 200, 250, 300] as const;
-export const MIN_USD_CENTS = 1000;
+export const MIN_USD_CENTS = 100;
 export const MAX_USD_CENTS = 30000;
+export const AMOUNT_RANGE_ERROR = "Enter an amount from $1.00 to $300.00.";
 
 export type AmountParse = { ok: true; cents: number } | { ok: false; error: string };
 
@@ -13,7 +14,7 @@ export function parseUsdAmount(input: string): AmountParse {
   const [whole, fraction = ""] = text.split(".");
   const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
   if (cents < MIN_USD_CENTS || cents > MAX_USD_CENTS) {
-    return { ok: false, error: "Enter an amount from $10.00 to $300.00." };
+    return { ok: false, error: AMOUNT_RANGE_ERROR };
   }
   return { ok: true, cents };
 }

@@ -5,6 +5,7 @@
   "compatibility_date": "2026-11-17",
   "compatibility_flags": ["nodejs_compat"],
   "vars": { "APP_ENV": "production" },
-  "triggers": { "crons": ["* * * * *"] },
+  // Stores the Coinbase BTC/USD quote that order creation reads (payments/quote-job.ts).
+  "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true, "traces": { "enabled": true } },
 }

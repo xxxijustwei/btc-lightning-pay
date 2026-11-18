@@ -12,8 +12,9 @@ import { publicOrder } from "./projection";
 import { createPaymentService, type WalletClient } from "./service";
 import { createWalletClient } from "./wallet-client";
 import { paymentApp, PaymentRuntime } from "./app";
+import { refreshQuote } from "./quote-job";
+import { sql } from "drizzle-orm";
 import worker from "../index";
-import { recoverOrders } from "./recovery";
 
 const pg = new PGlite();
 const database = drizzle(pg, { schema });
@@ -37,7 +38,15 @@ const createOrder = (
   merchant: string,
   key: string,
   input: { amountUsdCents: number; reference?: string },
-) => Effect.runPromise(payments.createOrder(merchant, key, input));
+) =>
+  // The public API creates orders by slug; tests hold merchant ids.
+  Effect.runPromise(
+    payments.createOrder(
+      merchant === onne ? "onne" : merchant === other ? "other" : merchant,
+      key,
+      input,
+    ),
+  );
 const call = (req: Request, actor?: string) =>
   paymentApp.handler(req, Context.make(PaymentRuntime, { store, payments, log, actor }));
 const invoice = (id: string, amountSat = 10000) => ({
@@ -76,7 +85,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await pg.exec(
-    "RESET ROLE; TRUNCATE admin_audit, settlement_item, payment_order, settlement, merchant; DELETE FROM public.\"user\" WHERE id <> 'admin'; SET ROLE payment_app;",
+    "RESET ROLE; TRUNCATE admin_audit, settlement_item, payment_order, settlement, merchant, btc_quote; DELETE FROM public.\"user\" WHERE id <> 'admin'; SET ROLE payment_app;",
   );
   onne = (
     await store.createMerchant({ slug: "onne", name: "Onne", email: "onne@example.com" }, "admin")
@@ -89,7 +98,10 @@ beforeEach(async () => {
   ).id;
   quote.mockClear();
   wallet.mockReset();
-  wallet.mockResolvedValue(null);
+  // Creation issues an invoice; a status query finds it still unpaid.
+  wallet.mockImplementation(async (id, amountSat, _signal, paymentHash) =>
+    paymentHash ? null : invoice(id, amountSat),
+  );
   close.mockClear();
 });
 afterAll(async () => {
@@ -117,6 +129,79 @@ test("idempotency survives repeated requests, conflicts reject and disabled merc
   await expect(
     createOrder(onne, "new-order-key-0001", { amountUsdCents: 1000 }),
   ).rejects.toMatchObject({ code: "MERCHANT_DISABLED" });
+});
+test("order creation uses a stored quote and falls back to a live one once it is stale", async () => {
+  const fresh = new Date(Date.now() - 4 * 60_000);
+  await store.saveQuote({ rateUsd: "50000", quotedAt: fresh });
+  const stored = await createOrder(onne, `${key}-stored`, { amountUsdCents: 1000 });
+  expect(stored).toMatchObject({ rateUsd: "50000", amountSat: 20000 });
+  expect(stored.quotedAt.getTime()).toBe(fresh.getTime());
+  expect(quote).not.toHaveBeenCalled();
+
+  // An older quote never replaces a newer one.
+  await store.saveQuote({ rateUsd: "1", quotedAt: new Date(fresh.getTime() - 60_000) });
+  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("50000");
+
+  await pg.exec(
+    "RESET ROLE; UPDATE btc_quote SET quoted_at = now() - interval '11 minutes'; SET ROLE payment_app;",
+  );
+  const live = await createOrder(onne, `${key}-live`, { amountUsdCents: 1000 });
+  expect(live).toMatchObject({ rateUsd: "100000", amountSat: 10000 });
+  expect(quote).toHaveBeenCalledOnce();
+});
+test("the quote cron stores the Coinbase price and only the admin scope may write it", async () => {
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(Response.json({ data: { amount: "64000.12", currency: "USD" } }));
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    await refreshQuote(bindings, fetcher);
+  } finally {
+    info.mockRestore();
+  }
+  expect(fetcher.mock.calls[0][0]).toBe("https://api.coinbase.com/v2/prices/BTC-USD/spot");
+  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("64000.12");
+  await expect(
+    database.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.payment_admin', 'false', true)`);
+      await tx.execute(sql`UPDATE btc_quote SET rate_usd = '1'`);
+      return tx.execute(
+        sql`INSERT INTO btc_quote (source, rate_usd, quoted_at) VALUES ('coinbase', '1', now())`,
+      );
+    }),
+  ).rejects.toThrow();
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await refreshQuote(bindings, fetcher);
+    expect(JSON.parse(String(errors.mock.calls[0][0]))).toMatchObject({
+      operation: "refresh_quote",
+      dependency: "coinbase",
+    });
+  } finally {
+    errors.mockRestore();
+  }
+  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("64000.12");
+});
+test("order creation logs per-step timing without payer data", async () => {
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    const row = await createOrder(onne, key, { amountUsdCents: 1000, reference: "private note" });
+    const entry = JSON.parse(String(info.mock.calls.at(-1)?.[0]));
+    expect(entry).toMatchObject({
+      event: "order_created",
+      orderId: row.id,
+      durationMs: expect.any(Number),
+      openMs: expect.any(Number),
+      quote: "live",
+      quoteMs: expect.any(Number),
+      invoiceMs: expect.any(Number),
+      storeMs: expect.any(Number),
+    });
+    expect(JSON.stringify(info.mock.calls)).not.toContain("private note");
+  } finally {
+    info.mockRestore();
+  }
 });
 test("payment updates are monotonic, late payments are credited and net cost is separate from merchant payable", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
@@ -270,7 +355,7 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   const path = "/api/public/merchants/onne/orders";
   expect((await call(request(path, { amountUsdCents: 1000 }))).status).toBe(400);
   expect(
-    (await call(request(path, { amountUsdCents: 999 }, { "idempotency-key": key }))).status,
+    (await call(request(path, { amountUsdCents: 99 }, { "idempotency-key": key }))).status,
   ).toBe(400);
   expect(quote).not.toHaveBeenCalled();
   const response = await call(
@@ -279,8 +364,15 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   expect(response.status).toBe(200);
   const raw = await response.json();
   const body = Schema.decodeUnknownSync(PublicOrder)(raw);
-  expect(body).toMatchObject({ status: "creating", amountSat: 10000, invoice: null });
+  expect(body).toMatchObject({ status: "pending", amountSat: 10000, invoice: "lnbc100u1test" });
   expect(raw).toEqual(body);
+  wallet.mockRejectedValueOnce(new Error("secret upstream detail"));
+  const failed = await call(
+    request(path, { amountUsdCents: 1000 }, { "idempotency-key": "wallet-down-key-0001" }),
+  );
+  expect(failed.status).toBe(503);
+  expect(await failed.json()).toMatchObject({ code: "WALLET_UNAVAILABLE" });
+  expect(JSON.stringify(log.mock.calls)).not.toContain("secret upstream detail");
   wallet.mockRejectedValueOnce(new Error("secret upstream detail"));
   expect(
     (
@@ -309,6 +401,8 @@ test("admission bounds per-merchant invoice creation without charging duplicate 
     await expect(createOrder(onne, `${key}-6`, { amountUsdCents: 1000 })).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
+    // A refused request never asks the wallet for an invoice.
+    expect(wallet).toHaveBeenCalledTimes(5);
     expect((await createOrder(onne, `${key}-0`, { amountUsdCents: 1000 })).amountSat).toBe(10000);
   } finally {
     vi.restoreAllMocks();
@@ -358,7 +452,7 @@ test.each(["{", JSON.stringify({ amountUsdCents: -1 })])(
   },
 );
 
-test("scheduled recovery records safe upstream context and retries the same durable order", async () => {
+test("public order queries record safe upstream context and keep the stored order", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const fetcher = vi
     .fn<typeof fetch>()
@@ -372,29 +466,23 @@ test("scheduled recovery records safe upstream context and retries the same dura
       WALLET_URL: "https://wallet.example",
       WALLET_TOKEN: "g".repeat(32),
     };
-    await recoverOrders(env);
-    expect((await store.getOrder(row.id)).status).toBe("creating");
+    await worker.fetch(request(`/api/public/orders/${row.id}`), env);
+    expect((await store.getOrder(row.id)).status).toBe("pending");
     const entry = JSON.parse(String(errorLog.mock.calls[0][0]));
     expect(entry).toMatchObject({
-      operation: "recover_order",
+      operation: "refresh_order",
       orderId: row.id,
       dependency: "wallet",
       reason: "http",
       upstreamStatus: 502,
-      durationMs: expect.any(Number),
       requestId: expect.any(String),
     });
     expect(JSON.stringify(errorLog.mock.calls)).not.toContain("sensitive-upstream-response");
     expect(JSON.stringify(errorLog.mock.calls)).not.toContain(env.WALLET_TOKEN);
-    await recoverOrders(env);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    await pg.exec(
-      "RESET ROLE; UPDATE payment_order SET attempted_at=now()-interval '1 second'; SET ROLE payment_app",
-    );
-    await recoverOrders(env);
+    await worker.fetch(request(`/api/public/orders/${row.id}`), env);
     expect((await store.getOrder(row.id)).status).toBe("pending");
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(close).toHaveBeenCalledTimes(3);
+    expect(close).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[1][1]?.body);
   } finally {
     vi.unstubAllGlobals();
@@ -402,14 +490,15 @@ test("scheduled recovery records safe upstream context and retries the same dura
   }
 });
 
-test("concurrent requests retain one displayed invoice and queries never recreate it", async () => {
-  wallet.mockImplementation(async (id) => invoice(id));
+test("concurrent requests store one order and queries never recreate its invoice", async () => {
   const [a, b] = await Promise.all([
     createOrder(onne, key, { amountUsdCents: 1000 }),
     createOrder(onne, key, { amountUsdCents: 1000 }),
   ]);
+  // Both may obtain an invoice; only the stored one is ever shown, the other simply expires.
+  expect(a.id).toBe(b.id);
   expect(a.paymentHash).toBe(b.paymentHash);
-  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(1);
+  expect(await store.orders({ merchantId: onne }, 10, 0)).toHaveLength(1);
   wallet.mockImplementation(async (id) => paid(id));
   const response = await call(request(`/api/public/orders/${a.id}`));
   expect(await response.json()).toMatchObject({ status: "paid", invoice: a.invoice });
@@ -425,34 +514,46 @@ test("concurrent requests retain one displayed invoice and queries never recreat
   expect(wallet).not.toHaveBeenCalled();
 });
 
-test("cron checks pending and expired invoices after the browser closes", async () => {
-  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  const expired = { ...paid(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
-  await store.sync({ ...expired, paidAt: null, receivedMsat: null });
-  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(expired));
-  vi.stubGlobal("fetch", fetcher);
-  try {
-    await recoverOrders({
-      ...bindings,
-      WALLET_URL: "https://wallet.example",
-      WALLET_TOKEN: "g".repeat(32),
-    });
-    expect((await store.getOrder(row.id)).status).toBe("paid");
-    expect(fetcher.mock.calls[0][0]).toBe("https://wallet.example/v1/payments/query");
-  } finally {
-    vi.unstubAllGlobals();
-  }
-});
+test.each(["pending", "expired"])(
+  "querying a %s invoice records completed payment",
+  async (status) => {
+    const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+    const payment = {
+      ...paid(row.id),
+      expiresAt: new Date(Date.now() + (status === "expired" ? -1000 : 3600000)).toISOString(),
+    };
+    await store.sync({ ...payment, paidAt: null, receivedMsat: null });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payment));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const response = await worker.fetch(request(`/api/public/orders/${row.id}`), {
+        ...bindings,
+        WALLET_URL: "https://wallet.example",
+        WALLET_TOKEN: "g".repeat(32),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ status: "paid" });
+      expect((await store.getOrder(row.id)).status).toBe("paid");
+      expect(fetcher.mock.calls[0][0]).toBe("https://wallet.example/v1/payments/query");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
 
-test("a failed unexposed creation can retry on the same order", async () => {
+test("a failed invoice creation stores nothing and the same key can retry", async () => {
   wallet.mockRejectedValueOnce(new Error("creation response lost"));
-  const first = await createOrder(onne, key, { amountUsdCents: 1000 });
-  expect(first.invoice).toBeNull();
-  wallet.mockImplementation(async (id) => invoice(id));
+  await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
+    code: "WALLET_UNAVAILABLE",
+  });
+  expect(await store.findOrder(onne, key)).toBeNull();
+  wallet.mockResolvedValueOnce(null);
+  await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
+    code: "WALLET_UNAVAILABLE",
+  });
   const retry = await createOrder(onne, key, { amountUsdCents: 1000 });
-  expect(retry.id).toBe(first.id);
-  expect(retry.invoice).toBe("lnbc100u1test");
-  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(2);
+  expect(retry).toMatchObject({ status: "pending", invoice: "lnbc100u1test" });
+  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(3);
 });
 
 test("merchant provisioning is atomic, keeps identity immutable and hides private fields", async () => {
@@ -474,7 +575,7 @@ test("merchant provisioning is atomic, keeps identity immutable and hides privat
     slug: "new-shop",
     enabled: true,
     currency: "USD",
-    minAmountUsdCents: 1000,
+    minAmountUsdCents: 100,
     maxAmountUsdCents: 30000,
   });
   await expect(

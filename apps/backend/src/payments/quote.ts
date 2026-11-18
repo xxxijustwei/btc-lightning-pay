@@ -9,7 +9,7 @@ export function quoteSats(cents: number, price: string): number {
   const rate = Schema.decodeUnknownSync(Rate)(price);
   const [whole, fraction = ""] = rate.split(".");
   const denominator = BigInt(whole + fraction);
-  if (denominator <= 0n || !Number.isInteger(cents) || cents < 1000 || cents > 30000)
+  if (denominator <= 0n || !Number.isInteger(cents) || cents < 100 || cents > 30000)
     throw new Error("Invalid quote");
   const numerator = BigInt(cents) * 1_000_000n * 10n ** BigInt(fraction.length);
   const sats = (numerator + denominator - 1n) / denominator;
@@ -42,7 +42,7 @@ export function createQuoteSource(fetcher: typeof fetch = fetch, now = Date.now)
     let value;
     try {
       value = Schema.decodeUnknownSync(Price)(await response.json());
-      quoteSats(1000, value.data.amount);
+      quoteSats(100, value.data.amount);
     } catch {
       throw new UpstreamFailure({ dependency: "coinbase", reason: "invalid_response" });
     }

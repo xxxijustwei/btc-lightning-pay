@@ -1,10 +1,15 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDollarSign, Lock, Zap } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
-import { PRESET_AMOUNTS_USD, formatUsd, parseUsdAmount } from "../../lib/amount";
-import { PublicApiError, createOrder, getMerchant } from "../../lib/public-api";
+import {
+  AMOUNT_RANGE_ERROR,
+  PRESET_AMOUNTS_USD,
+  formatUsd,
+  parseUsdAmount,
+} from "../../lib/amount";
+import { PublicApiError, createOrder, getMerchant, orderQueryKey } from "../../lib/public-api";
 import { PayShell, primaryActionClass } from "./pay-shell";
 import { UnavailableScreen } from "./unavailable-screen";
 
@@ -48,6 +53,7 @@ function AmountForm({
   slug: string;
   onOrderCreated: (orderId: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const [preset, setPreset] = useState<number | null>(null);
   const [custom, setCustom] = useState("");
   const [expanded, setExpanded] = useState(true);
@@ -70,6 +76,8 @@ function AmountForm({
     },
     onSuccess: (order) => {
       attempt.current = null;
+      // The order already carries its invoice: the invoice page shows it without refetching.
+      queryClient.setQueryData(orderQueryKey(order.id), order);
       onOrderCreated(order.id);
     },
     onError: (error) => {
@@ -121,14 +129,7 @@ function AmountForm({
         </form>
       }
     >
-      <div className="flex flex-col items-center gap-0.5 rounded-[18px] border border-pay-line p-[22px]">
-        {/* Replace the tile with the official Cash App mark once usage is cleared. */}
-        <span className="mb-2.5 flex size-10 items-center justify-center rounded-lg bg-pay-brand text-white">
-          <Zap aria-hidden="true" className="size-6 fill-current" strokeWidth={1.5} />
-        </span>
-        <p className="text-base font-black">Cash App</p>
-        <p className="text-[13.5px] font-bold text-pay-muted">Instant</p>
-      </div>
+      <WalletCard />
       <section
         aria-labelledby="amount-title"
         className="flex flex-col gap-3.5 rounded-[18px] bg-pay-panel px-4 pt-5 pb-4"
@@ -221,10 +222,12 @@ function describeSubmitError(error: Error) {
   switch (error.code) {
     case "QUOTE_UNAVAILABLE":
       return "We couldn't get a live BTC price. Try again in a minute — nothing was charged.";
+    case "WALLET_UNAVAILABLE":
+      return "Couldn't create the invoice. Please try again.";
     case "RATE_LIMITED":
       return "Too many requests right now. Try again in a moment.";
     case "INVALID_INPUT":
-      return "Enter an amount from $10.00 to $300.00.";
+      return AMOUNT_RANGE_ERROR;
     case "IDEMPOTENCY_CONFLICT":
       return "Please try again.";
     default:
@@ -234,21 +237,43 @@ function describeSubmitError(error: Error) {
   }
 }
 
+/** Static payment-method card; it needs no merchant data, so it also shows while loading. */
+function WalletCard() {
+  return (
+    <div className="flex flex-col items-center gap-0.5 rounded-[18px] border border-pay-line p-[22px]">
+      {/* Replace the tile with the official Cash App mark once usage is cleared. */}
+      <span className="mb-2.5 flex size-10 items-center justify-center rounded-lg bg-pay-brand text-white">
+        <Zap aria-hidden="true" className="size-6 fill-current" strokeWidth={1.5} />
+      </span>
+      <p className="text-base font-black">Cash App</p>
+      <p className="text-[13.5px] font-bold text-pay-muted">Instant</p>
+    </div>
+  );
+}
+
+const skeletonClass = "bg-white motion-reduce:animate-none";
+
+/** Mirrors the amount form's layout, with all presets shown as the form opens expanded. */
 function AmountSkeleton() {
   return (
-    <PayShell>
+    <PayShell
+      footer={<Skeleton className="h-14 rounded-full bg-[#f3f4f6] motion-reduce:animate-none" />}
+    >
+      <WalletCard />
       <div
+        role="status"
         aria-busy="true"
-        aria-label="Loading"
+        aria-label="Loading amounts"
         className="flex flex-col gap-3.5 rounded-[18px] bg-pay-panel px-4 pt-5 pb-4"
       >
-        <Skeleton className="h-4 w-32 bg-white" />
+        <Skeleton className={`h-4 w-32 rounded-lg ${skeletonClass}`} />
         <div className="grid grid-cols-3 gap-2.5">
-          {PRESET_AMOUNTS_USD.slice(0, COLLAPSED_COUNT).map((usd) => (
-            <Skeleton key={usd} className="h-11 rounded-full bg-white" />
+          {PRESET_AMOUNTS_USD.map((usd) => (
+            <Skeleton key={usd} className={`h-11 rounded-full ${skeletonClass}`} />
           ))}
         </div>
-        <Skeleton className="h-14 rounded-full bg-white" />
+        <Skeleton className={`h-9 rounded-full ${skeletonClass}`} />
+        <Skeleton className={`h-14 rounded-full ${skeletonClass}`} />
       </div>
     </PayShell>
   );
