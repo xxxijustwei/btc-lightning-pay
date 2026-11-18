@@ -1,0 +1,28 @@
+services:
+  wallet-service:
+    build:
+      context: ../../..
+      dockerfile: apps/wallet/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      WALLET_HOST: 0.0.0.0
+      WALLET_PORT: "9741"
+      WALLET_TOKEN: ${WALLET_TOKEN:?Set WALLET_TOKEN}
+      BREEZ_API_KEY: ${BREEZ_API_KEY:?Set BREEZ_API_KEY}
+      BREEZ_MNEMONIC: ${BREEZ_MNEMONIC:?Set BREEZ_MNEMONIC}
+      BREEZ_IDENTITY_PUBKEY: ${BREEZ_IDENTITY_PUBKEY:?Set BREEZ_IDENTITY_PUBKEY}
+      BREEZ_DATABASE_URL: ${BREEZ_DATABASE_URL:?Set dedicated SDK database URL}
+    expose:
+      - "9741"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9741/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3

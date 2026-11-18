@@ -26,7 +26,7 @@ export class PaymentFailure extends Schema.TaggedError<PaymentFailure>()("Paymen
     "SYNC_NOT_CONFIGURED",
     "UNAUTHORIZED",
     "ORIGIN_REJECTED",
-    "GATEWAY_NOT_CONFIGURED",
+    "WALLET_NOT_CONFIGURED",
     "PAYMENTS_NOT_CONFIGURED",
     "INVALID_INPUT",
   ]),
@@ -35,7 +35,7 @@ export class StorageFailure extends Schema.TaggedError<StorageFailure>()("Storag
   operation: Schema.String,
 }) {}
 export class UpstreamFailure extends Schema.TaggedError<UpstreamFailure>()("UpstreamFailure", {
-  dependency: Schema.Literals(["coinbase", "gateway"]),
+  dependency: Schema.Literals(["coinbase", "wallet"]),
   reason: Schema.Literals(["timeout", "network", "http", "invalid_response", "mismatch"]),
   upstreamStatus: Schema.optional(Schema.Int),
 }) {}

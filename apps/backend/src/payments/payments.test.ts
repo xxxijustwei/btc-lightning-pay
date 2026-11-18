@@ -1,8 +1,7 @@
-import { fileURLToPath, URL as NodeURL } from "node:url";
+import { URL as NodeURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import { Context, Effect, Schema } from "effect";
 import { PaymentProblem, PublicOrder } from "@btc-lightning-pay/api";
 import type { Database } from "@btc-lightning-pay/db/client";
@@ -10,8 +9,8 @@ import * as schema from "@btc-lightning-pay/db/schema";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/test";
 import { createPaymentStore } from "./store";
 import { publicOrder } from "./projection";
-import { createPaymentService, type GatewayClient } from "./service";
-import { createGatewayClient } from "./gateway-client";
+import { createPaymentService, type WalletClient } from "./service";
+import { createWalletClient } from "./wallet-client";
 import { paymentApp, PaymentRuntime } from "./app";
 import worker from "../index";
 import { recoverOrders } from "./recovery";
@@ -24,7 +23,7 @@ const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
 const key = "test-order-key-0001";
 const bindings = { DATABASE_URL: "postgres://local/test" };
-const gateway = vi.fn<GatewayClient>(async () => null);
+const wallet = vi.fn<WalletClient>(async () => null);
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -32,7 +31,7 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const log = vi.fn();
-const payments = createPaymentService(store, quote, gateway, log);
+const payments = createPaymentService(store, quote, wallet, log);
 const createOrder = (
   merchant: string,
   key: string,
@@ -48,23 +47,17 @@ const invoice = (id: string, amountSat = 10000) => ({
   expiresAt: new Date(Date.now() + 3600000).toISOString(),
   paidAt: null,
   receivedMsat: null,
-  feeMsat: null,
 });
 const paid = (id: string, amountSat = 10000) => ({
   ...invoice(id, amountSat),
   paidAt: new Date().toISOString(),
-  receivedMsat: amountSat * 1000 - 1000,
-  feeMsat: 1000,
+  receivedMsat: amountSat * 1000,
 });
 
 beforeAll(async () => {
-  await migrate(database, {
-    migrationsFolder: fileURLToPath(
-      new NodeURL("../../../../packages/db/drizzle", import.meta.url),
-    ),
-    migrationsSchema: "public",
-    migrationsTable: "__btc_lightning_pay_migrations",
-  });
+  await pg.exec(
+    readFileSync(new NodeURL("../../../../packages/db/sql/schema.sql", import.meta.url), "utf8"),
+  );
   await pg.exec(`CREATE ROLE payment_app NOSUPERUSER NOBYPASSRLS;
     GRANT USAGE ON SCHEMA public TO payment_app;
     GRANT SELECT, INSERT, UPDATE ON merchant, payment_order, settlement, settlement_item TO payment_app;
@@ -78,9 +71,6 @@ beforeAll(async () => {
   await pg.exec("SET ROLE btc_backend;");
   expect((await pg.query('SELECT * FROM public."user"')).rows).toHaveLength(1);
   expect((await pg.query("SELECT * FROM payment_order")).rows).toHaveLength(0);
-  await expect(pg.exec("SELECT * FROM public.__btc_lightning_pay_migrations")).rejects.toThrow(
-    /permission denied/,
-  );
   await pg.exec("RESET ROLE;");
 });
 beforeEach(async () => {
@@ -90,8 +80,8 @@ beforeEach(async () => {
   await store.createMerchant("onne");
   await store.createMerchant("other");
   quote.mockClear();
-  gateway.mockReset();
-  gateway.mockResolvedValue(null);
+  wallet.mockReset();
+  wallet.mockResolvedValue(null);
   close.mockClear();
 });
 afterAll(async () => {
@@ -136,7 +126,7 @@ test("payment updates are monotonic, late payments are credited and net cost is 
     unsettledSat: 10000,
   });
   expect(await store.summary("other")).toMatchObject({ paidSat: 0 });
-  await expect(store.sync({ ...payment, feeMsat: 0 })).rejects.toMatchObject({
+  await expect(store.sync({ ...payment, receivedMsat: 1 })).rejects.toMatchObject({
     code: "PAYMENT_MISMATCH",
   });
 });
@@ -285,7 +275,7 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   const body = Schema.decodeUnknownSync(PublicOrder)(raw);
   expect(body).toMatchObject({ status: "creating", amountSat: 10000, invoice: null });
   expect(raw).toEqual(body);
-  gateway.mockRejectedValueOnce(new Error("secret upstream detail"));
+  wallet.mockRejectedValueOnce(new Error("secret upstream detail"));
   expect(
     (
       await call(
@@ -318,14 +308,14 @@ test("admission bounds per-merchant invoice creation without charging duplicate 
     vi.restoreAllMocks();
   }
 });
-test("Worker gateway client refuses redirects and mismatched order data", async () => {
+test("Worker wallet client refuses redirects and mismatched order data", async () => {
   const id = crypto.randomUUID();
   const fetcher = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { location: "https://elsewhere.example" } }),
     );
-  const client = createGatewayClient("https://gateway.example", "g".repeat(32), fetcher);
+  const client = createWalletClient("https://wallet.example", "g".repeat(32), fetcher);
   await expect(client(id, 10000)).rejects.toThrow();
   fetcher.mockResolvedValueOnce(Response.json(invoice(crypto.randomUUID())));
   await expect(client(id, 10000)).rejects.toMatchObject({ reason: "mismatch" });
@@ -344,7 +334,7 @@ test.each(["{", JSON.stringify({ amountUsdCents: -1 })])(
           headers: { "content-type": "application/json", "idempotency-key": key },
           body,
         }),
-        { ...bindings, GATEWAY_URL: "https://gateway.example", GATEWAY_TOKEN: "g".repeat(32) },
+        { ...bindings, WALLET_URL: "https://wallet.example", WALLET_TOKEN: "g".repeat(32) },
       );
       expect(response.status).toBe(400);
       expect(Schema.decodeUnknownSync(PaymentProblem)(await response.json())).toEqual({
@@ -373,8 +363,8 @@ test("scheduled recovery records safe upstream context and retries the same dura
   try {
     const env = {
       ...bindings,
-      GATEWAY_URL: "https://gateway.example",
-      GATEWAY_TOKEN: "g".repeat(32),
+      WALLET_URL: "https://wallet.example",
+      WALLET_TOKEN: "g".repeat(32),
     };
     await recoverOrders(env);
     expect((await store.getOrder(row.id)).status).toBe("creating");
@@ -382,18 +372,23 @@ test("scheduled recovery records safe upstream context and retries the same dura
     expect(entry).toMatchObject({
       operation: "recover_order",
       orderId: row.id,
-      dependency: "gateway",
+      dependency: "wallet",
       reason: "http",
       upstreamStatus: 502,
       durationMs: expect.any(Number),
       requestId: expect.any(String),
     });
     expect(JSON.stringify(errorLog.mock.calls)).not.toContain("sensitive-upstream-response");
-    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(env.GATEWAY_TOKEN);
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain(env.WALLET_TOKEN);
+    await recoverOrders(env);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await pg.exec(
+      "RESET ROLE; UPDATE payment_order SET attempted_at=now()-interval '1 second'; SET ROLE payment_app",
+    );
     await recoverOrders(env);
     expect((await store.getOrder(row.id)).status).toBe("pending");
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(close).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(3);
     expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[1][1]?.body);
   } finally {
     vi.unstubAllGlobals();
@@ -402,53 +397,54 @@ test("scheduled recovery records safe upstream context and retries the same dura
 });
 
 test("concurrent requests retain one displayed invoice and queries never recreate it", async () => {
-  gateway.mockImplementation(async (id) => invoice(id));
+  wallet.mockImplementation(async (id) => invoice(id));
   const [a, b] = await Promise.all([
     createOrder("onne", key, { amountUsdCents: 1000 }),
     createOrder("onne", key, { amountUsdCents: 1000 }),
   ]);
   expect(a.paymentHash).toBe(b.paymentHash);
-  expect(gateway.mock.calls.filter((call) => !call[3])).toHaveLength(1);
-  gateway.mockImplementation(async (id) => paid(id));
+  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(1);
+  wallet.mockImplementation(async (id) => paid(id));
   const response = await call(request(`/api/public/orders/${a.id}`));
   expect(await response.json()).toMatchObject({ status: "paid", invoice: a.invoice });
-  expect(gateway).toHaveBeenLastCalledWith(
+  expect(wallet).toHaveBeenLastCalledWith(
     a.id,
     a.amountSat,
     expect.any(AbortSignal),
     a.paymentHash,
+    a.invoice,
   );
-  gateway.mockClear();
+  wallet.mockClear();
   await call(request(`/api/public/orders/${a.id}`));
-  expect(gateway).not.toHaveBeenCalled();
+  expect(wallet).not.toHaveBeenCalled();
 });
 
 test("cron checks pending and expired invoices after the browser closes", async () => {
   const row = await createOrder("onne", key, { amountUsdCents: 1000 });
   const expired = { ...paid(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
-  await store.sync({ ...expired, paidAt: null, receivedMsat: null, feeMsat: null });
+  await store.sync({ ...expired, paidAt: null, receivedMsat: null });
   const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(expired));
   vi.stubGlobal("fetch", fetcher);
   try {
     await recoverOrders({
       ...bindings,
-      GATEWAY_URL: "https://gateway.example",
-      GATEWAY_TOKEN: "g".repeat(32),
+      WALLET_URL: "https://wallet.example",
+      WALLET_TOKEN: "g".repeat(32),
     });
     expect((await store.getOrder(row.id)).status).toBe("paid");
-    expect(fetcher.mock.calls[0][0]).toBe("https://gateway.example/v1/payments/query");
+    expect(fetcher.mock.calls[0][0]).toBe("https://wallet.example/v1/payments/query");
   } finally {
     vi.unstubAllGlobals();
   }
 });
 
 test("a failed unexposed creation can retry on the same order", async () => {
-  gateway.mockRejectedValueOnce(new Error("creation response lost"));
+  wallet.mockRejectedValueOnce(new Error("creation response lost"));
   const first = await createOrder("onne", key, { amountUsdCents: 1000 });
   expect(first.invoice).toBeNull();
-  gateway.mockImplementation(async (id) => invoice(id));
+  wallet.mockImplementation(async (id) => invoice(id));
   const retry = await createOrder("onne", key, { amountUsdCents: 1000 });
   expect(retry.id).toBe(first.id);
   expect(retry.invoice).toBe("lnbc100u1test");
-  expect(gateway.mock.calls.filter((call) => !call[3])).toHaveLength(2);
+  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(2);
 });

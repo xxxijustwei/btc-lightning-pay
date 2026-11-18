@@ -1,4 +1,4 @@
-import type { GatewayPayment, NewOrder, NewSettlement } from "@btc-lightning-pay/api";
+import type { WalletPayment, NewOrder, NewSettlement } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import { PaymentFailure, UpstreamFailure } from "./errors";
 import type { createPaymentStore, OrderRow } from "./store";
@@ -8,19 +8,20 @@ import { paymentTask } from "./runtime";
 import { errorFields, type PaymentLog } from "./logging";
 
 export type Quote = { rateUsd: string; quotedAt: Date };
-export type GatewayClient = (
+export type WalletClient = (
   id: string,
   amountSat: number,
   signal?: AbortSignal,
   paymentHash?: string,
-) => Promise<typeof GatewayPayment.Type | null>;
+  invoice?: string,
+) => Promise<typeof WalletPayment.Type | null>;
 export function createPaymentService(
   store: ReturnType<typeof createPaymentStore>,
   quote: (signal?: AbortSignal) => Promise<Quote>,
-  gateway: GatewayClient,
+  wallet: WalletClient,
   log: PaymentLog,
 ) {
-  const sync = (payment: typeof GatewayPayment.Type) =>
+  const sync = (payment: typeof WalletPayment.Type) =>
     paymentTask("confirm_payment", () => store.sync(payment));
   const ensureInvoice = Effect.fn("payments.ensureInvoice")(function* (row: OrderRow) {
     if (row.paidAt) return row;
@@ -28,20 +29,20 @@ export function createPaymentService(
       return yield* paymentTask("attach_invoice", (signal) =>
         store.attachInvoice(row.id, async (current) => {
           try {
-            return await gateway(current.id, current.amountSat, signal);
+            return await wallet(current.id, current.amountSat, signal);
           } catch (error) {
             throw error instanceof UpstreamFailure
               ? error
-              : new UpstreamFailure({ dependency: "gateway", reason: "network" });
+              : new UpstreamFailure({ dependency: "wallet", reason: "network" });
           }
         }),
       );
     const result = yield* Effect.tryPromise({
-      try: (signal) => gateway(row.id, row.amountSat, signal, row.paymentHash!),
+      try: (signal) => wallet(row.id, row.amountSat, signal, row.paymentHash!, row.invoice!),
       catch: (error) =>
         error instanceof UpstreamFailure
           ? error
-          : new UpstreamFailure({ dependency: "gateway", reason: "network" }),
+          : new UpstreamFailure({ dependency: "wallet", reason: "network" }),
     });
     return result ? yield* sync(result) : row;
   });

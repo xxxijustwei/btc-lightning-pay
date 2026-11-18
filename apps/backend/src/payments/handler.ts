@@ -4,7 +4,7 @@ import { Context, Schema } from "effect";
 import { type AuthBindings } from "../auth/config";
 import { handleAuth } from "../auth/handler";
 import { paymentApp, PaymentRuntime } from "./app";
-import { createGatewayClient } from "./gateway-client";
+import { createWalletClient } from "./wallet-client";
 import { createPaymentService } from "./service";
 import { errorFields, paymentLogger } from "./logging";
 import { PaymentFailure } from "./errors";
@@ -13,8 +13,8 @@ import { createQuoteSource } from "./quote";
 
 export type PaymentsBindings = AuthBindings & {
   PAYMENTS_ADMIN_IDS?: string;
-  GATEWAY_URL?: string;
-  GATEWAY_TOKEN?: string;
+  WALLET_URL?: string;
+  WALLET_TOKEN?: string;
 };
 const quote = createQuoteSource();
 const json = (body: unknown, status: number) =>
@@ -105,9 +105,9 @@ async function handleRequest(
       path.endsWith("/orders") &&
       request.method === "POST"
     ) {
-      if (!env.GATEWAY_URL || !env.GATEWAY_TOKEN)
-        throw new PaymentFailure({ code: "GATEWAY_NOT_CONFIGURED" });
-      createGatewayClient(env.GATEWAY_URL, env.GATEWAY_TOKEN);
+      if (!env.WALLET_URL || !env.WALLET_TOKEN)
+        throw new PaymentFailure({ code: "WALLET_NOT_CONFIGURED" });
+      createWalletClient(env.WALLET_URL, env.WALLET_TOKEN);
     }
     const databaseUrl = env.HYPERDRIVE?.connectionString || env.DATABASE_URL;
     if (!databaseUrl) throw new PaymentFailure({ code: "PAYMENTS_NOT_CONFIGURED" });
@@ -116,14 +116,15 @@ async function handleRequest(
     const payments = createPaymentService(
       store,
       quote,
-      async (id, amount, signal, paymentHash) => {
-        if (!env.GATEWAY_URL || !env.GATEWAY_TOKEN)
-          throw new PaymentFailure({ code: "GATEWAY_NOT_CONFIGURED" });
-        return createGatewayClient(env.GATEWAY_URL, env.GATEWAY_TOKEN, fetch, requestId)(
+      async (id, amount, signal, paymentHash, invoice) => {
+        if (!env.WALLET_URL || !env.WALLET_TOKEN)
+          throw new PaymentFailure({ code: "WALLET_NOT_CONFIGURED" });
+        return createWalletClient(env.WALLET_URL, env.WALLET_TOKEN, fetch, requestId)(
           id,
           amount,
           signal,
           paymentHash,
+          invoice,
         );
       },
       log,

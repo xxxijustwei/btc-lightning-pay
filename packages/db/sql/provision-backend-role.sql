@@ -1,4 +1,4 @@
--- Run as the migration owner after migrations. Set this login's password securely
+-- Run as the database owner after schema initialization. Set this login's password securely
 -- in the database console, then use it in DATABASE_URL / Hyperdrive.
 BEGIN;
 SET LOCAL lock_timeout = '5s';

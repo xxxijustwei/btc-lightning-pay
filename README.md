@@ -1,16 +1,16 @@
 # BTC Lightning Pay
 
-Monorepo：TanStack Start 前端、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、本地 phoenixd demo，以及多商户收款、支付同步和人工结算后端。
+Monorepo：TanStack Start 前端、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
 
 业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
 
-本地开票演示：使用 OrbStack 运行 phoenixd，打开 `/demo` 即可创建主网 BOLT11 invoice、查看二维码并复制，无需登录。部署、钱包备份与验收步骤见 [phoenixd demo](docs/phoenixd-demo.md)。此阶段不执行付款或验证到账。
+钱包服务接入与部署见 [后端说明](docs/backend-setup.md)。旧节点 demo 已移除。
 
 AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUDE.md) 引用同一份规则；按任务阅读 `.patterns/` 中的工程规范。Skills 由开发者单独安装和维护。
 
 ## 快速开始
 
-使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Gateway 使用 Node 原生 TypeScript，要求 Node 26；其他应用也支持满足根 `package.json` engines 的 Node.js 22/24。
+使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Wallet 使用 Node 原生 TypeScript，要求 Node 26；其他应用也支持满足根 `package.json` engines 的 Node.js 22/24。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -36,10 +36,10 @@ npx --yes pnpm@12.21.0 dev
 apps/
   frontend/       React + TanStack Start + Tailwind CSS
   backend/        Workers + Effect HttpApi
-  gateway/        Node.js + Effect HttpApi，phoenixd 开票及持久化同步
+  wallet/        Node.js + Effect HttpApi，Breez Spark SDK 平台钱包
 packages/
   api/            Effect Schema 与 HTTP API 契约
-  db/             Drizzle schema、迁移和 PostgreSQL 连接
+  db/             Drizzle schema、建库基线和 PostgreSQL 连接
   ui/             shadcn/ui 组件源码、主题与样式工具
 ```
 
@@ -49,23 +49,23 @@ packages/
 
 ## 常用命令
 
-| 命令               | 用途                                       |
-| ------------------ | ------------------------------------------ |
-| `pnpm dev`         | 同时启动前后端                             |
-| `pnpm dev:gateway` | 独立启动北美收款后端（需配置 `.env`）      |
-| `pnpm build`       | 构建前端、打包后端；后端仅 dry-run，不部署 |
-| `pnpm typegen`     | 根据 Wrangler 配置生成运行时与绑定类型     |
-| `pnpm typecheck`   | 生成绑定类型及前端路由，然后检查各包类型   |
-| `pnpm check`       | Vite+ 格式和 lint 检查                     |
-| `pnpm format`      | 自动格式化                                 |
-| `pnpm test`        | 后端契约测试、前端交互与依赖集成测试       |
-| `pnpm ready`       | 执行类型、规范、测试和构建检查             |
+| 命令              | 用途                                       |
+| ----------------- | ------------------------------------------ |
+| `pnpm dev`        | 同时启动前后端                             |
+| `pnpm dev:wallet` | 独立启动北美收款后端（需配置 `.env`）      |
+| `pnpm build`      | 构建前端、打包后端；后端仅 dry-run，不部署 |
+| `pnpm typegen`    | 根据 Wrangler 配置生成运行时与绑定类型     |
+| `pnpm typecheck`  | 生成绑定类型及前端路由，然后检查各包类型   |
+| `pnpm check`      | Vite+ 格式和 lint 检查                     |
+| `pnpm format`     | 自动格式化                                 |
+| `pnpm test`       | 后端契约测试、前端交互与依赖集成测试       |
+| `pnpm ready`      | 执行类型、规范、测试和构建检查             |
 
 前端 `typecheck` 会先构建以生成 TanStack 路由类型，因此比单独运行 TypeScript 稍慢。生成的路由和 Workers 类型不纳入版本控制；首次安装后执行 `pnpm typecheck` 即可补齐。
 
 ## 环境配置
 
-健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；仅限预开户用户。配置、迁移和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
+健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；仅限预开户用户。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
 前端 `wrangler.jsonc` 的 `BACKEND` 绑定名称对应后端 Worker 的 `name`；重命名时需同步修改。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
@@ -133,7 +133,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-已包含 OrbStack/Docker Compose 下的 phoenixd 本地部署与开票 demo，以及多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页面与管理页面交给 Claude 实现。旧 `/demo` 暂时保留用于本地节点排查；不用于生产商户收款。不包含商户独立钱包、退款、自动提现、CI/CD 或云端部署。
+已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页面与管理页面交给 Claude 实现。不包含商户独立钱包、退款或自动提现。业务库按 greenfield 全新初始化；钱包密钥和 SDK 数据库需独立备份。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

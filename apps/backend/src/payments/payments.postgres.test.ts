@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath, URL } from "node:url";
+import { URL } from "node:url";
 import { createDatabase } from "@btc-lightning-pay/db/client";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test";
@@ -79,11 +78,11 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   }
   beforeAll(async () => {
     admin = connect();
-    await migrate(admin.database, {
-      migrationsFolder: fileURLToPath(new URL("../../../../packages/db/drizzle", import.meta.url)),
-      migrationsSchema: "public",
-      migrationsTable: "__btc_lightning_pay_migrations",
-    });
+    await admin.database.execute(
+      sql.raw(
+        readFileSync(new URL("../../../../packages/db/sql/schema.sql", import.meta.url), "utf8"),
+      ),
+    );
     await admin.database.execute(
       sql.raw(
         readFileSync(
@@ -156,7 +155,6 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       expiresAt: new Date(Date.now() + 3600000).toISOString(),
       paidAt: null,
       receivedMsat: null,
-      feeMsat: null,
     }));
     const pending = clients
       .slice(0, 2)
@@ -185,7 +183,6 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       expiresAt: new Date(Date.now() + 3600000).toISOString(),
       paidAt: new Date().toISOString(),
       receivedMsat: 10000000,
-      feeMsat: 0,
     });
     const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);
     const pending = Promise.allSettled(
@@ -219,8 +216,8 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   async function seedPaid(id: string, size: number) {
     await admin.database
       .execute(sql`WITH ids AS (SELECT gen_random_uuid() AS id, n FROM generate_series(1,${size}::int) n)
-      INSERT INTO payment_order(id,merchant_id,idempotency_key,amount_usd_cents,amount_sat,rate_usd,quoted_at,status,invoice,payment_hash,expires_at,paid_at,received_msat,fee_msat)
-      SELECT id,${id},'seed-'||n,1000,10000,'100000',now(),'paid','lnbc100u1test',md5(id::text)||md5(id::text),now()+interval '1 hour',now(),10000000,0 FROM ids`);
+      INSERT INTO payment_order(id,merchant_id,idempotency_key,amount_usd_cents,amount_sat,rate_usd,quoted_at,status,invoice,payment_hash,expires_at,paid_at,received_msat)
+      SELECT id,${id},'seed-'||n,1000,10000,'100000',now(),'paid','lnbc100u1test',md5(id::text)||md5(id::text),now()+interval '1 hour',now(),10000000 FROM ids`);
   }
   test.each([5000, 10000])(
     "a %i-order batch has an exact fixed total and paginated history",
@@ -347,14 +344,14 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const id = await fixture();
     const entered = deferred<void>(),
       quote = deferred<typeof price>();
-    const gateway = vi.fn(async () => null);
+    const wallet = vi.fn(async () => null);
     const service = createPaymentService(
       createPaymentStore(clients[0].database),
       async () => {
         entered.resolve();
         return quote.promise;
       },
-      gateway,
+      wallet,
       vi.fn(),
     );
     const pending = Effect.runPromise(service.createOrder(id, "delayed-quote-key", input)).then(
@@ -369,6 +366,6 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       quote.resolve(price);
     }
     expect(await pending).toMatchObject({ code: "MERCHANT_DISABLED" });
-    expect(gateway).not.toHaveBeenCalled();
+    expect(wallet).not.toHaveBeenCalled();
   });
 });

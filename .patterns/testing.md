@@ -43,7 +43,7 @@ The backend build is a deployment dry-run, not a remote deployment.
   build checks when those behaviors change. Trivial documentation edits need none.
 
 Database/auth integration tests run in the backend project with isolated PGlite,
-applying `packages/db/drizzle` migrations and the supplied provisioning SQL.
+applying `packages/db/sql/schema.sql` and the supplied provisioning SQL.
 Mock only connection creation and mail delivery; keep the actual ORM and auth
 library in the flow. Test public-table access as a non-owner, non-BYPASSRLS role.
 Real Supabase, Resend delivery, and deployed Workers require separate integration

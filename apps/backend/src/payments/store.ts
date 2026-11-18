@@ -1,7 +1,7 @@
 import type { Database } from "@btc-lightning-pay/db/client";
 import { merchant, paymentOrder, settlement } from "@btc-lightning-pay/db/schema";
-import type { GatewayPayment, NewOrder } from "@btc-lightning-pay/api";
-import { getTableColumns, and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import type { WalletPayment, NewOrder } from "@btc-lightning-pay/api";
+import { getTableColumns, and, desc, eq, gte, inArray, lt, lte, sql, type SQL } from "drizzle-orm";
 import { PaymentFailure } from "./errors";
 import { assertSameOrder, paymentUpdate } from "./rules";
 
@@ -47,7 +47,7 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
     getOrder,
     async attachInvoice(
       id: string,
-      create: (row: OrderRow) => Promise<typeof GatewayPayment.Type | null>,
+      create: (row: OrderRow) => Promise<typeof WalletPayment.Type | null>,
     ) {
       // Lock only this order so concurrent requests cannot replace an invoice already returned to a payer.
       return transaction({ admin: true }, async (tx) => {
@@ -83,14 +83,21 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         const rows = await tx
           .select()
           .from(paymentOrder)
-          .where(inArray(paymentOrder.status, ["creating", "pending"]))
+          .where(
+            and(
+              inArray(paymentOrder.status, ["creating", "pending"]),
+              lte(paymentOrder.attemptedAt, sql`clock_timestamp()`),
+            ),
+          )
           .orderBy(paymentOrder.attemptedAt, paymentOrder.id)
-          .limit(50)
+          .limit(500)
           .for("update", { skipLocked: true });
         if (rows.length)
           await tx
             .update(paymentOrder)
-            .set({ attemptedAt: new Date() })
+            .set({
+              attemptedAt: sql`clock_timestamp() + CASE WHEN ${paymentOrder.expiresAt} < clock_timestamp() THEN interval '15 minutes' ELSE interval '1 minute' END`,
+            })
             .where(
               inArray(
                 paymentOrder.id,
@@ -158,7 +165,7 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         return row;
       });
     },
-    async sync(payment: typeof GatewayPayment.Type) {
+    async sync(payment: typeof WalletPayment.Type) {
       return transaction({ admin: true }, async (tx) => {
         const [row] = await tx
           .select()

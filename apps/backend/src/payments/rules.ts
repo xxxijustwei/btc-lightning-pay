@@ -1,11 +1,11 @@
-import type { GatewayPayment, NewOrder } from "@btc-lightning-pay/api";
+import type { WalletPayment, NewOrder } from "@btc-lightning-pay/api";
 import type { OrderRow } from "./store";
 import { PaymentFailure } from "./errors";
 export function assertSameOrder(row: OrderRow, input: typeof NewOrder.Type) {
   if (row.amountUsdCents !== input.amountUsdCents || row.reference !== (input.reference ?? ""))
     throw new PaymentFailure({ code: "IDEMPOTENCY_CONFLICT" });
 }
-export function paymentUpdate(row: OrderRow, payment: typeof GatewayPayment.Type) {
+export function paymentUpdate(row: OrderRow, payment: typeof WalletPayment.Type) {
   const expiry = new Date(payment.expiresAt);
   const paidAt = payment.paidAt ? new Date(payment.paidAt) : null;
   if (
@@ -18,10 +18,7 @@ export function paymentUpdate(row: OrderRow, payment: typeof GatewayPayment.Type
   )
     throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
   if (row.paidAt) {
-    if (
-      payment.paidAt &&
-      (row.receivedMsat !== payment.receivedMsat || row.feeMsat !== payment.feeMsat)
-    )
+    if (payment.paidAt && row.receivedMsat !== payment.receivedMsat)
       throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
     return undefined;
   }
@@ -29,11 +26,10 @@ export function paymentUpdate(row: OrderRow, payment: typeof GatewayPayment.Type
     paidAt &&
     (payment.receivedMsat === null ||
       payment.receivedMsat <= 0 ||
-      payment.feeMsat === null ||
-      payment.receivedMsat + payment.feeMsat !== row.amountSat * 1000)
+      payment.receivedMsat !== row.amountSat * 1000)
   )
     throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
-  if (!paidAt && (payment.receivedMsat !== null || payment.feeMsat !== null))
+  if (!paidAt && payment.receivedMsat !== null)
     throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
   return {
     invoice: payment.invoice,
@@ -41,7 +37,6 @@ export function paymentUpdate(row: OrderRow, payment: typeof GatewayPayment.Type
     expiresAt: expiry,
     paidAt,
     receivedMsat: payment.receivedMsat,
-    feeMsat: payment.feeMsat,
     status: paidAt ? "paid" : "pending",
   };
 }

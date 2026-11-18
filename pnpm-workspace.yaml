@@ -3,6 +3,7 @@ packages:
   - packages/*
 
 catalog:
+  "@breeztech/breez-sdk-spark": 0.28.4
   "@effect/platform-node": 4.1.4
   "input-otp": 1.5.0
   "better-auth": 1.7.25
@@ -52,6 +53,7 @@ catalog:
   wrangler: 4.163.0
 
 allowBuilds:
+  better-sqlite3: false # SDK uses PostgreSQL, not its optional SQLite backend.
   esbuild: true
   workerd: true
 

@@ -9,8 +9,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate"
+    "generate": "node src/generate.ts",
+    "init": "node --env-file-if-exists=.env src/init.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

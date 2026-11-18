@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath, URL as NodeURL } from "node:url";
+import { URL as NodeURL } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
 import { sql } from "drizzle-orm";
 import * as schema from "@btc-lightning-pay/db/schema";
 import { beforeAll, afterAll, beforeEach, afterEach, test, expect, vi } from "vite-plus/test";
@@ -57,13 +56,9 @@ function cookieOf(response: Response) {
     .join("; ");
 }
 beforeAll(async () => {
-  await migrate(database, {
-    migrationsFolder: fileURLToPath(
-      new NodeURL("../../../../packages/db/drizzle", import.meta.url),
-    ),
-    migrationsSchema: "public",
-    migrationsTable: "__btc_lightning_pay_migrations",
-  });
+  await pg.exec(
+    readFileSync(new NodeURL("../../../../packages/db/sql/schema.sql", import.meta.url), "utf8"),
+  );
 });
 afterAll(async () => {
   await pg.close();
@@ -78,7 +73,7 @@ beforeEach(async () => {
   close.mockClear();
 });
 
-test("migration and supplied SQL provision idempotently without pre-verifying email", async () => {
+test("schema and supplied SQL provision idempotently without pre-verifying email", async () => {
   await pg.exec(provision);
   await pg.exec(provision);
   const users = await database.select().from(schema.user);
@@ -229,13 +224,7 @@ test("RLS blocks public API roles even if Supabase grants table access", async (
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO auth_data_api;
     SET ROLE auth_data_api;`);
   try {
-    for (const table of [
-      "user",
-      "account",
-      "session",
-      "verification",
-      "__btc_lightning_pay_migrations",
-    ]) {
+    for (const table of ["user", "account", "session", "verification"]) {
       const result = await pg.query<{ count: number }>(
         `SELECT count(*)::int AS count FROM public."${table}"`,
       );

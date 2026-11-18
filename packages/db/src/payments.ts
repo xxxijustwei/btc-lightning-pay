@@ -96,7 +96,7 @@ export const paymentOrder = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     receivedMsat: bigint("received_msat", { mode: "number" }),
-    feeMsat: bigint("fee_msat", { mode: "number" }),
+
     settlementId: uuid("settlement_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
@@ -113,7 +113,7 @@ export const paymentOrder = pgTable(
     index("order_settlement").on(t.merchantId, t.settlementId),
     index("order_recovery")
       .on(t.attemptedAt, t.id)
-      .where(sql`${t.status} = 'creating'`),
+      .where(sql`${t.status} IN ('creating','pending')`),
     foreignKey({
       columns: [t.merchantId, t.settlementId],
       foreignColumns: [settlement.merchantId, settlement.id],
@@ -130,7 +130,7 @@ export const paymentOrder = pgTable(
     ),
     check(
       "order_paid_consistency",
-      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.paymentHash} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.feeMsat} IS NOT NULL AND ${t.receivedMsat} > 0 AND ${t.feeMsat} >= 0 AND ${t.receivedMsat} + ${t.feeMsat} = ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL AND ${t.feeMsat} IS NULL)`,
+      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.paymentHash} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.receivedMsat} > 0 AND ${t.receivedMsat} = ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL)`,
     ),
     check("order_settled_paid", sql`${t.settlementId} IS NULL OR ${t.status} = 'paid'`),
     pgPolicy("order_access", {

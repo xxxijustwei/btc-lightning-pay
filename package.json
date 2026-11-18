@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --parallel --filter @btc-lightning-pay/frontend --filter @btc-lightning-pay/backend run dev",
-    "dev:gateway": "pnpm --filter @btc-lightning-pay/gateway dev",
+    "dev:wallet": "pnpm --filter @btc-lightning-pay/wallet dev",
     "dev:frontend": "pnpm --filter @btc-lightning-pay/frontend dev",
     "dev:backend": "pnpm --filter @btc-lightning-pay/backend dev",
     "build": "pnpm -r run build",

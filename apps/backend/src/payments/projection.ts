@@ -25,7 +25,7 @@ export function adminOrder(row: OrderRow & { settlementStatus?: string | null })
     paidAt: row.paidAt?.toISOString() ?? null,
     paymentHash: row.paymentHash,
     receivedMsat: row.receivedMsat,
-    feeMsat: row.feeMsat,
+
     settlementId: row.settlementId,
     settlementStatus:
       row.settlementStatus === "pending"

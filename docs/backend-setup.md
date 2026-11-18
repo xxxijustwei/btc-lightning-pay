@@ -1,31 +1,32 @@
-# 第一阶段后端接入与部署
+# Breez Spark 后端接入与部署
 
-`apps/backend` 是 Cloudflare Worker 业务后端，`apps/gateway` 是 phoenixd 同机的标准独立后端服务。二者使用共享 Effect HttpApi 契约。Gateway 的 HTTP 层、业务服务、phoenixd 客户端、配置和启动生命周期分别位于 `app.ts`、`gateway.ts`、`phoenix.ts`、`config.ts` 和 `server.ts`。
+`apps/backend` 是 Cloudflare Worker 业务后端，`apps/wallet` 是北美 Node.js 26 钱包服务（wallet-service）。钱包服务直接运行 `@breeztech/breez-sdk-spark` 0.28.4，平台控制一个主网 Spark 钱包；商户、订单和结算由 Worker 管理。用户前端不加载 SDK、不接触钱包密钥。
 
-本次只实现本地代码、迁移与部署模板；没有执行远端迁移、服务器部署、转账或真实 Cash App 付款。旧 demo 保留，不删除钱包或 OrbStack 数据卷。第一阶段范围见 [业务方案](backend-phase-one.md)。
+## 本地初始化
 
-## 配置与本地启动
+1. `pnpm install --frozen-lockfile`。SDK 的可选 SQLite 构建被禁用，实际使用 PostgreSQL。
+2. 准备两个独立 PostgreSQL 数据库和账号：业务数据库，以及 SDK 专用数据库。不要让 SDK 使用业务数据库；业务账号配置见 [认证配置](auth-setup.md)。
+3. 在 `packages/db/.env` 配置所有者连接 `DATABASE_ADMIN_URL`，执行 `pnpm --filter @btc-lightning-pay/db run init`，然后由所有者执行 `packages/db/sql/provision-backend-role.sql` 并安全设置账号密码。Worker 使用受限 `btc_backend` 账号。
+4. 当前为 greenfield：只维护 `packages/db/sql/schema.sql` 全新建库基线，不维护历史升级。`init` 只用于空数据库，已存在表时会失败并回滚，不自动删除数据。模型变更后执行 `pnpm --filter @btc-lightning-pay/db generate` 重新生成基线。需要重置时删除并重建明确指定的开发业务数据库，然后重新 init 和预开户；不要重置 SDK 钱包库。
+5. 安全生成并备份一套新的 BIP39 助记词，将 `apps/wallet/.env.example` 复制为 `.env` 后填写。助记词不应来自文档示例、聊天或代码仓库。执行 `pnpm --filter @btc-lightning-pay/wallet identity` 离线导出公钥，将输出填入 `BREEZ_IDENTITY_PUBKEY`；服务启动会校验该身份，配置错误时拒绝启动。
+6. 在 Worker `.dev.vars` 中合并下表配置；不要覆盖已有认证配置。分别执行 `pnpm dev:wallet` 和 `pnpm dev:backend`。默认钱包入口为 `127.0.0.1:9741`。
 
-1. 使用 Node.js 26，在仓库根目录执行 `pnpm install --frozen-lockfile`。
-2. 按 [认证配置](auth-setup.md) 准备项目数据库和管理员邮箱账号。审查迁移后，用迁移所有者连接执行 `pnpm --filter @btc-lightning-pay/db migrate`。迁移会增加商户、订单和结算表，不删除认证数据。
-3. 由数据库所有者执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql)，安全设置 `btc_backend` 的登录密码。Worker 的 `DATABASE_URL`／Hyperdrive 使用此账号，不能使用超级用户或具有 BYPASSRLS 的账号。SQL 为认证表授予后台所需访问，为支付表保留事务级 RLS；不授予迁移记录表访问或删除支付历史权限。迁移账号保持独立。Hyperdrive 查询缓存必须关闭，避免支付状态和登录状态陈旧。
-4. 在已有 `apps/backend/.dev.vars` 中**合并**新增变量，不覆盖现有配置。复制 `apps/gateway/.env.example` 为 `.env` 并填写下表。服务间 `GATEWAY_TOKEN` 至少 32 字符，可用 `openssl rand -hex 32` 生成。
-5. 启动已有 OrbStack phoenixd（见 [demo 文档](phoenixd-demo.md)）；`PHOENIX_HTTP_PASSWORD` 使用其 limited-access 密码。不要复制助记词或完整权限密码到 Worker。
-6. 两个终端分别运行 `pnpm dev:backend` 和 `pnpm dev:gateway`。前端需要时再运行 `pnpm dev:frontend`。Gateway 默认只监听 `127.0.0.1:9741`；`GET /health` 是进程存活检查，不证明钱包具备收款流动性。
+| 变量                          | 位置     | 用途                                            |
+| ----------------------------- | -------- | ----------------------------------------------- |
+| `PAYMENTS_ADMIN_IDS`          | Worker   | 已预开户管理员的 user.id 白名单                 |
+| `WALLET_URL`                  | Worker   | 本地 HTTP loopback 或生产 HTTPS 钱包服务 origin |
+| `WALLET_TOKEN`                | 两端     | 至少 32 字符的随机服务间 Bearer token           |
+| `BREEZ_API_KEY`               | 钱包服务 | Breez 接入凭证                                  |
+| `BREEZ_MNEMONIC`              | 钱包服务 | 平台钱包助记词，具有签名能力                    |
+| `BREEZ_IDENTITY_PUBKEY`       | 钱包服务 | 预期的钱包身份公钥                              |
+| `BREEZ_DATABASE_URL`          | 钱包服务 | SDK 专用 PostgreSQL；远端连接配置验证证书的 TLS |
+| `WALLET_HOST` / `WALLET_PORT` | 钱包服务 | 默认 127.0.0.1 / 9741                           |
 
-| 变量                    | 放置位置 | 说明                                                                   |
-| ----------------------- | -------- | ---------------------------------------------------------------------- |
-| `PAYMENTS_ADMIN_IDS`    | Worker   | 已预开户用户的数据库 `user.id`，多个以逗号分隔；不填则无人拥有管理权限 |
-| `GATEWAY_URL`           | Worker   | 本地 `http://127.0.0.1:9741`，线上为 Gateway HTTPS origin              |
-| `GATEWAY_TOKEN`         | 两端     | Worker 调用 Gateway 的 Bearer token                                    |
-| `PHOENIX_URL`           | Gateway  | `http://127.0.0.1:9740`，phoenixd 不开放公网                           |
-| `PHOENIX_HTTP_PASSWORD` | Gateway  | phoenixd limited-access 密码                                           |
-
-URL 配置只接受 origin，不允许路径、用户名、查询参数。除 localhost／127.0.0.1 的本地 HTTP 外须使用 HTTPS。业务端创建订单需要登录配置之外的 Gateway 配置，实际开票采用实时 Coinbase 公共行情；没有行情时返回 503，不悄悄改为固定汇率。测试中的固定行情仅由依赖替换提供。
+平台不向商户扣收款手续费，订单 API 和数据库均没有费用字段。商户应收为固定 `amountSat`；`receivedMsat` 直接来自 SDK 收款金额乘 1000。当前只确认完成且到账金额等于 invoice 金额的支付，异常金额保留待核对，不能猜测成功。钱包操作仍可能有底层费用，但不进入订单结算计算。
 
 ## 给 Claude 的接口约定
 
-共享 Schema 从 `@btc-lightning-pay/api` 导入；完整路径和字段位于 [payments.ts](../packages/api/src/payments.ts)。前端添加同源 `/api/public/*` 与 `/api/admin/*` 代理，复用 `proxyBackendRequest` 和 `BACKEND` binding；不要代理 `/api/internal/*`，不要把 Gateway token 暴露给浏览器。管理员写请求必须保留 `Origin`，且与 `BETTER_AUTH_URL` 精确相同；管理接口同时要求真实会话和管理员 ID 白名单。
+共享 Schema 从 `@btc-lightning-pay/api` 导入；完整路径和字段位于 [payments.ts](../packages/api/src/payments.ts)。前端添加同源 `/api/public/*` 与 `/api/admin/*` 代理，复用 `proxyBackendRequest` 和 `BACKEND` binding；不要代理 `/api/internal/*`，不要把 Wallet token 暴露给浏览器。管理员写请求必须保留 `Origin`，且与 `BETTER_AUTH_URL` 精确相同；管理接口同时要求真实会话和管理员 ID 白名单。
 
 创建商户：`POST /api/admin/merchants`，JSON `{"id":"onne"}`。商户 ID 为 3–32 位小写字母、数字或连字符，必须字母开头，创建后不能修改或删除。`PATCH /api/admin/merchants/onne` 的 `{"enabled":false}` 只阻止新订单。
 
@@ -60,7 +61,7 @@ HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代
 
 `invoice` 和 `expiresAt` 在 `creating` 时为空。公开响应不包含备注、payment hash、费用或结算信息；链接持有者可以查看本笔付款信息，不可列出商户历史。支付状态说明见 [方案](backend-phase-one.md)。Cash App 入口按参考页使用 `https://cash.app/launch/lightning/{invoice}`；这一跳转仍待真机验证。
 
-商户和订单列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、到账净额 `receivedMsat`、费用 `feeMsat`、到账时间及 `settlementId`、`settlementStatus`；费用单位是 millisatoshi，1 sat = 1000 msat。
+商户和订单列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、实际到账金额 `receivedMsat`、到账时间及 `settlementId`、`settlementStatus`；到账金额单位是 millisatoshi，1 sat = 1000 msat。
 
 `GET /api/admin/merchants/onne/summary` 返回 `merchantId` 和以下口径（金额单位 sats）：
 
@@ -105,9 +106,9 @@ Content-Type: application/json
 
 凭证去首尾空白后为 1–1000 字符，取消原因 1–500 字符。同批次相同凭证重复确认／相同原因重复取消返回原结果，保留首次操作者和时间；不同内容返回对应 409 冲突。确认与取消并发只有一个成功。转账结果不明时保持待付款，先核实，不取消或再次付款。
 
-截止时刻由数据库在生成时取快照，按毫秒记录；包含快照可见且 paidAt 不晚于截止时刻的订单，包括往日积累。之后的新到账、迟到确认不改变本批，顺延下一批。API 返回 UTC ISO8601，前端固定按北京时间 `Asia/Shanghai` 展示；不以午夜自动切账。创建结算单不会同步扫描所有 phoenixd invoice。
+截止时刻由数据库在生成时取快照，按毫秒记录；包含快照可见且 paidAt 不晚于截止时刻的订单，包括往日积累。之后的新到账、迟到确认不改变本批，顺延下一批。API 返回 UTC ISO8601，前端固定按北京时间 `Asia/Shanghai` 展示；不以午夜自动切账。创建结算单不会同步扫描所有 钱包 invoice。
 
-业务错误与输入校验错误统一返回 `{ "code": "...", "message": "..." }`。无效 JSON、Schema 输入校验失败返回 400 `INVALID_INPUT`；内部响应编码错误返回 500 `INTERNAL_ERROR`，不暴露原始校验内容。Worker 支付响应和 Gateway 响应带 `X-Request-Id`，可用于关联日志。
+业务错误与输入校验错误统一返回 `{ "code": "...", "message": "..." }`。无效 JSON、Schema 输入校验失败返回 400 `INVALID_INPUT`；内部响应编码错误返回 500 `INTERNAL_ERROR`，不暴露原始校验内容。Worker 支付响应和 Wallet 响应带 `X-Request-Id`，可用于关联日志。
 
 | HTTP      | 常见 code / 含义                                                                                                                                                             |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -118,50 +119,33 @@ Content-Type: application/json
 | 429       | `RATE_LIMITED`：每商户每秒最多 5 个新订单；重试使用原幂等键                                                                                                                  |
 | 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                                                                                                                    |
 
-## 付款查询与恢复
+## 钱包查询与恢复
 
-调用方向始终是 Worker → Gateway → phoenixd。Gateway 无数据库、无后台轮询、无 Worker 回调凭证。两个接口均要求 `Authorization: Bearer <GATEWAY_TOKEN>`：`POST /v1/invoices` 接受 `{orderId, amountSat}`；`POST /v1/payments/query` 接受 `{orderId, amountSat, paymentHash}`，查询指定 invoice 并验证订单和金额。旧 webhook 和 Worker `/api/internal/payments/sync` 已移除。
+调用方向为 Worker → wallet-service → SDK。钱包服务不回调 Worker，不写业务库，不开放发送资金接口。SDK 使用 Treasury 配置：一个长期实例、后台同步开启、60 秒同步周期、关闭跨设备同步、关闭 Spark 直接支付偏好，保持默认退出恢复数据采集。
 
-Worker 先保存订单和报价，再在该订单的行锁内创建并保存 invoice；仅此步骤持锁等待上游，超时后释放。已保存的 invoice 永不替换。创建响应丢失、数据库保存失败且 invoice 尚未展示时允许重试创建，接受 phoenixd 留下未使用 invoice。它们不纳入业务订单的付款确认；查询使用已保存的 payment hash，不能假设 externalId 唯一。后端提交成功后才向前端返回 invoice。
+两个业务接口均要求 `Authorization: Bearer <WALLET_TOKEN>`：
 
-公开订单查询会刷新尚未支付订单；已支付订单直接读取数据库。Worker 每分钟 Cron 按上次尝试时间轮转补查最多 50 笔 creating/pending 订单，包括已过期但尚未确认付款的 invoice；页面关闭后仍会更新到账。失败保留原状态，下次查询或 Cron 重试，不把网络失败当作支付失败。积压会增加确认延迟，当前不是高吞吐调度系统。
+- `POST /v1/invoices`：`{orderId, amountSat}`，生成有效期 3600 秒的 BOLT11。
+- `POST /v1/payments/query`：`{orderId, amountSat, paymentHash, invoice}`，核对 invoice 的订单说明、网络、金额、hash；只接纳 SDK 已完成的 Lightning 收款记录。
 
-## Dokploy 部署与人工步骤
+响应为 `{orderId, amountSat, paymentHash, invoice, expiresAt, paidAt, receivedMsat}`。未到账时最后两个字段为 null。SDK 的 payment ID 与 payment hash 不混用。SDK 内部记录的 preimage、费用和钱包密钥不出现在接口或日志中。
 
-服务器侧使用 [Compose](../apps/gateway/deploy/compose.yaml) 与 [Gateway Dockerfile](../apps/gateway/Dockerfile)。Worker 继续部署在 Cloudflare。systemd 和 Caddy 模板已移除。
+钱包服务通过 SDK 分页读取已完成的 BTC 收款，构建内存 hash 索引；并发查询合并，10 秒内复用索引。重启后从 SDK PostgreSQL 重建，不依赖内存保证正确性。当前全量索引的耗时和内存随历史收款增长；接近 100,000 笔历史收款前需压测并改成持久化增量索引。SDK 网络同步与该本地索引刷新是两层不同的工作；同步故障或查询故障不会自动把订单标成支付失败。
 
-1. 在 Dokploy 创建 Git 来源的 Docker Compose 项目，选择 `apps/gateway/deploy/compose.yaml`；构建上下文为仓库根目录。
-2. 为项目设置随机 `GATEWAY_TOKEN` 和 phoenixd 的 limited-access `PHOENIX_HTTP_PASSWORD`。新钱包应先单独启动 phoenixd，备份助记词，再从其私有配置取得 limited-access 密码；不要把完整权限密码配置给 Gateway。
-3. 两个服务走 Compose 内部网络，Gateway 使用 `http://phoenixd:9740`。在 Dokploy Domains 中把 Gateway HTTPS 域名路由至 gateway 服务的 9741 端口。phoenixd 不添加域名、不映射主机端口。Gateway 除公开 health 外，业务接口均鉴权。
-4. Worker 配置 HTTPS `GATEWAY_URL` 与相同 `GATEWAY_TOKEN`，配置业务数据库角色、管理员及 Cron 后部署。Gateway 不再需要 Worker 地址或同步 token。
-5. `phoenixd-data` 必须持久化并备份。Compose 项目名改变会改变默认卷名，迁移已有钱包时必须显式复用或恢复目标卷，不能误启动成新钱包。不要删除现有 OrbStack demo 卷。Gateway 本身无需数据卷。
+Worker 先保存订单报价，再创建和保存 invoice。已展示的 invoice 永不替换。未保存、未展示的开票结果丢失时允许重试，接受遗留未使用 invoice。页面查询刷新当前订单；每分钟 Cron 认领最多 500 笔到期任务，以最多 10 个并发补查。普通订单间隔至少一分钟，过期订单间隔十五分钟；失败保留订单，后续重试。过期不是不可逆支付终态，晚发现的完成记录仍能入账。
 
-模板保留关闭自动流动性与手续费额度的保守配置。真实收款前必须单独确认通道／流动性费用预算、钱包备份及可收款能力，再启用适合生产的流动性配置，并由用户完成一笔确认金额的 Cash App 真机付款。部署模板不是已具备主网收款能力的承诺。
+## Dokploy / OrbStack
 
-升级时先停旧 Gateway，确认数据库中已展示 invoice 的 payment hash 完整，再切换 Worker 和 Gateway 新接口。现有 Gateway SQLite 文件应保留备份用于核对，但新服务不会打开或删除它；创建结果未展示的历史订单允许重新开票。旧 demo 保留，生产设置 `APP_ENV=production`。
+使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。只有 wallet-service 容器；SDK 数据库可使用 Dokploy 管理的 PostgreSQL 中的独立库。通过内部网络连接数据库，数据库不需要公网入口。
 
-## 后端边界与验证
+生产在 Dokploy Domains 中将 HTTPS 域名路由到 wallet-service 的 9741 端口。Worker 配置相同 token 和对应 origin。保持单副本，更新时先停止旧实例再启动新实例，不采用两个钱包实例重叠运行的滚动发布。SDK 初始化、同步和身份验证完成后才开始监听 HTTP。
 
-Worker 的 `app.ts` 只适配 HTTP，`service.ts` 编排报价、订单和开票，`rules.ts` 维护纯业务校验，`store.ts` 负责支付事务，`settlements.ts` 负责结算事务、锁和 SQL，`projection.ts` 生成公开／管理响应。外部报价在事务外获取，进入事务后重新验证幂等键、商户启用状态和限流。业务错误使用类型化错误码，由 HTTP 边界映射状态码。
+`GET /health` 为存活检查，`GET /ready` 检查 SDK 最近三分钟内成功同步且没有同步错误；二者都不保证外部 Lightning 路由一定可用。SDK 数据库与钱包恢复材料均需独立备份并演练恢复。删除容器不会清空 PostgreSQL，但误改助记词、数据库或删除钱包库可能破坏钱包恢复能力。业务数据库可重置不意味着钱包数据库可随意重置。
 
-请求取消时，数据库任务等待当前事务提交／回滚结束后才释放连接；已观察到取消的事务在提交前回滚。取消不撤销已经提交的订单。失败日志保留请求 ID、操作和脱敏上游错误分类，不记录 token、完整 invoice 或上游响应正文。
+## 验证与人工验收
 
-常规验证使用 `rtk proxy pnpm ready`。真实 PostgreSQL 并发测试默认跳过，显式设置 `PAYMENT_TEST_DATABASE_URL` 后运行：
+本地自动检查：`pnpm ready`。真实 PostgreSQL 并发测试需要设置 `PAYMENT_TEST_DATABASE_URL`，只允许本机独占的空 `payments_test` 数据库。测试会初始化基线和角色，不可指向业务库。`BREEZ_TEST_DATABASE_URL` 可指向独立本地 `wallet_test`，验证真实 SDK PostgreSQL 的初始化、重连和关闭（公开测试助记词、regtest、不交易）。
 
-```sh
-rtk proxy env PAYMENT_TEST_DATABASE_URL="$PAYMENT_TEST_DATABASE_URL" pnpm test --project backend apps/backend/src/payments/payments.postgres.test.ts
-```
+正式收款前手动完成：主网小额 Cash App 支付、页面关闭后的补记、重启恢复、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。人工结算仍仅登记已完成的外部付款；本服务没有转账 API，实际资金转出流程需另行验收。
 
-此变量只能指向本机独占的临时 `payments_test` 数据库，使用测试容器的迁移所有者账号；不要填写项目数据库连接。测试执行迁移及角色配置，以三个独立的非所有者 `btc_backend` 连接验证锁竞争、重复下单、结算冲突、事务取消、RLS 作用域复位及报价期间的商户停用。用例只清理自身测试数据，测试完成后由创建者销毁临时容器。
-
-## 结算批次升级（0006）
-
-新增迁移 `0006_slippery_iron_man.sql` 扩展 settlement，新增不可变 settlement_item 明细并 FORCE RLS。旧结算全部迁为 settled，确认人／时间沿用历史登记人／时间，cutoffAt 为 null（显示“历史记录，无截止快照”）。迁移先核对原金额与订单之和，空单或不一致将使事务整体回滚，不自动修账。
-
-部署前备份业务数据库，暂停管理端结算写入并等待旧请求结束；执行迁移后重新运行角色配置 SQL，为新明细表授予 SELECT/INSERT 权限，再同步发布新 Worker 和管理前端。此迁移在一个事务内建索引和回填，会持有表锁；lock_timeout 为 5 秒，statement_timeout 为 60 秒。选择维护窗口。已有大表时应先在副本测量，再拆分为在线索引与分批回填方案，不能将此初期迁移当成零停机迁移。
-
-切换后旧 orderIds/amountSat/proof 创建请求被拒绝；结算列表从数组变成分页对象。新 pending 批次存在后不能直接回退旧 Worker，因为旧版会把占用当作已结算；优先前向修复，不用旧备份覆盖新支付或结算数据。无需迁移 Gateway，也没有钱包交易。
-
-结算操作采用商户级事务锁，锁等待上限 5 秒、单条 SQL 执行上限 15 秒。遇到超时返回可重试的服务错误，事务回滚，不会部分生成。创建成功日志记录批次 ID、笔数和耗时，不记录凭证。完整业务规则见 [结算批次方案](settlement-batches-review.md)。
-
-验证记录（2026-11-18）：本机隔离 PostgreSQL 16、多连接、非所有者角色下，5,000 笔生成约 313 ms，10,000 笔约 438 ms；同时验证取消保留明细、重新生成、确认和竞争回滚。数字仅代表本机此次运行，不是线上延迟承诺。历史迁移通过正确金额升级与错误金额拒绝两种用例。
+官方参考：[服务端 Treasury](https://sdk-doc-spark.breez.technology/guide/treasury.html)、[PostgreSQL 存储](https://sdk-doc-spark.breez.technology/guide/customizing.html#with-postgresql-backend)、[收款](https://sdk-doc-spark.breez.technology/guide/receive_payment.html)。

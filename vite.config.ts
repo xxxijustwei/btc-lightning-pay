@@ -18,7 +18,7 @@ export default defineConfig({
       {
         test: {
           name: "backend",
-          include: ["apps/backend/src/**/*.test.ts", "apps/gateway/src/**/*.test.ts"],
+          include: ["apps/backend/src/**/*.test.ts", "apps/wallet/src/**/*.test.ts"],
         },
       },
       {

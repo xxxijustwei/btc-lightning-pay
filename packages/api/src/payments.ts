@@ -49,7 +49,7 @@ export const AdminOrder = Schema.Struct({
   paidAt: Schema.NullOr(Schema.String),
   paymentHash: Schema.NullOr(Schema.String),
   receivedMsat: Schema.NullOr(Millisats),
-  feeMsat: Schema.NullOr(Millisats),
+
   settlementId: Schema.NullOr(OrderId),
   settlementStatus: Schema.NullOr(Schema.Literals(["pending", "settled"])),
 });
@@ -135,11 +135,11 @@ export const paymentErrorStatus = {
   INTERNAL_ERROR: 500,
   QUOTE_UNAVAILABLE: 503,
   SYNC_NOT_CONFIGURED: 503,
-  GATEWAY_NOT_CONFIGURED: 503,
+  WALLET_NOT_CONFIGURED: 503,
   PAYMENTS_NOT_CONFIGURED: 503,
   WEBHOOK_NOT_CONFIGURED: 503,
   PAYMENTS_UNAVAILABLE: 503,
-  GATEWAY_UNAVAILABLE: 503,
+  WALLET_UNAVAILABLE: 503,
   AMOUNT_OVERFLOW: 503,
 } as const;
 export type PaymentErrorCode = keyof typeof paymentErrorStatus;
@@ -255,8 +255,8 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
   ),
 );
 
-export const GatewayRequest = Schema.Struct({ orderId: OrderId, amountSat: Sats });
-export const GatewayInvoice = Schema.Struct({
+export const WalletRequest = Schema.Struct({ orderId: OrderId, amountSat: Sats });
+export const WalletInvoice = Schema.Struct({
   orderId: OrderId,
   amountSat: Sats,
   paymentHash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
@@ -266,31 +266,35 @@ export const GatewayInvoice = Schema.Struct({
   ),
   expiresAt: Schema.String,
 });
-export const GatewayPayment = Schema.Struct({
-  ...GatewayInvoice.fields,
+export const WalletPayment = Schema.Struct({
+  ...WalletInvoice.fields,
   paidAt: Schema.NullOr(Schema.String),
   receivedMsat: Schema.NullOr(Millisats),
-  feeMsat: Schema.NullOr(Millisats),
 });
-export const GatewayLookup = Schema.Struct({
-  ...GatewayRequest.fields,
-  paymentHash: GatewayInvoice.fields.paymentHash,
+export const WalletLookup = Schema.Struct({
+  ...WalletRequest.fields,
+  paymentHash: WalletInvoice.fields.paymentHash,
+  invoice: WalletInvoice.fields.invoice,
 });
-export const GatewayApi = HttpApi.make("LightningGatewayApi").add(
-  HttpApiGroup.make("gateway").add(
+export const WalletApi = HttpApi.make("LightningWalletApi").add(
+  HttpApiGroup.make("wallet").add(
     HttpApiEndpoint.get("health", "/health", {
       success: Schema.Struct({ status: Schema.Literal("ok") }),
     }),
+    HttpApiEndpoint.get("ready", "/ready", {
+      success: Schema.Struct({ status: Schema.Literal("ok") }),
+      error: errors,
+    }),
     HttpApiEndpoint.post("create", "/v1/invoices", {
       headers: { authorization: Schema.optional(Schema.String) },
-      payload: GatewayRequest,
-      success: [GatewayPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
+      payload: WalletRequest,
+      success: [WalletPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
       error: errors,
     }),
     HttpApiEndpoint.post("lookup", "/v1/payments/query", {
       headers: { authorization: Schema.optional(Schema.String) },
-      payload: GatewayLookup,
-      success: [GatewayPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
+      payload: WalletLookup,
+      success: [WalletPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
       error: errors,
     }),
   ),

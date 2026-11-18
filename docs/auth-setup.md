@@ -1,6 +1,6 @@
 # 数据库与邮箱验证码认证
 
-认证链路已接入前后端：Supabase 托管 PostgreSQL，Drizzle 管迁移，Better Auth 管验证码和会话，Resend 发邮件。前端提供简体中文邮箱验证码登录页、同源代理和 SSR 会话守卫，首页需要登录；健康检查 API 仍可独立运行。无需启用 Supabase Auth，也无需 Supabase anon/service-role API key。
+认证链路已接入前后端：Supabase 托管 PostgreSQL，Drizzle 定义 schema，Better Auth 管验证码和会话，Resend 发邮件。前端提供简体中文邮箱验证码登录页、同源代理和 SSR 会话守卫，首页需要登录；健康检查 API 仍可独立运行。无需启用 Supabase Auth，也无需 Supabase anon/service-role API key。
 
 ## 准备与配置顺序
 
@@ -13,33 +13,33 @@
    cp apps/backend/.dev.vars.example apps/backend/.dev.vars
    ```
 
-4. 填写下面的变量，执行迁移，再在 Supabase SQL Editor 预开通用户。
+4. 填写下面的变量，初始化空业务库，再在 Supabase SQL Editor 预开通用户。
 
-| 文件                     | 变量                     | 内容                                                                                                                              |
-| ------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/db/.env`       | `DATABASE_MIGRATION_URL` | Supabase Direct connection；本地没有 IPv6 时可用 Session pooler。使用数据库所有者连接，保留 TLS 参数。只用于迁移，不放入 Worker。 |
-| `apps/backend/.dev.vars` | `DATABASE_URL`           | 本地运行连接串，Direct connection 或 Session pooler；包含 `sslmode=require`。                                                     |
-| 同上                     | `BETTER_AUTH_SECRET`     | 至少 32 字符的随机值，可用 `openssl rand -base64 32` 生成。生产与开发分开，轮换会影响现有登录。                                   |
-| 同上                     | `BETTER_AUTH_URL`        | 唯一受信任的浏览器 origin，不含路径。本地设为 `http://127.0.0.1:3000`，浏览器也使用该地址。生产必须 HTTPS。                       |
-| 同上                     | `APP_ENV`                | 本地设为 `development`；生产设为 `production`。未填写时按生产处理。                                                               |
-| 同上                     | `RESEND_API_KEY`         | Resend 的邮件发送密钥。本地开发可留空，生产必须填写。                                                                             |
-| 同上                     | `AUTH_EMAIL_FROM`        | 已验证域名下的发件地址，可以带显示名称。                                                                                          |
+| 文件                     | 变量                 | 内容                                                                                                                              |
+| ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/db/.env`       | `DATABASE_ADMIN_URL` | Supabase Direct connection；本地没有 IPv6 时可用 Session pooler。使用数据库所有者连接，保留 TLS 参数。只用于建库，不放入 Worker。 |
+| `apps/backend/.dev.vars` | `DATABASE_URL`       | 本地运行连接串，Direct connection 或 Session pooler；包含 `sslmode=require`。                                                     |
+| 同上                     | `BETTER_AUTH_SECRET` | 至少 32 字符的随机值，可用 `openssl rand -base64 32` 生成。生产与开发分开，轮换会影响现有登录。                                   |
+| 同上                     | `BETTER_AUTH_URL`    | 唯一受信任的浏览器 origin，不含路径。本地设为 `http://127.0.0.1:3000`，浏览器也使用该地址。生产必须 HTTPS。                       |
+| 同上                     | `APP_ENV`            | 本地设为 `development`；生产设为 `production`。未填写时按生产处理。                                                               |
+| 同上                     | `RESEND_API_KEY`     | Resend 的邮件发送密钥。本地开发可留空，生产必须填写。                                                                             |
+| 同上                     | `AUTH_EMAIL_FROM`    | 已验证域名下的发件地址，可以带显示名称。                                                                                          |
 
-连接串密码里的特殊字符需要 URL 编码。不要把连接串、验证码或密钥放进仓库、日志或 `VITE_` 变量。早期认证 demo 使用数据库所有者连接。启用多商户业务时，应按 [后端部署说明](backend-setup.md) 配置 `btc_backend` 非所有者、非 BYPASSRLS 运行账号，迁移仍使用所有者连接；超级用户会绕过支付表 RLS。
+连接串密码里的特殊字符需要 URL 编码。不要把连接串、验证码或密钥放进仓库、日志或 `VITE_` 变量。早期认证 demo 使用数据库所有者连接。启用多商户业务时，应按 [后端部署说明](backend-setup.md) 配置 `btc_backend` 非所有者、非 BYPASSRLS 运行账号，初始化使用所有者连接；超级用户会绕过支付表 RLS。
 
-## 迁移与开户
+## 初始化与开户
 
 确认连接的是本项目数据库，在仓库根目录执行：
 
 ```sh
-pnpm --filter @btc-lightning-pay/db migrate
+pnpm --filter @btc-lightning-pay/db run init
 ```
 
-迁移只在手动执行时发生，Worker 启动不自动迁移。Drizzle 从 `packages/db/.env` 读取连接，迁移历史位于 `public.__btc_lightning_pay_migrations`。SQL 在事务内应用，带锁等待及语句超时；已应用的迁移保持不变，后续变更新增迁移。首次建库回退会丢失认证数据；有数据后通过修复迁移处理，不直接删表。
+初始化只在手动执行时发生，Worker 启动不建表。命令从 `packages/db/.env` 读取所有者连接，在一个事务中执行 `packages/db/sql/schema.sql`。仅支持空数据库，已存在表时失败并回滚。greenfield 阶段重置开发业务数据库后重新初始化和开户，不维护迁移历史。不要重置 SDK 钱包数据库。
 
 在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换邮箱和姓名后执行。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
 
-表全部在 `public`：`user`、`session`、`account`、`verification`，以及迁移记录表。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表及迁移记录启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
+表全部在 `public`：`user`、`session`、`account`、`verification`。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
 
 删除 `public."user"` 中的某个用户会级联删除该用户的会话和关联账号，从而撤销登录权限；再次访问 `/api/me` 返回 401。这是删除操作，不是临时停用功能。已有结算操作记录的管理员由外键保护，不能直接删除；移出 `PAYMENTS_ADMIN_IDS` 即撤销管理 API 权限，并保留审计归属。
 
@@ -64,7 +64,7 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 只允许预开户用户登录。未开户邮箱的发送请求也返回相同成功响应，但不发送邮件、不创建账号。邮件服务明确报错时返回 503；请求被 Resend 接受不代表已投递到收件箱。
 
-验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。应用层请求限流已关闭，发送和验证接口不限制请求频率；邮件供应商和平台自身的配额仍适用。`rate_limit` 表已从当前 schema 移除；已有数据库需执行新增的 `0002_remove-rate-limit` 迁移删除该表及历史计数。先确保运行中的后端已关闭限流，再执行上述迁移命令；用户、会话和验证码数据不受影响。
+验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。应用层请求限流已关闭，发送和验证接口不限制请求频率；邮件供应商和平台自身的配额仍适用。当前 schema 不包含 `rate_limit` 表。
 
 会话 cookie 使用项目独立前缀 `btc-lightning-pay`，避免与其他 localhost 应用的默认 `better-auth` cookie 冲突。更改前缀后旧会话需重新登录，不清除其他项目的 cookie。
 
@@ -96,10 +96,10 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 ## 验证范围
 
-后端测试使用隔离的 PGlite PostgreSQL 执行仓库迁移和开户 SQL，再通过真实 Better Auth + Drizzle 验证登录、过期、错误次数、验证码复用、退出、用户隔离和 RLS。数据库连接与邮件发送在测试边界替换，不访问真实 Supabase 或 Resend。
+后端测试使用隔离的 PGlite PostgreSQL 执行建库基线和开户 SQL，再通过真实 Better Auth + Drizzle 验证登录、过期、错误次数、验证码复用、退出、用户隔离和 RLS。数据库连接与邮件发送在测试边界替换，不访问真实 Supabase 或 Resend。
 
 前端测试覆盖表单校验、验证码粘贴与重复提交、错误重试、立即重发和更换邮箱、登录/退出缓存处理。SSR 和代理测试在 Node 环境验证会话隔离与多条 cookie 转发；浏览器验证登录页、校验/服务故障反馈和窄屏布局。
 
-本地检查通过后，仍需填写真实环境，执行远端迁移/开户，并检查邮件投递、生产 HTTPS cookie、Hyperdrive 缓存配置和云端网络连接。
+本地检查通过后，仍需填写真实环境，执行远端初始化/开户，并检查邮件投递、生产 HTTPS cookie、Hyperdrive 缓存配置和云端网络连接。
 
-参考：[Better Auth Email OTP](https://www.better-auth.com/docs/plugins/email-otp)、[Drizzle 迁移](https://orm.drizzle.team/docs/migrations)、[Hyperdrive 连接 Supabase](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/postgres-database-providers/supabase/)、[Hyperdrive 查询缓存](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/)、[Resend Node.js](https://resend.com/docs/send-with-nodejs)。
+参考：[Better Auth Email OTP](https://www.better-auth.com/docs/plugins/email-otp)、[Hyperdrive 连接 Supabase](https://developers.cloudflare.com/hyperdrive/examples/connect-to-postgres/postgres-database-providers/supabase/)、[Hyperdrive 查询缓存](https://developers.cloudflare.com/hyperdrive/concepts/query-caching/)、[Resend Node.js](https://resend.com/docs/send-with-nodejs)。
