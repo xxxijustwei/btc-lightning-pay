@@ -13,7 +13,7 @@ GRANT USAGE ON SCHEMA public TO btc_backend;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public."user", public.session, public.account, public.verification TO btc_backend;
 GRANT SELECT, INSERT, UPDATE ON public.merchant, public.payment_order, public.settlement TO btc_backend;
 
-GRANT SELECT, INSERT ON public.settlement_item TO btc_backend;
+GRANT SELECT, INSERT ON public.admin_audit, public.settlement_item TO btc_backend;
 
 -- Auth is platform-wide; payment tables use transaction-local scope policies.
 DROP POLICY IF EXISTS backend_auth ON public."user";

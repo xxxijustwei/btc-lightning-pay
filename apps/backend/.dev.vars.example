@@ -2,7 +2,6 @@
 # Local development without a Resend key prints OTPs in the backend console.
 APP_ENV="development"
 # Comma-separated existing user IDs explicitly authorized as platform administrators.
-PAYMENTS_ADMIN_IDS=""
 WALLET_URL="http://127.0.0.1:9741"
 WALLET_TOKEN=""
 # Must match the frontend origin used in the browser.

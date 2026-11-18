@@ -65,7 +65,7 @@ stateDiagram-v2
 
 ## 5. API
 
-所有接口沿用平台管理员会话、`PAYMENTS_ADMIN_IDS` 白名单、写请求 Origin 检查。Wallet 不参与结算，无需调整。
+所有接口沿用平台管理员会话、数据库 `role=admin` 且未禁用的权限检查、写请求 Origin 检查。Wallet 不参与结算，无需调整。
 
 | 方法与路径                                | 请求                                           | 响应与行为                                            |
 | ----------------------------------------- | ---------------------------------------------- | ----------------------------------------------------- |
@@ -86,7 +86,7 @@ POST /api/admin/settlements
 Idempotency-Key: 8b562e87-a348-4e04-9705-3c09b4ea7195
 Content-Type: application/json
 
-{"merchantId":"onne"}
+{"merchantId":"11111111-1111-4111-8111-111111111111"}
 ```
 
 响应示例：
@@ -94,7 +94,7 @@ Content-Type: application/json
 ```json
 {
   "id": "e737cf7e-e61f-4f02-8104-c09422446545",
-  "merchantId": "onne",
+  "merchantId": "11111111-1111-4111-8111-111111111111",
   "status": "pending",
   "amountSat": 32000000,
   "orderCount": 2850,

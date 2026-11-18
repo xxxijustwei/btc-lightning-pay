@@ -1,6 +1,16 @@
 import { sql } from "drizzle-orm";
 export { merchant, paymentOrder, settlement, settlementItem } from "./payments";
-import { boolean, check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  check,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  jsonb,
+  pgPolicy,
+} from "drizzle-orm/pg-core";
 
 const timestamps = () => ({
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -17,9 +27,18 @@ export const user = pgTable(
     email: text("email").notNull().unique(),
     emailVerified: boolean("email_verified").default(false).notNull(),
     image: text("image"),
+    role: text("role", { enum: ["admin", "merchant"] })
+      .notNull()
+      .default("merchant"),
+    banned: boolean("banned").notNull().default(false),
+    banReason: text("ban_reason"),
+    banExpires: timestamp("ban_expires", { withTimezone: true }),
     ...timestamps(),
   },
-  (t) => [check("user_email_normalized", sql`${t.email} = lower(trim(${t.email}))`)],
+  (t) => [
+    check("user_email_normalized", sql`${t.email} = lower(trim(${t.email}))`),
+    check("user_role", sql`${t.role} IN ('admin', 'merchant')`),
+  ],
 ).enableRLS();
 export const session = pgTable(
   "session",
@@ -29,6 +48,7 @@ export const session = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
+    impersonatedBy: text("impersonated_by"),
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
@@ -69,4 +89,29 @@ export const verification = pgTable(
     ...timestamps(),
   },
   (t) => [index("verification_identifier_idx").on(t.identifier)],
+).enableRLS();
+
+export const adminAudit = pgTable(
+  "admin_audit",
+  {
+    id: text("id").primaryKey(),
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    action: text("action").notNull(),
+    details: jsonb("details").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("admin_audit_actor_idx").on(t.actorId),
+    index("admin_audit_user_idx").on(t.userId),
+    pgPolicy("admin_audit_access", {
+      for: "all",
+      using: sql`current_setting('app.payment_admin', true) = 'true'`,
+      withCheck: sql`current_setting('app.payment_admin', true) = 'true'`,
+    }),
+  ],
 ).enableRLS();

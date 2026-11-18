@@ -65,9 +65,10 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
   handlers.handleAll({
     merchant: ({ params }) =>
       read("read_merchant", async (r) => {
-        const m = await r.store.merchant(params.merchantId);
+        const m = await r.store.merchantBySlug(params.slug);
         return {
           merchantId: m.id,
+          slug: m.slug,
           enabled: m.enabled,
           currency: "USD" as const,
           minAmountUsdCents: 1000 as const,
@@ -76,9 +77,10 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
       }),
     createOrder: ({ params, payload, headers }) =>
       run("create_order", (r) =>
-        r.payments
-          .createOrder(params.merchantId, headers["idempotency-key"], payload)
-          .pipe(Effect.map(publicOrder)),
+        paymentTask("resolve_merchant", () => r.store.merchantBySlug(params.slug)).pipe(
+          Effect.flatMap((m) => r.payments.createOrder(m.id, headers["idempotency-key"], payload)),
+          Effect.map(publicOrder),
+        ),
       ),
     order: ({ params }) =>
       run("read_order", (r) => r.payments.order(params.orderId).pipe(Effect.map(publicOrder))),
@@ -86,8 +88,34 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
 );
 const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) =>
   handlers.handleAll({
+    createAdmin: ({ payload }) =>
+      read("create_admin", async (r) => dated(await r.store.createAdmin(payload, r.actor!)), true),
+    users: ({ query }) =>
+      read(
+        "list_users",
+        async (r) => (await r.store.users(query.role, ...paging(query))).map(dated),
+        true,
+      ),
+    user: ({ params }) =>
+      read("read_user", async (r) => dated(await r.store.managedUser(params.userId)), true),
+    updateUser: ({ params, payload }) =>
+      read(
+        "update_user",
+        async (r) => dated(await r.store.updateUser(params.userId, payload.banned, r.actor!)),
+        true,
+      ),
+    merchant: ({ params }) =>
+      read(
+        "admin_merchant",
+        async (r) => dated(await r.store.adminMerchant(params.merchantId)),
+        true,
+      ),
     createMerchant: ({ payload }) =>
-      read("create_merchant", async (r) => dated(await r.store.createMerchant(payload.id)), true),
+      read(
+        "create_merchant",
+        async (r) => dated(await r.store.createMerchant(payload, r.actor!)),
+        true,
+      ),
     merchants: ({ query }) =>
       read(
         "list_merchants",
@@ -97,7 +125,7 @@ const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) 
     updateMerchant: ({ params, payload }) =>
       read(
         "update_merchant",
-        async (r) => dated(await r.store.updateMerchant(params.merchantId, payload.enabled)),
+        async (r) => dated(await r.store.updateMerchant(params.merchantId, payload, r.actor!)),
         true,
       ),
     orders: ({ query }) =>

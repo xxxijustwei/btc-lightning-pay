@@ -22,6 +22,7 @@ try {
   const file = readdirSync(dir).find((name) => name.endsWith(".sql"));
   if (!file) throw new Error("Schema generation failed");
   const tables = [
+    "admin_audit",
     "user",
     "session",
     "account",
@@ -37,7 +38,8 @@ try {
     sql +
       "\n" +
       tables.map((t) => `ALTER TABLE public."${t}" FORCE ROW LEVEL SECURITY;`).join("\n") +
-      "\n",
+      "\n" +
+      readFileSync(new URL("../sql/invariants.sql", import.meta.url), "utf8"),
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });

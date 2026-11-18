@@ -1,10 +1,37 @@
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
-export const MerchantId = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{2,31}$/));
+export const MerchantSlug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{2,31}$/));
 export const OrderId = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
 );
+export const MerchantId = OrderId;
+export const AccountName = Schema.String.check(Schema.isPattern(/\S/), Schema.isMaxLength(100));
+export const AccountEmail = Schema.String.check(
+  Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),
+  Schema.isMaxLength(254),
+);
+const strict = <Fields extends Schema.Struct.Fields>(fields: Fields) =>
+  Schema.StructWithRest(Schema.Struct(fields), [
+    Schema.Record(Schema.String, Schema.Unknown),
+  ]).check(
+    Schema.makeFilter((value) => Object.keys(value).every((key) => Object.hasOwn(fields, key))),
+  );
+export const NewAdmin = strict({ name: AccountName, email: AccountEmail });
+export const NewMerchant = strict({ name: AccountName, email: AccountEmail, slug: MerchantSlug });
+export const MerchantUpdate = strict({
+  name: Schema.optional(AccountName),
+  enabled: Schema.optional(Schema.Boolean),
+}).check(Schema.makeFilter((value) => Object.keys(value).length > 0));
+export const ManagedUser = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.String,
+  role: Schema.Literals(["admin", "merchant"]),
+  banned: Schema.Boolean,
+  merchantId: Schema.NullOr(MerchantId),
+  createdAt: Schema.String,
+});
 export const IdempotencyKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{16,128}$/));
 export const Sats = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 9_007_199_254_740 }));
 export const Millisats = Schema.Int.check(
@@ -19,6 +46,7 @@ export const NewOrder = Schema.Struct({
 export const PaymentStatus = Schema.Literals(["creating", "pending", "paid", "expired", "failed"]);
 export const PublicMerchant = Schema.Struct({
   merchantId: MerchantId,
+  slug: MerchantSlug,
   enabled: Schema.Boolean,
   currency: Schema.Literal("USD"),
   minAmountUsdCents: Schema.Literal(1000),
@@ -36,6 +64,10 @@ export const PublicOrder = Schema.Struct({
 });
 export const Merchant = Schema.Struct({
   id: MerchantId,
+  slug: MerchantSlug,
+  name: AccountName,
+  email: AccountEmail,
+  userId: Schema.String,
   enabled: Schema.Boolean,
   createdAt: Schema.String,
 });
@@ -107,6 +139,9 @@ export const Summary = Schema.Struct({
 });
 export const paymentErrorStatus = {
   INVALID_INPUT: 400,
+  USER_NOT_FOUND: 404,
+  EMAIL_EXISTS: 409,
+  LAST_ADMIN: 409,
   NO_ELIGIBLE_ORDERS: 409,
   SETTLEMENT_NOT_FOUND: 404,
   SETTLEMENT_STATE_CONFLICT: 409,
@@ -156,13 +191,13 @@ const orderParams = { orderId: OrderId };
 const idempotencyHeaders = { "idempotency-key": IdempotencyKey };
 export const PaymentsApi = HttpApi.make("PaymentsApi").add(
   HttpApiGroup.make("publicPayments").add(
-    HttpApiEndpoint.get("merchant", "/api/public/merchants/:merchantId", {
-      params: merchantParams,
+    HttpApiEndpoint.get("merchant", "/api/public/merchants/:slug", {
+      params: { slug: MerchantSlug },
       success: PublicMerchant,
       error: errors,
     }),
-    HttpApiEndpoint.post("createOrder", "/api/public/merchants/:merchantId/orders", {
-      params: merchantParams,
+    HttpApiEndpoint.post("createOrder", "/api/public/merchants/:slug/orders", {
+      params: { slug: MerchantSlug },
       headers: idempotencyHeaders,
       payload: NewOrder,
       success: PublicOrder,
@@ -175,8 +210,34 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
     }),
   ),
   HttpApiGroup.make("adminPayments").add(
+    HttpApiEndpoint.post("createAdmin", "/api/admin/users", {
+      payload: NewAdmin,
+      success: ManagedUser,
+      error: errors,
+    }),
+    HttpApiEndpoint.get("users", "/api/admin/users", {
+      query: { ...paging, role: Schema.optional(Schema.Literals(["admin", "merchant"])) },
+      success: Schema.Array(ManagedUser),
+      error: errors,
+    }),
+    HttpApiEndpoint.get("user", "/api/admin/users/:userId", {
+      params: { userId: Schema.String },
+      success: ManagedUser,
+      error: errors,
+    }),
+    HttpApiEndpoint.patch("updateUser", "/api/admin/users/:userId", {
+      params: { userId: Schema.String },
+      payload: strict({ banned: Schema.Boolean }),
+      success: ManagedUser,
+      error: errors,
+    }),
+    HttpApiEndpoint.get("merchant", "/api/admin/merchants/:merchantId", {
+      params: merchantParams,
+      success: Merchant,
+      error: errors,
+    }),
     HttpApiEndpoint.post("createMerchant", "/api/admin/merchants", {
-      payload: Schema.Struct({ id: MerchantId }),
+      payload: NewMerchant,
       success: Merchant,
       error: errors,
     }),
@@ -187,7 +248,7 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
     }),
     HttpApiEndpoint.patch("updateMerchant", "/api/admin/merchants/:merchantId", {
       params: merchantParams,
-      payload: Schema.Struct({ enabled: Schema.Boolean }),
+      payload: MerchantUpdate,
       success: Merchant,
       error: errors,
     }),

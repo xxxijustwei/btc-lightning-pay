@@ -2,7 +2,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { readCurrentUser } from "./session";
 
-const user = { id: "u1", email: "user@example.com", name: "User", image: null };
+const user = { role: "admin", id: "u1", email: "user@example.com", name: "User", image: null };
 test("a cookie-free request is anonymous without contacting the backend", async () => {
   const fetchBackend = vi.fn();
   expect(

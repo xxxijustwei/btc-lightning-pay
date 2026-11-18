@@ -1,6 +1,6 @@
 # 数据库与邮箱验证码认证
 
-认证链路已接入前后端：Supabase 托管 PostgreSQL，Drizzle 定义 schema，Better Auth 管验证码和会话，Resend 发邮件。前端提供简体中文邮箱验证码登录页、同源代理和 SSR 会话守卫，首页需要登录；健康检查 API 仍可独立运行。无需启用 Supabase Auth，也无需 Supabase anon/service-role API key。
+认证链路已接入前后端：Supabase 托管 PostgreSQL，Drizzle 定义 schema，Better Auth Email OTP + Admin 插件管验证码、会话和角色字段，Resend 发邮件。前端提供简体中文邮箱验证码登录页、同源代理和 SSR 会话守卫，首页需要登录；健康检查 API 仍可独立运行。无需启用 Supabase Auth，也无需 Supabase anon/service-role API key。
 
 ## 准备与配置顺序
 
@@ -13,7 +13,7 @@
    cp apps/backend/.dev.vars.example apps/backend/.dev.vars
    ```
 
-4. 填写下面的变量，初始化空业务库，再在 Supabase SQL Editor 预开通用户。
+4. 填写下面的变量，初始化空业务库，再在 Supabase SQL Editor 预开通首位管理员。
 
 | 文件                     | 变量                 | 内容                                                                                                                              |
 | ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -37,11 +37,11 @@ pnpm --filter @btc-lightning-pay/db run init
 
 初始化只在手动执行时发生，Worker 启动不建表。命令从 `packages/db/.env` 读取所有者连接，在一个事务中执行 `packages/db/sql/schema.sql`。仅支持空数据库，已存在表时失败并回滚。greenfield 阶段重置开发业务数据库后重新初始化和开户，不维护迁移历史。不要重置 SDK 钱包数据库。
 
-在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换邮箱和姓名后执行。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
+在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换首位管理员的邮箱和姓名后执行。SQL 固定创建 `admin` 角色；后续通过管理 API 开通管理员和商户，见 [用户管理](user-management.md)。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
 
 表全部在 `public`：`user`、`session`、`account`、`verification`。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
 
-删除 `public."user"` 中的某个用户会级联删除该用户的会话和关联账号，从而撤销登录权限；再次访问 `/api/me` 返回 401。这是删除操作，不是临时停用功能。已有结算操作记录的管理员由外键保护，不能直接删除；移出 `PAYMENTS_ADMIN_IDS` 即撤销管理 API 权限，并保留审计归属。
+用户只支持禁用和恢复，不提供删除或角色转换。禁用撤销会话，商户同时停止创建新订单；已有 invoice 继续核验入账，历史订单继续结算。最后一位启用管理员不能禁用。角色存于数据库，已移除 `PAYMENTS_ADMIN_IDS` 白名单。
 
 修改 schema 后先生成并审查 SQL，再验证和执行：
 
@@ -58,11 +58,11 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 | ---- | ------------------------------------------- | --------------------------------------------------------------------------- |
 | POST | `/api/auth/email-otp/send-verification-otp` | `{ "email": "user@example.com", "type": "sign-in" }`                        |
 | POST | `/api/auth/sign-in/email-otp`               | `{ "email": "user@example.com", "otp": "六位验证码" }`；成功返回会话 cookie |
-| GET  | `/api/auth/get-session`                     | Better Auth 原生会话接口                                                    |
+| GET  | `/api/auth/get-session`                     | Better Auth 会话数据；仅启用管理员可用，未登录或不可用账号返回 401          |
 | POST | `/api/auth/sign-out`                        | 携带 cookie，撤销当前会话                                                   |
-| GET  | `/api/me`                                   | 携带 cookie，返回 `id/email/name/image`；未登录 401，配置/服务异常 503      |
+| GET  | `/api/me`                                   | 携带 cookie，返回 `id/email/name/image/role`；未登录 401，配置/服务异常 503 |
 
-只允许预开户用户登录。未开户邮箱的发送请求也返回相同成功响应，但不发送邮件、不创建账号。邮件服务明确报错时返回 503；请求被 Resend 接受不代表已投递到收件箱。
+第一阶段只允许已开通且未禁用的管理员登录。商户账号、禁用账号和未开户邮箱的发送请求都返回相同成功响应，但不发送邮件、不创建账号；后端也在会话创建处拒绝商户和禁用账号，不能绕过前端直接登录。邮件服务明确报错时返回 503；请求被 Resend 接受不代表已投递到收件箱。
 
 验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。应用层请求限流已关闭，发送和验证接口不限制请求频率；邮件供应商和平台自身的配额仍适用。当前 schema 不包含 `rate_limit` 表。
 

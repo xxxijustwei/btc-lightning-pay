@@ -13,6 +13,7 @@ export const AUTH_COOKIE_PREFIX = "btc-lightning-pay";
 export const AuthUser = Schema.Struct({
   id: Schema.String,
   email: Schema.String,
+  role: Schema.Literals(["admin", "merchant"]),
   name: Schema.String,
   image: Schema.optional(Schema.NullOr(Schema.String)),
 });

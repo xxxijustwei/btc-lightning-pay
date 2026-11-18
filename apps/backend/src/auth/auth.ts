@@ -1,7 +1,9 @@
 import { AUTH_COOKIE_PREFIX } from "@btc-lightning-pay/api";
 import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { emailOTP } from "better-auth/plugins";
+import { admin, emailOTP } from "better-auth/plugins";
+import { adminAc, userAc } from "better-auth/plugins/admin/access";
+import { eq } from "drizzle-orm";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import type { Database } from "@btc-lightning-pay/db/client";
 import * as schema from "@btc-lightning-pay/db/schema";
@@ -37,14 +39,39 @@ export function createAuth(
         }
       }),
     },
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (value) => {
+            const [user] = await database
+              .select()
+              .from(schema.user)
+              .where(eq(schema.user.id, value.userId));
+            if (!user || user.role !== "admin" || user.banned)
+              throw new APIError("FORBIDDEN", { message: "Login unavailable" });
+          },
+        },
+      },
+    },
     plugins: [
+      admin({
+        defaultRole: "merchant",
+        adminRoles: ["admin"],
+        roles: { admin: adminAc, merchant: userAc },
+      }),
       emailOTP({
         disableSignUp: true,
         otpLength: 6,
         expiresIn: OTP_EXPIRATION_SECONDS,
         allowedAttempts: 3,
         storeOTP: "hashed",
-        sendVerificationOTP: async ({ email, otp }) => sendOTP({ email, otp }),
+        sendVerificationOTP: async ({ email, otp }) => {
+          const [user] = await database
+            .select()
+            .from(schema.user)
+            .where(eq(schema.user.email, email.toLowerCase()));
+          if (user?.role === "admin" && !user.banned) await sendOTP({ email, otp });
+        },
       }),
     ],
   });

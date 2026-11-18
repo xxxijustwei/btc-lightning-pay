@@ -21,6 +21,7 @@ const close = vi.fn(async () => {});
 vi.mock("@btc-lightning-pay/db/client", () => ({ createDatabase: () => ({ database, close }) }));
 const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
+let onne: string, other: string;
 const key = "test-order-key-0001";
 const bindings = { DATABASE_URL: "postgres://local/test" };
 const wallet = vi.fn<WalletClient>(async () => null);
@@ -61,7 +62,7 @@ beforeAll(async () => {
   await pg.exec(`CREATE ROLE payment_app NOSUPERUSER NOBYPASSRLS;
     GRANT USAGE ON SCHEMA public TO payment_app;
     GRANT SELECT, INSERT, UPDATE ON merchant, payment_order, settlement, settlement_item TO payment_app;
-    INSERT INTO public."user" (id,name,email) VALUES ('admin','Admin','admin@example.com');`);
+    INSERT INTO public."user" (id,name,email,role) VALUES ('admin','Admin','admin@example.com','admin');`);
   const provision = readFileSync(
     new NodeURL("../../../../packages/db/sql/provision-backend-role.sql", import.meta.url),
     "utf8",
@@ -71,14 +72,21 @@ beforeAll(async () => {
   await pg.exec("SET ROLE btc_backend;");
   expect((await pg.query('SELECT * FROM public."user"')).rows).toHaveLength(1);
   expect((await pg.query("SELECT * FROM payment_order")).rows).toHaveLength(0);
-  await pg.exec("RESET ROLE;");
+  await pg.exec("RESET ROLE; GRANT btc_backend TO payment_app;");
 });
 beforeEach(async () => {
   await pg.exec(
-    "RESET ROLE; TRUNCATE settlement_item, payment_order, settlement, merchant; SET ROLE payment_app;",
+    "RESET ROLE; TRUNCATE admin_audit, settlement_item, payment_order, settlement, merchant; DELETE FROM public.\"user\" WHERE id <> 'admin'; SET ROLE payment_app;",
   );
-  await store.createMerchant("onne");
-  await store.createMerchant("other");
+  onne = (
+    await store.createMerchant({ slug: "onne", name: "Onne", email: "onne@example.com" }, "admin")
+  ).id;
+  other = (
+    await store.createMerchant(
+      { slug: "other", name: "Other", email: "other@example.com" },
+      "admin",
+    )
+  ).id;
   quote.mockClear();
   wallet.mockReset();
   wallet.mockResolvedValue(null);
@@ -91,27 +99,27 @@ afterAll(async () => {
 
 test("idempotency survives repeated requests, conflicts reject and disabled merchants preserve existing orders", async () => {
   const rows = await Promise.all([
-    createOrder("onne", key, { amountUsdCents: 1000 }),
-    createOrder("onne", key, { amountUsdCents: 1000 }),
+    createOrder(onne, key, { amountUsdCents: 1000 }),
+    createOrder(onne, key, { amountUsdCents: 1000 }),
   ]);
   expect(rows[0].id).toBe(rows[1].id);
   expect(quote.mock.calls.length).toBeGreaterThan(0);
   const quoteCalls = quote.mock.calls.length;
-  await createOrder("onne", key, { amountUsdCents: 1000 });
+  await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(quote).toHaveBeenCalledTimes(quoteCalls);
-  await expect(createOrder("onne", key, { amountUsdCents: 1500 })).rejects.toMatchObject({
+  await expect(createOrder(onne, key, { amountUsdCents: 1500 })).rejects.toMatchObject({
     code: "IDEMPOTENCY_CONFLICT",
   });
-  const other = await createOrder("other", key, { amountUsdCents: 1000 });
-  expect(other.id).not.toBe(rows[0].id);
-  await store.updateMerchant("onne", false);
-  expect((await createOrder("onne", key, { amountUsdCents: 1000 })).id).toBe(rows[0].id);
+  const otherOrder = await createOrder(other, key, { amountUsdCents: 1000 });
+  expect(otherOrder.id).not.toBe(rows[0].id);
+  await store.updateMerchant(onne, { enabled: false }, "admin");
+  expect((await createOrder(onne, key, { amountUsdCents: 1000 })).id).toBe(rows[0].id);
   await expect(
-    createOrder("onne", "new-order-key-0001", { amountUsdCents: 1000 }),
+    createOrder(onne, "new-order-key-0001", { amountUsdCents: 1000 }),
   ).rejects.toMatchObject({ code: "MERCHANT_DISABLED" });
 });
 test("payment updates are monotonic, late payments are credited and net cost is separate from merchant payable", async () => {
-  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const pending = { ...invoice(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
   expect(publicOrder(await store.sync(pending)).status).toBe("expired");
   const payment = { ...paid(row.id), expiresAt: pending.expiresAt };
@@ -119,58 +127,57 @@ test("payment updates are monotonic, late payments are credited and net cost is 
   await store.sync(payment);
   await store.sync(pending);
   expect(publicOrder(await store.getOrder(row.id)).status).toBe("paid");
-  expect(await store.summary("onne")).toMatchObject({
-    merchantId: "onne",
+  expect(await store.summary(onne)).toMatchObject({
+    merchantId: onne,
     paidSat: 10000,
     settledSat: 0,
     unsettledSat: 10000,
   });
-  expect(await store.summary("other")).toMatchObject({ paidSat: 0 });
+  expect(await store.summary(other)).toMatchObject({ paidSat: 0 });
   await expect(store.sync({ ...payment, receivedMsat: 1 })).rejects.toMatchObject({
     code: "PAYMENT_MISMATCH",
   });
 });
 test("batch lifecycle freezes amounts, reserves orders, retains cancelled history and confirms idempotently", async () => {
-  const a = await createOrder("onne", key, { amountUsdCents: 1000 });
-  const b = await createOrder("other", key, { amountUsdCents: 1000 });
+  const a = await createOrder(onne, key, { amountUsdCents: 1000 });
+  const b = await createOrder(other, key, { amountUsdCents: 1000 });
   await store.sync(paid(a.id));
   await store.sync(paid(b.id));
-  const { record } = await store.settle(key, { merchantId: "onne" }, "admin");
+  const { record } = await store.settle(key, { merchantId: onne }, "admin");
   expect(record).toMatchObject({
     status: "pending",
     amountSat: 10000,
     orderCount: 1,
     createdBy: "admin",
   });
-  expect(await store.summary("onne")).toMatchObject({
+  expect(await store.summary(onne)).toMatchObject({
     settledSat: 0,
     pendingSettlementSat: 10000,
     availableSettlementSat: 0,
   });
-  expect((await store.settle(key, { merchantId: "onne" }, "admin")).record.id).toBe(record.id);
-  await expect(store.settle(key, { merchantId: "other" }, "admin")).rejects.toMatchObject({
+  expect((await store.settle(key, { merchantId: onne }, "admin")).record.id).toBe(record.id);
+  await expect(store.settle(key, { merchantId: other }, "admin")).rejects.toMatchObject({
     code: "IDEMPOTENCY_CONFLICT",
   });
   await expect(
-    store.settle("other-batch-key", { merchantId: "onne" }, "admin"),
+    store.settle("other-batch-key", { merchantId: onne }, "admin"),
   ).rejects.toMatchObject({ code: "NO_ELIGIBLE_ORDERS" });
-  const later = await createOrder("onne", "later-order-key-0001", { amountUsdCents: 1000 });
+  const later = await createOrder(onne, "later-order-key-0001", { amountUsdCents: 1000 });
   await store.sync(paid(later.id));
   expect((await store.settlementOrders(record.id, 50, 0)).items).toEqual([
-    { orderId: a.id, merchantId: "onne", amountSat: 10000 },
+    { orderId: a.id, merchantId: onne, amountSat: 10000 },
   ]);
   expect((await store.settlement(record.id)).amountSat).toBe(10000);
   await store.cancelSettlement(record.id, "not paid", "admin");
   expect((await store.settlementOrders(record.id, 50, 0)).total).toBe(1);
-  expect(await store.summary("onne")).toMatchObject({
+  expect(await store.summary(onne)).toMatchObject({
     availableSettlementSat: 20000,
     pendingSettlementSat: 0,
   });
   await expect(store.confirmSettlement(record.id, "proof", "admin")).rejects.toMatchObject({
     code: "SETTLEMENT_STATE_CONFLICT",
   });
-  const next = (await store.settle("replacement-batch-key", { merchantId: "onne" }, "admin"))
-    .record;
+  const next = (await store.settle("replacement-batch-key", { merchantId: onne }, "admin")).record;
   expect(next.orderCount).toBe(2);
   const confirmed = await store.confirmSettlement(next.id, " transfer-1 ", "admin");
   expect(await store.confirmSettlement(next.id, "transfer-1", "admin")).toEqual(confirmed);
@@ -180,19 +187,19 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
   await expect(store.cancelSettlement(next.id, "oops", "admin")).rejects.toMatchObject({
     code: "SETTLEMENT_STATE_CONFLICT",
   });
-  expect(await store.summary("onne")).toMatchObject({
+  expect(await store.summary(onne)).toMatchObject({
     settledSat: 20000,
     unsettledSat: 0,
     pendingSettlementSat: 0,
   });
-  expect(await store.summary("other")).toMatchObject({
+  expect(await store.summary(other)).toMatchObject({
     settledSat: 0,
     availableSettlementSat: 10000,
   });
 });
 
 test("batch HTTP rejects old bodies, paginates history, and exposes independent settlement status", async () => {
-  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   await store.sync(paid(row.id));
   const headers = { "idempotency-key": key };
   expect(
@@ -200,7 +207,7 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
       await call(
         request(
           "/api/admin/settlements",
-          { merchantId: "onne", orderIds: [row.id], amountSat: 10000, proof: "old" },
+          { merchantId: onne, orderIds: [row.id], amountSat: 10000, proof: "old" },
           headers,
         ),
         "admin",
@@ -208,14 +215,13 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
     ).status,
   ).toBe(400);
   const response = await call(
-    request("/api/admin/settlements", { merchantId: "onne" }, headers),
+    request("/api/admin/settlements", { merchantId: onne }, headers),
     "admin",
   );
   expect(response.status).toBe(201);
   const batch = (await response.json()) as { id: string };
   expect(
-    (await call(request("/api/admin/settlements", { merchantId: "onne" }, headers), "admin"))
-      .status,
+    (await call(request("/api/admin/settlements", { merchantId: onne }, headers), "admin")).status,
   ).toBe(200);
   expect(await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json()).toMatchObject({
     status: "paid",
@@ -236,17 +242,17 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
   ).toBe(200);
 });
 test("real non-owner RLS isolates merchants and public orders and resets on the pooled connection", async () => {
-  const a = await createOrder("onne", key, { amountUsdCents: 1000 });
-  await createOrder("other", key, { amountUsdCents: 1000 });
+  const a = await createOrder(onne, key, { amountUsdCents: 1000 });
+  await createOrder(other, key, { amountUsdCents: 1000 });
   for (const table of ["merchant", "payment_order", "settlement"])
     expect((await pg.query(`SELECT * FROM ${table}`)).rows).toHaveLength(0);
-  await pg.exec("BEGIN; SELECT set_config('app.merchant_id','onne',true);");
+  await pg.exec(`BEGIN; SELECT set_config('app.merchant_id','${onne}',true);`);
   try {
     expect((await pg.query("SELECT * FROM merchant")).rows).toHaveLength(1);
     expect((await pg.query("SELECT * FROM payment_order")).rows).toHaveLength(1);
     await expect(
       pg.exec(
-        `INSERT INTO payment_order (id,merchant_id,idempotency_key,amount_usd_cents,amount_sat,rate_usd,quoted_at) VALUES (gen_random_uuid(),'other','forged',1000,10000,'100000',now())`,
+        `INSERT INTO payment_order (id,merchant_id,idempotency_key,amount_usd_cents,amount_sat,rate_usd,quoted_at) VALUES (gen_random_uuid(),'${other}','forged',1000,10000,'100000',now())`,
       ),
     ).rejects.toThrow(/row-level security/);
   } finally {
@@ -255,7 +261,7 @@ test("real non-owner RLS isolates merchants and public orders and resets on the 
   await pg.exec("BEGIN");
   expect((await pg.query("SELECT * FROM payment_order")).rows).toHaveLength(0);
   await pg.exec("COMMIT");
-  expect((await store.getOrder(a.id)).merchantId).toBe("onne");
+  expect((await store.getOrder(a.id)).merchantId).toBe(onne);
   await expect(store.getOrder(crypto.randomUUID())).rejects.toMatchObject({
     code: "ORDER_NOT_FOUND",
   });
@@ -299,11 +305,11 @@ test("admission bounds per-merchant invoice creation without charging duplicate 
   // Application clock skew must not weaken admission; the database owns this window.
   vi.spyOn(Date, "now").mockReturnValue(Date.now() - 1000);
   try {
-    for (let i = 0; i < 5; i++) await createOrder("onne", `${key}-${i}`, { amountUsdCents: 1000 });
-    await expect(createOrder("onne", `${key}-6`, { amountUsdCents: 1000 })).rejects.toMatchObject({
+    for (let i = 0; i < 5; i++) await createOrder(onne, `${key}-${i}`, { amountUsdCents: 1000 });
+    await expect(createOrder(onne, `${key}-6`, { amountUsdCents: 1000 })).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
-    expect((await createOrder("onne", `${key}-0`, { amountUsdCents: 1000 })).amountSat).toBe(10000);
+    expect((await createOrder(onne, `${key}-0`, { amountUsdCents: 1000 })).amountSat).toBe(10000);
   } finally {
     vi.restoreAllMocks();
   }
@@ -353,7 +359,7 @@ test.each(["{", JSON.stringify({ amountUsdCents: -1 })])(
 );
 
 test("scheduled recovery records safe upstream context and retries the same durable order", async () => {
-  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const fetcher = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(new Response("sensitive-upstream-response", { status: 502 }))
@@ -399,8 +405,8 @@ test("scheduled recovery records safe upstream context and retries the same dura
 test("concurrent requests retain one displayed invoice and queries never recreate it", async () => {
   wallet.mockImplementation(async (id) => invoice(id));
   const [a, b] = await Promise.all([
-    createOrder("onne", key, { amountUsdCents: 1000 }),
-    createOrder("onne", key, { amountUsdCents: 1000 }),
+    createOrder(onne, key, { amountUsdCents: 1000 }),
+    createOrder(onne, key, { amountUsdCents: 1000 }),
   ]);
   expect(a.paymentHash).toBe(b.paymentHash);
   expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(1);
@@ -420,7 +426,7 @@ test("concurrent requests retain one displayed invoice and queries never recreat
 });
 
 test("cron checks pending and expired invoices after the browser closes", async () => {
-  const row = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const expired = { ...paid(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
   await store.sync({ ...expired, paidAt: null, receivedMsat: null });
   const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(expired));
@@ -440,11 +446,134 @@ test("cron checks pending and expired invoices after the browser closes", async 
 
 test("a failed unexposed creation can retry on the same order", async () => {
   wallet.mockRejectedValueOnce(new Error("creation response lost"));
-  const first = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const first = await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(first.invoice).toBeNull();
   wallet.mockImplementation(async (id) => invoice(id));
-  const retry = await createOrder("onne", key, { amountUsdCents: 1000 });
+  const retry = await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(retry.id).toBe(first.id);
   expect(retry.invoice).toBe("lnbc100u1test");
   expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(2);
+});
+
+test("merchant provisioning is atomic, keeps identity immutable and hides private fields", async () => {
+  const payload = { name: "Private merchant name", email: "New@Example.com", slug: "new-shop" };
+  const response = await call(request("/api/admin/merchants", payload), "admin");
+  expect(response.status).toBe(200);
+  const m = (await response.json()) as { id: string; userId: string };
+  expect(m.id).not.toBe(payload.slug);
+  expect(await store.managedUser(m.userId)).toMatchObject({
+    role: "merchant",
+    email: "new@example.com",
+    banned: false,
+    merchantId: m.id,
+  });
+  expect(await store.adminMerchant(m.id)).toMatchObject({ name: payload.name, slug: payload.slug });
+  const publicResponse = await call(request("/api/public/merchants/new-shop"));
+  expect(await publicResponse.json()).toEqual({
+    merchantId: m.id,
+    slug: "new-shop",
+    enabled: true,
+    currency: "USD",
+    minAmountUsdCents: 1000,
+    maxAmountUsdCents: 30000,
+  });
+  await expect(
+    store.createMerchant({ ...payload, email: "unused@example.com" }, "admin"),
+  ).rejects.toMatchObject({ code: "MERCHANT_EXISTS" });
+  expect((await store.users(undefined, 100, 0)).some((u) => u.email === "unused@example.com")).toBe(
+    false,
+  );
+  await expect(
+    store.createMerchant({ ...payload, slug: "unused-shop" }, "admin"),
+  ).rejects.toMatchObject({ code: "EMAIL_EXISTS" });
+  for (const body of [
+    { slug: "changed" },
+    { email: "changed@example.com" },
+    { name: "OK", role: "admin" },
+    {},
+  ]) {
+    expect(
+      (
+        await call(
+          new Request(`http://localhost/api/admin/merchants/${m.id}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+          "admin",
+        )
+      ).status,
+    ).toBe(400);
+  }
+  await store.updateMerchant(m.id, { name: "Updated" }, "admin");
+  expect(await store.adminMerchant(m.id)).toMatchObject({
+    name: "Updated",
+    slug: "new-shop",
+    email: "new@example.com",
+  });
+  await expect(
+    pg.query("UPDATE public.\"user\" SET role='admin' WHERE id=$1", [m.userId]),
+  ).rejects.toThrow(/immutable/);
+});
+
+test("disable through either API stops new payments while preserving settlement", async () => {
+  const m = await store.adminMerchant(onne);
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  await store.updateUser(m.userId, true, "admin");
+  expect(await store.adminMerchant(onne)).toMatchObject({ enabled: false });
+  expect((await pg.query("SELECT id FROM session WHERE user_id=$1", [m.userId])).rows).toHaveLength(
+    0,
+  );
+  expect(await (await call(request("/api/public/merchants/onne"))).json()).toMatchObject({
+    enabled: false,
+  });
+  await expect(
+    createOrder(onne, "disabled-new-key", { amountUsdCents: 1000 }),
+  ).rejects.toMatchObject({ code: "MERCHANT_DISABLED" });
+  await store.sync(paid(row.id));
+  const batch = await store.settle("disabled-merchant-settle", { merchantId: onne }, "admin");
+  expect(batch.record.amountSat).toBe(10000);
+  await store.updateMerchant(onne, { enabled: true }, "admin");
+  expect(await store.managedUser(m.userId)).toMatchObject({ banned: false });
+});
+
+test("admin lifecycle protects the last admin and rejects duplicate or forbidden creation inputs", async () => {
+  await expect(store.updateUser("admin", true, "admin")).rejects.toMatchObject({
+    code: "LAST_ADMIN",
+  });
+  const second = await store.createAdmin({ name: "Second", email: "second@example.com" }, "admin");
+  expect(second).toMatchObject({ role: "admin", merchantId: null });
+  await expect(
+    store.createAdmin({ name: "Taken", email: "ONNE@example.com" }, "admin"),
+  ).rejects.toMatchObject({ code: "EMAIL_EXISTS" });
+  expect(
+    (
+      await call(
+        request("/api/admin/users", { name: "Bad", email: "bad@example.com", role: "merchant" }),
+        "admin",
+      )
+    ).status,
+  ).toBe(400);
+  await pg.query(
+    "INSERT INTO session(id,token,user_id,expires_at) VALUES ($1,$1,$2,now()+interval '1 hour')",
+    ["admin-session", second.id],
+  );
+  await store.updateUser(second.id, true, "admin");
+  expect(
+    (await pg.query("SELECT id FROM session WHERE user_id=$1", [second.id])).rows,
+  ).toHaveLength(0);
+  await expect(store.updateUser("admin", true, "admin")).rejects.toMatchObject({
+    code: "LAST_ADMIN",
+  });
+  await expect(
+    store.createAdmin({ name: "Bad", email: "bad@example.com" }, second.id),
+  ).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
+  await store.updateUser(second.id, false, "admin");
+  expect(await store.users("admin", 100, 0)).toHaveLength(2);
+  expect((await call(request(`/api/admin/users/${second.id}`), "admin")).status).toBe(200);
+  await pg.exec("BEGIN; SELECT set_config('app.payment_admin','true',true)");
+  expect(
+    (await pg.query("SELECT action FROM admin_audit WHERE action='admin.created'")).rows,
+  ).toHaveLength(1);
+  await pg.exec("COMMIT");
 });

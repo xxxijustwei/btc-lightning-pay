@@ -15,11 +15,28 @@ CREATE TABLE "account" (
 );
 
 ALTER TABLE "account" ENABLE ROW LEVEL SECURITY;
+CREATE TABLE "admin_audit" (
+	"id" text PRIMARY KEY NOT NULL,
+	"actor_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"action" text NOT NULL,
+	"details" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE "admin_audit" ENABLE ROW LEVEL SECURITY;
 CREATE TABLE "merchant" (
 	"id" text PRIMARY KEY NOT NULL,
+	"slug" text NOT NULL,
+	"name" text NOT NULL,
+	"user_id" text NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "merchant_id_format" CHECK ("merchant"."id" ~ '^[a-z][a-z0-9-]{2,31}$')
+	CONSTRAINT "merchant_slug_unique" UNIQUE("slug"),
+	CONSTRAINT "merchant_user_id_unique" UNIQUE("user_id"),
+	CONSTRAINT "merchant_id_format" CHECK ("merchant"."id" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'),
+	CONSTRAINT "merchant_slug_format" CHECK ("merchant"."slug" ~ '^[a-z][a-z0-9-]{2,31}$'),
+	CONSTRAINT "merchant_name_length" CHECK (length(trim("merchant"."name")) BETWEEN 1 AND 100)
 );
 
 ALTER TABLE "merchant" ENABLE ROW LEVEL SECURITY;
@@ -60,6 +77,7 @@ CREATE TABLE "session" (
 	"expires_at" timestamp with time zone NOT NULL,
 	"ip_address" text,
 	"user_agent" text,
+	"impersonated_by" text,
 	"user_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -108,10 +126,15 @@ CREATE TABLE "user" (
 	"email" text NOT NULL,
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"image" text,
+	"role" text DEFAULT 'merchant' NOT NULL,
+	"banned" boolean DEFAULT false NOT NULL,
+	"ban_reason" text,
+	"ban_expires" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "user_email_unique" UNIQUE("email"),
-	CONSTRAINT "user_email_normalized" CHECK ("user"."email" = lower(trim("user"."email")))
+	CONSTRAINT "user_email_normalized" CHECK ("user"."email" = lower(trim("user"."email"))),
+	CONSTRAINT "user_role" CHECK ("user"."role" IN ('admin', 'merchant'))
 );
 
 ALTER TABLE "user" ENABLE ROW LEVEL SECURITY;
@@ -126,6 +149,9 @@ CREATE TABLE "verification" (
 
 ALTER TABLE "verification" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_actor_id_user_id_fk" FOREIGN KEY ("actor_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;
+ALTER TABLE "admin_audit" ADD CONSTRAINT "admin_audit_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;
+ALTER TABLE "merchant" ADD CONSTRAINT "merchant_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;
 ALTER TABLE "payment_order" ADD CONSTRAINT "payment_order_merchant_id_merchant_id_fk" FOREIGN KEY ("merchant_id") REFERENCES "public"."merchant"("id") ON DELETE restrict ON UPDATE no action;
 ALTER TABLE "payment_order" ADD CONSTRAINT "order_settlement_tenant" FOREIGN KEY ("merchant_id","settlement_id") REFERENCES "public"."settlement"("merchant_id","id") ON DELETE restrict ON UPDATE no action;
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
@@ -137,6 +163,8 @@ ALTER TABLE "settlement_item" ADD CONSTRAINT "settlement_item_batch_fk" FOREIGN 
 ALTER TABLE "settlement_item" ADD CONSTRAINT "settlement_item_order_fk" FOREIGN KEY ("merchant_id","order_id") REFERENCES "public"."payment_order"("merchant_id","id") ON DELETE restrict ON UPDATE no action;
 CREATE INDEX "account_user_idx" ON "account" USING btree ("user_id");
 CREATE UNIQUE INDEX "account_provider_identity_idx" ON "account" USING btree ("provider_id","account_id");
+CREATE INDEX "admin_audit_actor_idx" ON "admin_audit" USING btree ("actor_id");
+CREATE INDEX "admin_audit_user_idx" ON "admin_audit" USING btree ("user_id");
 CREATE INDEX "order_settlement_candidates" ON "payment_order" USING btree ("merchant_id","paid_at","id") WHERE "payment_order"."status" = 'paid' AND "payment_order"."settlement_id" IS NULL;
 CREATE UNIQUE INDEX "order_payment_hash" ON "payment_order" USING btree ("payment_hash");
 CREATE INDEX "order_merchant_created" ON "payment_order" USING btree ("merchant_id","created_at");
@@ -151,10 +179,12 @@ CREATE INDEX "settlement_merchant_created_idx" ON "settlement" USING btree ("mer
 CREATE INDEX "settlement_item_order_idx" ON "settlement_item" USING btree ("merchant_id","order_id");
 CREATE INDEX "settlement_item_batch_idx" ON "settlement_item" USING btree ("merchant_id","settlement_id");
 CREATE INDEX "verification_identifier_idx" ON "verification" USING btree ("identifier");
-CREATE POLICY "merchant_access" ON "merchant" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true' OR "merchant"."id" = nullif(current_setting('app.merchant_id', true), '')) WITH CHECK (current_setting('app.payment_admin', true) = 'true');
+CREATE POLICY "admin_audit_access" ON "admin_audit" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
+CREATE POLICY "merchant_access" ON "merchant" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true' OR "merchant"."id" = nullif(current_setting('app.merchant_id', true), '') OR "merchant"."slug" = nullif(current_setting('app.merchant_slug', true), '')) WITH CHECK (current_setting('app.payment_admin', true) = 'true');
 CREATE POLICY "order_access" ON "payment_order" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true' OR "payment_order"."merchant_id" = nullif(current_setting('app.merchant_id', true), '') OR "payment_order"."id"::text = nullif(current_setting('app.order_id', true), '')) WITH CHECK (current_setting('app.payment_admin', true) = 'true' OR "payment_order"."merchant_id" = nullif(current_setting('app.merchant_id', true), ''));
 CREATE POLICY "settlement_access" ON "settlement" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
 CREATE POLICY "settlement_item_access" ON "settlement_item" AS PERMISSIVE FOR ALL TO public USING (current_setting('app.payment_admin', true) = 'true') WITH CHECK (current_setting('app.payment_admin', true) = 'true');
+ALTER TABLE public."admin_audit" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."user" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."session" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."account" FORCE ROW LEVEL SECURITY;
@@ -163,3 +193,46 @@ ALTER TABLE public."merchant" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."payment_order" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."settlement" FORCE ROW LEVEL SECURITY;
 ALTER TABLE public."settlement_item" FORCE ROW LEVEL SECURITY;
+-- Greenfield baseline invariants, included by generate.ts.
+CREATE FUNCTION preserve_user_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.role IS DISTINCT FROM OLD.role OR NEW.email IS DISTINCT FROM OLD.email THEN
+    RAISE EXCEPTION 'User role and email are immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER user_identity_immutable BEFORE UPDATE ON public."user"
+FOR EACH ROW EXECUTE FUNCTION preserve_user_identity();
+CREATE FUNCTION preserve_merchant_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.slug IS DISTINCT FROM OLD.slug OR NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+    RAISE EXCEPTION 'Merchant identity is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER merchant_identity_immutable BEFORE UPDATE ON public.merchant
+FOR EACH ROW EXECUTE FUNCTION preserve_merchant_identity();
+
+CREATE FUNCTION check_merchant_user() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public."user" WHERE id = NEW.user_id AND role = 'merchant' AND banned = NOT NEW.enabled) THEN
+    RAISE EXCEPTION 'Merchant requires an associated merchant account' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER merchant_user_role BEFORE INSERT ON public.merchant
+FOR EACH ROW EXECUTE FUNCTION check_merchant_user();
+
+-- Serialize session insertion with disabling, so restoring cannot revive a raced session.
+CREATE FUNCTION check_session_login() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE allowed boolean;
+BEGIN
+  SELECT role = 'admin' AND NOT banned INTO allowed FROM public."user"
+  WHERE id = NEW.user_id FOR SHARE;
+  IF allowed IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'Login unavailable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER session_login_allowed BEFORE INSERT ON public.session
+FOR EACH ROW EXECUTE FUNCTION check_session_login();

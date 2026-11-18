@@ -45,9 +45,12 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   const price = { rateUsd: "100000", quotedAt: new Date(), amountSat: 10000 };
   const input = { amountUsdCents: 1000 };
   const fixture = async () => {
-    const id = `m${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+    const slug = `m${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
+    const { id } = await createPaymentStore(clients[0].database).createMerchant(
+      { slug, name: "Test merchant", email: `${slug}@example.com` },
+      actor,
+    );
     merchantIds.push(id);
-    await createPaymentStore(clients[0].database).createMerchant(id);
     return id;
   };
   async function hold(query: SQL) {
@@ -92,7 +95,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       ),
     );
     await admin.database.execute(
-      sql`INSERT INTO public."user" (id,name,email) VALUES (${actor}, 'Test admin', ${`${actor}@example.com`})`,
+      sql`INSERT INTO public."user" (id,name,email,role) VALUES (${actor}, 'Test admin', ${`${actor}@example.com`}, 'admin')`,
     );
     clients = [connect(), connect(), connect()];
     pids = [];
@@ -109,6 +112,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   afterAll(async () => {
     try {
       if (admin) {
+        await admin.database.execute(sql`DELETE FROM admin_audit`);
         for (const id of merchantIds) {
           await admin.database.execute(sql`DELETE FROM settlement_item WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM payment_order WHERE merchant_id=${id}`);
@@ -360,12 +364,72 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     );
     await entered.promise;
     try {
-      const updated = createPaymentStore(clients[1].database).updateMerchant(id, false);
+      const updated = createPaymentStore(clients[1].database).updateMerchant(
+        id,
+        { enabled: false },
+        actor,
+      );
       await expect(updated).resolves.toMatchObject({ enabled: false });
     } finally {
       quote.resolve(price);
     }
     expect(await pending).toMatchObject({ code: "MERCHANT_DISABLED" });
     expect(wallet).not.toHaveBeenCalled();
+  });
+  test("concurrent disable requests preserve one enabled admin", async () => {
+    const store = createPaymentStore(clients[0].database);
+    const a = await store.createAdmin({ name: "Admin A", email: "admin-a@example.com" }, actor);
+    const b = await store.createAdmin({ name: "Admin B", email: "admin-b@example.com" }, actor);
+    await admin.database.execute(sql`UPDATE public."user" SET banned=true WHERE id=${actor}`);
+    const release = await hold(sql`SELECT pg_advisory_xact_lock(1380994389)`);
+    const pending = Promise.allSettled([
+      createPaymentStore(clients[0].database).updateUser(a.id, true, a.id),
+      createPaymentStore(clients[1].database).updateUser(b.id, true, b.id),
+    ]);
+    try {
+      await blocked(2);
+    } finally {
+      await release();
+    }
+    try {
+      const results = await pending;
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(results.find((r) => r.status === "rejected")).toMatchObject({
+        reason: { code: "LAST_ADMIN" },
+      });
+      const enabled = await admin.database.execute(
+        sql`SELECT id FROM public."user" WHERE role='admin' AND banned=false`,
+      );
+      expect(enabled).toHaveLength(1);
+    } finally {
+      await admin.database.execute(sql`UPDATE public."user" SET banned=false WHERE id=${actor}`);
+    }
+  });
+  test("disabling waits for an in-flight session insert then revokes it", async () => {
+    const store = createPaymentStore(clients[0].database);
+    const account = await store.createAdmin(
+      { name: "Session admin", email: "session-admin@example.com" },
+      actor,
+    );
+    const token = crypto.randomUUID();
+    const release = await hold(
+      sql`INSERT INTO session(id,token,user_id,expires_at) VALUES (${token},${token},${account.id},now()+interval '1 hour')`,
+    );
+    const pending = store.updateUser(account.id, true, actor);
+    try {
+      await blocked(1);
+    } finally {
+      await release();
+    }
+    await pending;
+    await expect(
+      clients[1].database.execute(
+        sql`INSERT INTO session(id,token,user_id,expires_at) VALUES (${token},${token},${account.id},now()+interval '1 hour')`,
+      ),
+    ).rejects.toThrow();
+    await store.updateUser(account.id, false, actor);
+    expect(
+      await clients[1].database.execute(sql`SELECT id FROM session WHERE user_id=${account.id}`),
+    ).toHaveLength(0);
   });
 });

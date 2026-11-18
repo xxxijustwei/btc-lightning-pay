@@ -24,14 +24,25 @@ export const merchant = pgTable(
   "merchant",
   {
     id: text("id").primaryKey(),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .unique()
+      .references(() => user.id, { onDelete: "restrict" }),
     enabled: boolean("enabled").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    check("merchant_id_format", sql`${t.id} ~ '^[a-z][a-z0-9-]{2,31}$'`),
+    check(
+      "merchant_id_format",
+      sql`${t.id} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check("merchant_slug_format", sql`${t.slug} ~ '^[a-z][a-z0-9-]{2,31}$'`),
+    check("merchant_name_length", sql`length(trim(${t.name})) BETWEEN 1 AND 100`),
     pgPolicy("merchant_access", {
       for: "all",
-      using: sql`${admin} OR ${tenant(t.id)}`,
+      using: sql`${admin} OR ${tenant(t.id)} OR ${t.slug} = nullif(current_setting('app.merchant_slug', true), '')`,
       withCheck: admin,
     }),
   ],

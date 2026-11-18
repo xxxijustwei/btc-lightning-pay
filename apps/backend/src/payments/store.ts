@@ -10,6 +10,7 @@ export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export type Scope = {
   admin?: boolean;
   merchantId?: string;
+  slug?: string;
   orderId?: string;
   repeatableRead?: boolean;
 };
@@ -17,6 +18,7 @@ export type TransactionRunner = <T>(
   scope: Scope,
   body: (tx: Transaction) => Promise<T>,
 ) => Promise<T>;
+import { createAdministrationStore } from "./administration";
 import { createSettlementStore } from "./settlements";
 export function createPaymentStore(db: Database, signal?: AbortSignal) {
   async function transaction<T>(scope: Scope, body: (tx: Transaction) => Promise<T>) {
@@ -25,7 +27,7 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
       if (scope.repeatableRead)
         await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
       await tx.execute(
-        sql`SELECT set_config('app.payment_admin', ${scope.admin ? "true" : "false"}, true), set_config('app.merchant_id', ${scope.merchantId ?? ""}, true), set_config('app.order_id', ${scope.orderId ?? ""}, true)`,
+        sql`SELECT set_config('app.payment_admin', ${scope.admin ? "true" : "false"}, true), set_config('app.merchant_id', ${scope.merchantId ?? ""}, true), set_config('app.order_id', ${scope.orderId ?? ""}, true), set_config('app.merchant_slug', ${scope.slug ?? ""}, true)`,
       );
       const result = await body(tx);
       signal?.throwIfAborted();
@@ -183,25 +185,13 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         return updated;
       });
     },
-    async createMerchant(id: string) {
-      return transaction({ admin: true }, async (tx) => {
-        const [row] = await tx.insert(merchant).values({ id }).onConflictDoNothing().returning();
-        if (!row) throw new PaymentFailure({ code: "MERCHANT_EXISTS" });
-        return row;
-      });
-    },
-    async merchants(limit: number, offset: number) {
-      return transaction({ admin: true }, async (tx) =>
-        tx.select().from(merchant).orderBy(merchant.id).limit(limit).offset(offset),
-      );
-    },
-    async updateMerchant(id: string, enabled: boolean) {
-      return transaction({ admin: true }, async (tx) => {
+    ...createAdministrationStore(transaction),
+    async merchantBySlug(slug: string) {
+      return transaction({ slug }, async (tx) => {
         const [row] = await tx
-          .update(merchant)
-          .set({ enabled })
-          .where(eq(merchant.id, id))
-          .returning();
+          .select({ id: merchant.id, slug: merchant.slug, enabled: merchant.enabled })
+          .from(merchant)
+          .where(eq(merchant.slug, slug));
         if (!row) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
         return row;
       });

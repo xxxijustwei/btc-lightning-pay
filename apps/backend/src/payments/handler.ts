@@ -12,7 +12,6 @@ import { createPaymentStore } from "./store";
 import { createQuoteSource } from "./quote";
 
 export type PaymentsBindings = AuthBindings & {
-  PAYMENTS_ADMIN_IDS?: string;
   WALLET_URL?: string;
   WALLET_TOKEN?: string;
 };
@@ -87,14 +86,7 @@ async function handleRequest(
         );
       const user = Schema.decodeUnknownSync(AuthUser)(await session.json());
       refreshedCookies = session.headers.getSetCookie();
-      if (
-        !(env.PAYMENTS_ADMIN_IDS ?? "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .includes(user.id)
-      )
-        throw new PaymentFailure({ code: "ADMIN_REQUIRED" });
+      if (user.role !== "admin") throw new PaymentFailure({ code: "ADMIN_REQUIRED" });
       actor = user.id;
     }
     const requestHeaders = new Headers(original.headers);

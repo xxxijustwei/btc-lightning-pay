@@ -1,3 +1,5 @@
+import { user as users } from "@btc-lightning-pay/db/schema";
+import { eq } from "drizzle-orm";
 import { createDatabase } from "@btc-lightning-pay/db/client";
 import {
   AuthUser,
@@ -60,7 +62,7 @@ export async function handleAuth(request: Request, env: AuthBindings): Promise<R
           deliveryFailed = true;
         }
       });
-      if (path === GetCurrentUser.path) {
+      if (path === GetCurrentUser.path || path === "/api/auth/get-session") {
         const response = yield* Effect.tryPromise(() =>
           auth.api.getSession({ headers: request.headers, asResponse: true }),
         );
@@ -69,8 +71,18 @@ export async function handleAuth(request: Request, env: AuthBindings): Promise<R
         const session = Schema.decodeUnknownSync(AuthSession)(value);
         const headers = new Headers(response.headers);
         headers.delete("content-length");
-        return session
-          ? Response.json(Schema.decodeUnknownSync(AuthUser)(session.user), { headers })
+        const [current] = session
+          ? yield* Effect.tryPromise(() =>
+              resource.database.select().from(users).where(eq(users.id, session.user.id)),
+            )
+          : [];
+        return session && current?.role === "admin" && !current.banned
+          ? Response.json(
+              path === GetCurrentUser.path
+                ? Schema.decodeUnknownSync(AuthUser)(session.user)
+                : value,
+              { headers },
+            )
           : Response.json({ code: "UNAUTHORIZED" } satisfies typeof AuthUnauthorized.Type, {
               status: 401,
               headers,

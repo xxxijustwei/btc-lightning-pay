@@ -2,7 +2,7 @@
 
 Monorepo：TanStack Start 前端、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
 
-业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
+用户、商户与两个独立管理前端的边界见 [用户管理](docs/user-management.md)。业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
 
 钱包服务接入与部署见 [后端说明](docs/backend-setup.md)。旧节点 demo 已移除。
 
@@ -65,7 +65,7 @@ packages/
 
 ## 环境配置
 
-健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；仅限预开户用户。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
+健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；第一阶段仅限已开通且启用的管理员登录，商户账号已建模但不开放登录。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
 前端 `wrangler.jsonc` 的 `BACKEND` 绑定名称对应后端 Worker 的 `name`；重命名时需同步修改。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 

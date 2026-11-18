@@ -13,7 +13,6 @@
 
 | 变量                          | 位置     | 用途                                            |
 | ----------------------------- | -------- | ----------------------------------------------- |
-| `PAYMENTS_ADMIN_IDS`          | Worker   | 已预开户管理员的 user.id 白名单                 |
 | `WALLET_URL`                  | Worker   | 本地 HTTP loopback 或生产 HTTPS 钱包服务 origin |
 | `WALLET_TOKEN`                | 两端     | 至少 32 字符的随机服务间 Bearer token           |
 | `BREEZ_API_KEY`               | 钱包服务 | Breez 接入凭证                                  |
@@ -28,13 +27,16 @@
 
 共享 Schema 从 `@btc-lightning-pay/api` 导入；完整路径和字段位于 [payments.ts](../packages/api/src/payments.ts)。前端添加同源 `/api/public/*` 与 `/api/admin/*` 代理，复用 `proxyBackendRequest` 和 `BACKEND` binding；不要代理 `/api/internal/*`，不要把 Wallet token 暴露给浏览器。管理员写请求必须保留 `Origin`，且与 `BETTER_AUTH_URL` 精确相同；管理接口同时要求真实会话和管理员 ID 白名单。
 
-创建商户：`POST /api/admin/merchants`，JSON `{"id":"onne"}`。商户 ID 为 3–32 位小写字母、数字或连字符，必须字母开头，创建后不能修改或删除。`PATCH /api/admin/merchants/onne` 的 `{"enabled":false}` 只阻止新订单。
+账号与商户接口完整说明见 [用户管理与前端交接](user-management.md)。管理员由数据库 `role=admin` 且 `banned=false` 授权，使用同一套邮箱 OTP 登录。
+
+创建商户：`POST /api/admin/merchants`，JSON `{"name":"Onne 商户","email":"merchant@example.com","slug":"onne"}`。一次事务创建用户和商户，返回内部 UUID `id` 与独立 `slug`。商户名称、邮箱仅管理接口返回。`slug` 为 3–32 位小写字母、数字或连字符，必须字母开头，创建后不可改、不回收。`PATCH /api/admin/merchants/:merchantId` 支持 `name`、`enabled`；禁用同步禁用账号、撤销会话并阻止新订单，已有 invoice 和结算继续处理。
 
 公开读取 `GET /api/public/merchants/onne` 返回：
 
 ```json
 {
-  "merchantId": "onne",
+  "merchantId": "11111111-1111-4111-8111-111111111111",
+  "slug": "onne",
   "enabled": true,
   "currency": "USD",
   "minAmountUsdCents": 1000,
@@ -47,7 +49,7 @@
 ```json
 {
   "id": "12345678-1234-4234-8234-123456789abc",
-  "merchantId": "onne",
+  "merchantId": "11111111-1111-4111-8111-111111111111",
   "amountUsdCents": 1500,
   "amountSat": 15000,
   "status": "creating",
@@ -63,7 +65,7 @@ HTTP 200 表示业务订单已经持久化，状态可能是 `creating`，不代
 
 商户和订单列表 API 默认 `limit=50&offset=0`，最大 100，offset 最大 100000。订单支持 `merchantId`、`status`、`from`（含）、`to`（不含）；时间用 ISO8601。返回数组，没有总数或游标。订单详情额外返回报价、备注、实际到账金额 `receivedMsat`、到账时间及 `settlementId`、`settlementStatus`；到账金额单位是 millisatoshi，1 sat = 1000 msat。
 
-`GET /api/admin/merchants/onne/summary` 返回 `merchantId` 和以下口径（金额单位 sats）：
+`GET /api/admin/merchants/:merchantId/summary` 返回 `merchantId` 和以下口径（金额单位 sats）：
 
 | 字段                     | 含义                                                                              |
 | ------------------------ | --------------------------------------------------------------------------------- |
@@ -85,7 +87,7 @@ POST /api/admin/settlements
 Idempotency-Key: 8b562e87-a348-4e04-9705-3c09b4ea7195
 Content-Type: application/json
 
-{"merchantId":"onne"}
+{"merchantId":"11111111-1111-4111-8111-111111111111"}
 ```
 
 创建时不再传 orderIds、amountSat 或 proof，旧字段和其他未知字段返回 400。后端在同一事务内固定该商户全部已确认到账、未被有效批次占用的订单及总金额，不限制为 100 笔；无可选订单返回 409 `NO_ELIGIBLE_ORDERS`。停用商户仍能结算历史收款。

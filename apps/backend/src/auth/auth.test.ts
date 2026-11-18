@@ -117,17 +117,14 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   expect(await me.json()).toEqual({
     id: expect.any(String),
     name: "Example User",
+    role: "admin",
     email: "user@example.com",
     image: null,
   });
   expect(me.headers.get("cache-control")).toBe("no-store");
   expect(close).toHaveBeenCalled();
   const adminRequest = new Request(`${config.url}/api/admin/merchants`, { headers: { cookie } });
-  expect((await worker.fetch(adminRequest, bindings)).status).toBe(403);
-  const [signedInUser] = await database.select().from(schema.user);
-  expect(
-    (await worker.fetch(adminRequest, { ...bindings, PAYMENTS_ADMIN_IDS: signedInUser.id })).status,
-  ).toBe(200);
+  expect((await worker.fetch(adminRequest, bindings)).status).toBe(200);
   expect(
     (
       await worker.fetch(
@@ -140,7 +137,7 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
           },
           body: JSON.stringify({ id: "forged" }),
         }),
-        { ...bindings, PAYMENTS_ADMIN_IDS: signedInUser.id },
+        bindings,
       )
     ).status,
   ).toBe(403);
@@ -359,4 +356,53 @@ test("HTTPS cookies are secure and expired sessions are rejected", async () => {
     { ...bindings, BETTER_AUTH_URL: url },
   );
   expect(me.status).toBe(401);
+});
+
+test("merchant and banned accounts cannot receive login emails or create sessions", async () => {
+  for (const [id, role, banned] of [
+    ["merchant", "merchant", false],
+    ["disabled", "admin", true],
+  ] as const) {
+    await database
+      .insert(schema.user)
+      .values({ id, name: id, email: `${id}@example.com`, role, banned });
+    const auth = makeAuth();
+    expect((await auth.handler(sendRequest(`${id}@example.com`))).status).toBe(200);
+    expect(send).not.toHaveBeenCalled();
+    // Even a valid server-generated OTP must not admit a merchant or banned user.
+    const otp = await auth.api.createVerificationOTP({
+      body: { email: `${id}@example.com`, type: "sign-in" },
+    });
+    expect(
+      (await auth.handler(request("/sign-in/email-otp", { email: `${id}@example.com`, otp })))
+        .status,
+    ).toBe(403);
+    expect(await database.select().from(schema.session)).toHaveLength(0);
+  }
+});
+
+test("disabled admins lose access and native admin capabilities stay private", async () => {
+  await pg.exec(provision);
+  const auth = makeAuth();
+  await auth.handler(sendRequest());
+  const login = await auth.handler(
+    request("/sign-in/email-otp", { email: "user@example.com", otp: send.mock.calls[0][0].otp }),
+  );
+  const cookie = cookieOf(login);
+  await database.update(schema.user).set({ banned: true });
+  for (const path of ["/api/me", "/api/auth/get-session", "/api/admin/users"]) {
+    expect(
+      (await worker.fetch(new Request(`${config.url}${path}`, { headers: { cookie } }), bindings))
+        .status,
+    ).toBe(401);
+  }
+  for (const path of [
+    "/admin/set-role",
+    "/admin/create-user",
+    "/admin/remove-user",
+    "/admin/impersonate-user",
+    "/email-otp/create-verification-otp",
+  ]) {
+    expect((await handleAuth(request(path, {}, cookie), bindings)).status).toBe(404);
+  }
 });

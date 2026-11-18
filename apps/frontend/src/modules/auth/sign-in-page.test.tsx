@@ -127,7 +127,9 @@ test("upstream errors do not introduce a client cooldown", async () => {
 test("logout only clears cache and redirects after server success", async () => {
   signOut.mockResolvedValueOnce({ error: { status: 503 } }).mockResolvedValueOnce({ error: null });
   const client = mount(
-    <AccountHeader user={{ id: "u1", name: "Test User", email: "user@example.com" }} />,
+    <AccountHeader
+      user={{ role: "admin", id: "u1", name: "Test User", email: "user@example.com" }}
+    />,
   );
   client.setQueryData(["private"], "data");
   const user = userEvent.setup();
