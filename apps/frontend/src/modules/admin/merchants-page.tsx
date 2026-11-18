@@ -131,7 +131,6 @@ export function MerchantsPage() {
     <AdminPage
       crumbs={[{ label: "商户" }]}
       title="商户"
-      description="名称仅内部可见；slug 即公开收款链接，创建后不可修改，也不会回收。"
       actions={
         <Button onClick={() => setCreating(true)}>
           <Plus data-icon="inline-start" aria-hidden="true" />

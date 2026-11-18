@@ -4,11 +4,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { INVOICE, ORDER_ID, json, order, stubFetch } from "../../test/fixtures";
 import { InvoicePage } from "./invoice-page";
 
-function renderPage(newInvoiceHref?: string) {
+function renderPage(merchantSlug?: string) {
   const queryClient = new QueryClient();
   render(
     <QueryClientProvider client={queryClient}>
-      <InvoicePage orderId={ORDER_ID} newInvoiceHref={newInvoiceHref} />
+      <InvoicePage orderId={ORDER_ID} merchantSlug={merchantSlug} />
     </QueryClientProvider>,
   );
   return queryClient;
@@ -20,7 +20,7 @@ describe("InvoicePage", () => {
     stubFetch({
       [`GET /api/public/orders/${ORDER_ID}`]: () => json(responses.shift() ?? order("paid")),
     });
-    const queryClient = renderPage();
+    const queryClient = renderPage("onne");
 
     expect(await screen.findByText("Awaiting payment")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Pay with Cash App →" }).getAttribute("href")).toBe(
@@ -31,6 +31,7 @@ describe("InvoicePage", () => {
 
     await act(() => queryClient.refetchQueries());
     expect(await screen.findByRole("heading", { name: "Payment received" })).toBeTruthy();
+    expect(screen.getByText("Paid to").nextElementSibling?.textContent).toBe("onne");
   });
 
   it("keeps the invoice on screen and says it is reconnecting when a refresh fails", async () => {
@@ -54,7 +55,7 @@ describe("InvoicePage", () => {
 
   it("offers a new invoice from the original merchant link once expired", async () => {
     stubFetch({ [`GET /api/public/orders/${ORDER_ID}`]: () => json(order("expired")) });
-    renderPage("/onne");
+    renderPage("onne");
     expect(await screen.findByRole("heading", { name: "This invoice has expired" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Get a new invoice" }).getAttribute("href")).toBe(
       "/onne",

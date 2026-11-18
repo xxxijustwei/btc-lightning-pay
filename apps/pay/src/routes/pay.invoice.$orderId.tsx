@@ -15,5 +15,5 @@ export const Route = createFileRoute("/pay/invoice/$orderId")({
 function Invoice() {
   const { orderId } = Route.useParams();
   const { m } = Route.useSearch();
-  return <InvoicePage orderId={orderId} newInvoiceHref={m ? `/${m}` : undefined} />;
+  return <InvoicePage orderId={orderId} merchantSlug={m} />;
 }

@@ -129,7 +129,6 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
     <AdminPage
       crumbs={[{ label: "账号" }]}
       title="账号"
-      description="只有启用的管理员能用邮箱验证码登录，所有管理员权限相同。商户账号随商户创建，第一阶段不能登录。"
       actions={
         <Button onClick={() => setCreating(true)}>
           <Plus data-icon="inline-start" aria-hidden="true" />

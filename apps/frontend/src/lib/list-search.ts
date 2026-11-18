@@ -50,6 +50,8 @@ export const settlementsSearch = {
   ...paginationParsers,
   merchantId: parseAsMerchantId,
   status: parseAsStringLiteral(SettlementStatus.literals),
+  from: parseAsDay,
+  to: parseAsDay,
 };
 
 export const accountsSearch = {

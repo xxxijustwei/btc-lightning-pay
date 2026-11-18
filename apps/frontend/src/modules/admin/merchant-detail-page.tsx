@@ -76,11 +76,6 @@ export function MerchantDetailPage({ merchantId }: { merchantId: string }) {
           <EnabledBadge enabled={data.enabled} />
         </>
       }
-      description={
-        <>
-          <span className="font-mono">/{data.slug}</span> · {data.email}
-        </>
-      }
       actions={
         <>
           {payOrigin ? (
@@ -150,6 +145,12 @@ export function MerchantDetailPage({ merchantId }: { merchantId: string }) {
 
 function SummarySection({ merchantId }: { merchantId: string }) {
   const summary = useQuery(summaryQuery(merchantId));
+  const pendingQuery = { merchantId, status: "pending" as const, limit: 1, offset: 0 };
+  const pendingSettlements = useQuery({
+    queryKey: ["admin", "settlements", pendingQuery],
+    queryFn: ({ signal }) => adminApi.settlements(pendingQuery, signal),
+  });
+  const pendingCount = pendingSettlements.data?.total ?? 0;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // One click → one key; a retry after a network error reuses it and returns the same batch.
@@ -185,7 +186,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
     {
       label: "待付款占用",
       value: data?.pendingSettlementSat,
-      badge: data && data.pendingSettlementSat > 0,
+      badge: data && data.pendingSettlementSat > 0 && pendingCount > 0,
     },
     { label: "可生成结算单", value: data?.availableSettlementSat },
   ];
@@ -200,7 +201,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
               <CardHeader>
                 <CardDescription className="flex items-center justify-between gap-2">
                   {card.label}
-                  {card.badge ? <Badge variant="warning">待付款</Badge> : null}
+                  {card.badge ? <Badge variant="warning">{pendingCount} 张待付款</Badge> : null}
                 </CardDescription>
                 <CardTitle className="text-2xl font-semibold tabular-nums">
                   {card.value === undefined ? (

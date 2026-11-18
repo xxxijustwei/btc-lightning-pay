@@ -17,13 +17,17 @@ export function DateRangePicker({
   to,
   onChange,
   label = "日期范围",
+  showLabel = false,
 }: {
   from: string | null;
   to: string | null;
   onChange: (range: { from: string | null; to: string | null }) => void;
   label?: string;
+  /** Show the label inside the trigger, e.g. 「生成时间：全部」. */
+  showLabel?: boolean;
 }) {
-  const text = from ? (to && to !== from ? `${from} – ${to}` : from) : "全部日期";
+  const range = from ? (to && to !== from ? `${from} – ${to}` : from) : null;
+  const text = showLabel ? `${label}：${range ?? "全部"}` : (range ?? "全部日期");
   return (
     <div className="flex items-center">
       <Popover>
@@ -32,7 +36,7 @@ export function DateRangePicker({
             <Button
               variant="outline"
               size="sm"
-              aria-label={`${label}：${text}`}
+              aria-label={showLabel ? text : `${label}：${text}`}
               className="font-normal"
             />
           }

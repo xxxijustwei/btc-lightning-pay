@@ -117,7 +117,14 @@ export const adminApi = {
     call(`/api/admin/orders/${orderId}`, Schema.decodeUnknownSync(AdminOrder), { signal }),
 
   settlements: (
-    query: { limit: number; offset: number; merchantId?: string; status?: SettlementStatusValue },
+    query: {
+      limit: number;
+      offset: number;
+      merchantId?: string;
+      status?: SettlementStatusValue;
+      from?: string;
+      to?: string;
+    },
     signal?: AbortSignal,
   ) => call("/api/admin/settlements", Schema.decodeUnknownSync(SettlementPage), { query, signal }),
   settlement: (settlementId: string, signal?: AbortSignal) =>

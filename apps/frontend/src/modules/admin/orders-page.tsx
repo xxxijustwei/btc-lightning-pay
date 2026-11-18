@@ -123,11 +123,7 @@ export function OrdersPage() {
   });
 
   return (
-    <AdminPage
-      crumbs={[{ label: "订单" }]}
-      title="订单"
-      description="状态由后端核实到账后更新；已过期订单若晚到账，仍会更新为已支付并记账。时间为北京时间。"
-    >
+    <AdminPage crumbs={[{ label: "订单" }]} title="订单">
       <table.AppTable>
         <section aria-label="订单列表" className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">

@@ -6,8 +6,15 @@ import { Plus } from "lucide-react";
 import { useQueryStates } from "nuqs";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
 import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
+import { DateRangePicker } from "../../components/date-range-picker";
 import { adminApi, type SettlementData, type SettlementStatusValue } from "../../lib/api/admin";
-import { formatBeijing, formatSats, shortId } from "../../lib/format";
+import {
+  beijingDayEnd,
+  beijingDayStart,
+  formatBeijing,
+  formatSats,
+  shortId,
+} from "../../lib/format";
 import { paginationState, paginationUpdate, settlementsSearch } from "../../lib/list-search";
 import { ErrorState, SettlementStatusBadge, settlementStatusOptions } from "./common";
 import { MerchantCell, MerchantSelect } from "./merchant-select";
@@ -86,6 +93,8 @@ export function SettlementsPage() {
     offset: search.page * search.size,
     merchantId: search.merchantId ?? undefined,
     status: search.status ?? undefined,
+    from: search.from ? beijingDayStart(search.from) : undefined,
+    to: search.to ? beijingDayEnd(search.to) : undefined,
   };
   const settlements = useQuery({
     queryKey: ["admin", "settlements", query],
@@ -107,7 +116,6 @@ export function SettlementsPage() {
     <AdminPage
       crumbs={[{ label: "结算单" }]}
       title="结算单"
-      description="生成 → 线下转账 → 填凭证确认。系统不执行转账；时间均为北京时间。"
       actions={
         <Button nativeButton={false} render={<Link to="/merchants" />}>
           <Plus data-icon="inline-start" aria-hidden="true" />
@@ -121,6 +129,13 @@ export function SettlementsPage() {
             <MerchantSelect
               value={search.merchantId}
               onChange={(merchantId) => void setSearch({ merchantId, page: null })}
+            />
+            <DateRangePicker
+              label="生成时间"
+              showLabel
+              from={search.from}
+              to={search.to}
+              onChange={({ from, to }) => void setSearch({ from, to, page: null })}
             />
             <ToggleGroup
               variant="outline"

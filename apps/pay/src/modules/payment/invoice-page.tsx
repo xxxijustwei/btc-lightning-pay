@@ -29,12 +29,13 @@ export function orderPollInterval(query: Query<PublicOrderData, Error>): number 
 
 export function InvoicePage({
   orderId,
-  newInvoiceHref,
+  merchantSlug,
 }: {
   orderId: string;
-  /** Link back to the merchant's amount page, when known. */
-  newInvoiceHref?: string;
+  /** Slug of the merchant link the payer came from, when known. */
+  merchantSlug?: string;
 }) {
+  const newInvoiceHref = merchantSlug ? `/${merchantSlug}` : undefined;
   const order = useQuery({
     queryKey: ["public-order", orderId],
     queryFn: ({ signal }) => getOrder(orderId, signal),
@@ -72,7 +73,13 @@ export function InvoicePage({
         <CreatingView amountUsdCents={data.amountUsdCents} reconnecting={reconnecting} />
       );
     case "paid":
-      return <PaidView amountUsdCents={data.amountUsdCents} orderId={data.id} />;
+      return (
+        <PaidView
+          amountUsdCents={data.amountUsdCents}
+          orderId={data.id}
+          merchantSlug={merchantSlug}
+        />
+      );
     case "expired":
       return (
         <ExpiredView
@@ -137,15 +144,10 @@ function CreatingView({
   return (
     <PayShell
       footer={
-        <>
-          <button type="button" disabled className={primaryActionClass}>
-            <Spinner aria-hidden="true" className="size-4" />
-            Preparing invoice
-          </button>
-          <p className="text-center text-[13px] font-bold text-pay-muted">
-            Your order is saved — refreshing won't create a second invoice.
-          </p>
-        </>
+        <button type="button" disabled className={primaryActionClass}>
+          <Spinner aria-hidden="true" className="size-4" />
+          Preparing invoice
+        </button>
       }
     >
       {reconnecting ? <ReconnectingBanner /> : null}
@@ -187,15 +189,10 @@ function PendingView({
   return (
     <PayShell
       footer={
-        <>
-          <a href={`https://cash.app/launch/lightning/${invoice}`} className={primaryActionClass}>
-            <Lock aria-hidden="true" className="size-4" strokeWidth={2.4} />
-            Pay with Cash App →
-          </a>
-          <p className="text-center text-[13px] font-bold text-pay-muted">
-            Or scan the QR with any Lightning wallet.
-          </p>
-        </>
+        <a href={`https://cash.app/launch/lightning/${invoice}`} className={primaryActionClass}>
+          <Lock aria-hidden="true" className="size-4" strokeWidth={2.4} />
+          Pay with Cash App →
+        </a>
       }
     >
       {reconnecting ? <ReconnectingBanner /> : null}
@@ -302,15 +299,17 @@ function CopyInvoice({ invoice }: { invoice: string }) {
   );
 }
 
-function PaidView({ amountUsdCents, orderId }: { amountUsdCents: number; orderId: string }) {
+function PaidView({
+  amountUsdCents,
+  orderId,
+  merchantSlug,
+}: {
+  amountUsdCents: number;
+  orderId: string;
+  merchantSlug?: string;
+}) {
   return (
-    <PayShell
-      footer={
-        <p className="text-center text-[13px] font-bold text-pay-muted">
-          Keep this link as your receipt.
-        </p>
-      }
-    >
+    <PayShell>
       <section
         role="status"
         className="flex flex-col items-center gap-3 rounded-[18px] bg-pay-panel px-5 pt-9 pb-7 text-center"
@@ -326,9 +325,19 @@ function PaidView({ amountUsdCents, orderId }: { amountUsdCents: number; orderId
           <dt className="text-sm font-bold text-pay-muted">Amount</dt>
           <dd className="text-base font-black">{formatUsd(amountUsdCents)}</dd>
         </div>
+        {merchantSlug ? (
+          <div className="flex items-center justify-between gap-4 border-b border-[#eef1f5] py-[15px]">
+            <dt className="text-sm font-bold text-pay-muted">Paid to</dt>
+            <dd className="truncate text-[15px] font-extrabold">{merchantSlug}</dd>
+          </div>
+        ) : null}
         <div className="flex items-center justify-between gap-4 py-[15px]">
           <dt className="text-sm font-bold text-pay-muted">Order</dt>
-          <dd className="truncate font-mono text-[13px] text-[#374151]">{orderId}</dd>
+          <dd className="font-mono text-[13px] text-[#374151]">
+            <abbr title={orderId} className="no-underline">
+              {orderId.slice(0, 8)}…{orderId.slice(-4)}
+            </abbr>
+          </dd>
         </div>
       </dl>
     </PayShell>

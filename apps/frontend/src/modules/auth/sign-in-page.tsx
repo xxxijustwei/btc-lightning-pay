@@ -3,9 +3,10 @@ import { useForm } from "@tanstack/react-form";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { z } from "zod";
-import { ArrowLeft, Mail, Zap } from "lucide-react";
+import { ArrowLeft, ArrowRight, CircleAlert, Mail, Zap } from "lucide-react";
 import { Alert, AlertDescription } from "@btc-lightning-pay/ui/components/alert";
 import { Button } from "@btc-lightning-pay/ui/components/button";
+import { Card, CardContent } from "@btc-lightning-pay/ui/components/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@btc-lightning-pay/ui/components/field";
 import {
   InputGroup,
@@ -101,108 +102,26 @@ export function SignInPage() {
   });
   const isCode = step === "code";
   return (
-    <main className="flex min-h-dvh items-center justify-center px-6 py-12">
-      <section aria-labelledby="sign-in-title" className="flex w-full max-w-86 flex-col gap-7">
-        <div className="flex flex-col items-center gap-5 text-center">
-          <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Zap className="size-5" aria-hidden="true" />
-          </div>
-          <div className="space-y-2">
-            <p className="text-xs font-medium tracking-wide text-muted-foreground">
-              BTC Lightning Pay
-            </p>
-            <h1 id="sign-in-title" className="text-2xl font-semibold tracking-tight">
-              {isCode ? "输入验证码" : "登录"}
-            </h1>
-          </div>
+    <main className="flex min-h-dvh items-center justify-center bg-muted/40 px-4 py-12">
+      <section aria-labelledby="sign-in-title" className="flex w-full max-w-100 flex-col gap-6">
+        <div className="flex items-center justify-center gap-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <Zap className="size-4" aria-hidden="true" />
+          </span>
+          <span className="text-sm font-semibold">Lightning Pay</span>
         </div>
-        <div
-          key={step}
-          className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
-        >
-          {isCode ? (
-            <form
-              noValidate
-              className="flex flex-col gap-5"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void codeForm.handleSubmit();
-              }}
-            >
-              <p role="status" className="text-center text-sm leading-6 text-muted-foreground">
-                <span className="break-all">{email}</span>
-              </p>
-              <codeForm.Field name="code">
-                {(field) => {
-                  const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-                  return (
-                    <Field data-invalid={invalid} className="items-center">
-                      <FieldLabel htmlFor="code" className="sr-only">
-                        六位验证码
-                      </FieldLabel>
-                      <InputOTP
-                        ref={codeInput}
-                        id="code"
-                        name="code"
-                        maxLength={6}
-                        pattern="^[0-9]*$"
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        value={field.state.value}
-                        onChange={field.handleChange}
-                        onBlur={field.handleBlur}
-                        onComplete={(code) => {
-                          field.handleChange(code);
-                          void codeForm.handleSubmit();
-                        }}
-                        disabled={pending !== null}
-                        aria-invalid={invalid}
-                        aria-describedby={invalid ? "code-error" : undefined}
-                        containerClassName="justify-center motion-reduce:[&_*]:animate-none"
-                      >
-                        <InputOTPGroup>
-                          {slots.map((index) => (
-                            <InputOTPSlot
-                              key={index}
-                              index={index}
-                              className="size-11 text-lg"
-                              aria-invalid={invalid}
-                            />
-                          ))}
-                        </InputOTPGroup>
-                      </InputOTP>
-                      {invalid && (
-                        <FieldError
-                          id="code-error"
-                          errors={field.state.meta.errors}
-                          className="text-center"
-                        />
-                      )}
-                    </Field>
-                  );
-                }}
-              </codeForm.Field>
-              {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              )}
-              <Button
-                size="lg"
-                type="submit"
-                disabled={pending !== null}
-                aria-busy={pending === "verify"}
-              >
-                {pending === "verify" && (
-                  <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
-                )}
-                {pending === "verify" ? "正在验证…" : "验证并登录"}
-              </Button>
-              <div className="flex items-center justify-between gap-2">
+        <Card>
+          <CardContent
+            key={step}
+            className="flex flex-col gap-6 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-1 motion-safe:duration-150"
+          >
+            {isCode ? (
+              <>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
+                  className="-ml-2.5 self-start"
                   disabled={pending !== null}
                   onClick={() => {
                     setStep("email");
@@ -210,83 +129,190 @@ export function SignInPage() {
                     codeForm.reset();
                   }}
                 >
-                  <ArrowLeft aria-hidden="true" />
+                  <ArrowLeft data-icon="inline-start" aria-hidden="true" />
                   更换邮箱
                 </Button>
-                <Button
-                  type="button"
-                  variant="link"
-                  size="sm"
-                  disabled={pending !== null}
-                  onClick={() => void sendCode(email)}
+                <div className="flex flex-col gap-2">
+                  <h1 id="sign-in-title" className="text-xl font-semibold tracking-tight">
+                    输入验证码
+                  </h1>
+                  <p role="status" className="text-sm leading-relaxed text-muted-foreground">
+                    已发送至 <span className="font-medium break-all text-foreground">{email}</span>
+                    ，5 分钟内有效。
+                  </p>
+                </div>
+                <form
+                  noValidate
+                  className="flex flex-col gap-5"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void codeForm.handleSubmit();
+                  }}
                 >
-                  {pending === "send" ? "正在发送…" : "重新发送"}
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <form
-              noValidate
-              onSubmit={(event) => {
-                event.preventDefault();
-                void emailForm.handleSubmit();
-              }}
-            >
-              <FieldGroup className="gap-5">
-                <emailForm.Field name="email">
-                  {(field) => {
-                    const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
-                    return (
-                      <Field data-invalid={invalid}>
-                        <FieldLabel htmlFor="email">邮箱地址</FieldLabel>
-                        <InputGroup>
-                          <InputGroupAddon aria-hidden="true">
-                            <Mail />
-                          </InputGroupAddon>
-                          <InputGroupInput
-                            id="email"
-                            name="email"
-                            type="email"
-                            inputMode="email"
-                            autoComplete="email"
-                            autoCapitalize="none"
-                            spellCheck={false}
-                            placeholder="you@example.com"
+                  <codeForm.Field name="code">
+                    {(field) => {
+                      const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
+                      return (
+                        <Field data-invalid={invalid}>
+                          <FieldLabel htmlFor="code" className="sr-only">
+                            六位验证码
+                          </FieldLabel>
+                          <InputOTP
+                            ref={codeInput}
+                            id="code"
+                            name="code"
+                            maxLength={6}
+                            pattern="^[0-9]*$"
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
                             value={field.state.value}
-                            onChange={(event) => field.handleChange(event.currentTarget.value)}
+                            onChange={field.handleChange}
                             onBlur={field.handleBlur}
+                            onComplete={(code) => {
+                              field.handleChange(code);
+                              void codeForm.handleSubmit();
+                            }}
                             disabled={pending !== null}
                             aria-invalid={invalid}
-                            aria-describedby={invalid ? "email-error" : undefined}
-                          />
-                        </InputGroup>
-                        {invalid && (
-                          <FieldError id="email-error" errors={field.state.meta.errors} />
-                        )}
-                      </Field>
-                    );
-                  }}
-                </emailForm.Field>
-                {error && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
-                )}
-                <Button
-                  size="lg"
-                  type="submit"
-                  disabled={pending !== null}
-                  aria-busy={pending === "send"}
-                >
-                  {pending === "send" && (
-                    <Spinner aria-hidden="true" className="motion-reduce:animate-none" />
+                            aria-describedby={invalid ? "code-error" : undefined}
+                            containerClassName="w-full motion-reduce:[&_*]:animate-none"
+                          >
+                            <InputOTPGroup className="w-full">
+                              {slots.map((index) => (
+                                <InputOTPSlot
+                                  key={index}
+                                  index={index}
+                                  className="h-12 flex-1 text-lg"
+                                  aria-invalid={invalid}
+                                />
+                              ))}
+                            </InputOTPGroup>
+                          </InputOTP>
+                          {invalid && (
+                            <FieldError id="code-error" errors={field.state.meta.errors} />
+                          )}
+                        </Field>
+                      );
+                    }}
+                  </codeForm.Field>
+                  {error && (
+                    <Alert variant="destructive">
+                      <CircleAlert aria-hidden="true" />
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
                   )}
-                  {pending === "send" ? "正在发送…" : "发送验证码"}
-                </Button>
-              </FieldGroup>
-            </form>
-          )}
-        </div>
+                  <Button
+                    size="lg"
+                    type="submit"
+                    disabled={pending !== null}
+                    aria-busy={pending === "verify"}
+                  >
+                    {pending === "verify" && (
+                      <Spinner
+                        data-icon="inline-start"
+                        aria-hidden="true"
+                        className="motion-reduce:animate-none"
+                      />
+                    )}
+                    {pending === "verify" ? "正在验证…" : "验证并登录"}
+                  </Button>
+                  <p className="flex items-center justify-center gap-1 text-sm text-muted-foreground">
+                    没收到邮件？
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="sm"
+                      className="h-8 px-1 text-foreground underline underline-offset-4"
+                      disabled={pending !== null}
+                      onClick={() => void sendCode(email)}
+                    >
+                      {pending === "send" ? "正在发送…" : "重新发送"}
+                    </Button>
+                  </p>
+                </form>
+              </>
+            ) : (
+              <>
+                <div className="flex flex-col gap-2">
+                  <h1 id="sign-in-title" className="text-xl font-semibold tracking-tight">
+                    登录管理后台
+                  </h1>
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    输入管理员邮箱，我们会发送一个 6 位数字验证码。
+                  </p>
+                </div>
+                <form
+                  noValidate
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void emailForm.handleSubmit();
+                  }}
+                >
+                  <FieldGroup className="gap-5">
+                    <emailForm.Field name="email">
+                      {(field) => {
+                        const invalid = field.state.meta.isTouched && !field.state.meta.isValid;
+                        return (
+                          <Field data-invalid={invalid}>
+                            <FieldLabel htmlFor="email">邮箱地址</FieldLabel>
+                            <InputGroup className="h-10">
+                              <InputGroupAddon aria-hidden="true">
+                                <Mail />
+                              </InputGroupAddon>
+                              <InputGroupInput
+                                id="email"
+                                name="email"
+                                type="email"
+                                inputMode="email"
+                                autoComplete="email"
+                                autoCapitalize="none"
+                                spellCheck={false}
+                                placeholder="you@example.com"
+                                value={field.state.value}
+                                onChange={(event) => field.handleChange(event.currentTarget.value)}
+                                onBlur={field.handleBlur}
+                                disabled={pending !== null}
+                                aria-invalid={invalid}
+                                aria-describedby={invalid ? "email-error" : undefined}
+                              />
+                            </InputGroup>
+                            {invalid && (
+                              <FieldError id="email-error" errors={field.state.meta.errors} />
+                            )}
+                          </Field>
+                        );
+                      }}
+                    </emailForm.Field>
+                    {error && (
+                      <Alert variant="destructive">
+                        <CircleAlert aria-hidden="true" />
+                        <AlertDescription>{error}</AlertDescription>
+                      </Alert>
+                    )}
+                    <Button
+                      size="lg"
+                      type="submit"
+                      disabled={pending !== null}
+                      aria-busy={pending === "send"}
+                    >
+                      {pending === "send" && (
+                        <Spinner
+                          data-icon="inline-start"
+                          aria-hidden="true"
+                          className="motion-reduce:animate-none"
+                        />
+                      )}
+                      {pending === "send" ? "正在发送…" : "发送验证码"}
+                      {pending === "send" ? null : (
+                        <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                      )}
+                    </Button>
+                  </FieldGroup>
+                </form>
+              </>
+            )}
+          </CardContent>
+        </Card>
       </section>
     </main>
   );

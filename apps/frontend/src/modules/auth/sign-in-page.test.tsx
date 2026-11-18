@@ -70,7 +70,7 @@ test("sending disables duplicate requests and normalizes email", async () => {
   expect(send).toHaveBeenCalledWith({ email: "user@example.com", type: "sign-in" });
   await act(async () => finish({ error: null }));
   expect(await screen.findByLabelText("六位验证码")).toBeTruthy();
-  expect(screen.getByRole("status").textContent).toBe("user@example.com");
+  expect(screen.getByRole("status").textContent).toBe("已发送至 user@example.com，5 分钟内有效。");
 });
 test("pasting six digits submits once, clears private cache and returns home", async () => {
   send.mockResolvedValue({ error: null });

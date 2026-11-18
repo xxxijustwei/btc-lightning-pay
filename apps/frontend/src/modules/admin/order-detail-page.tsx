@@ -9,7 +9,8 @@ import {
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { adminApi } from "../../lib/api/admin";
+import { adminApi, type AdminOrderData, type SettlementData } from "../../lib/api/admin";
+import { invoiceCreatedAt } from "../../lib/bolt11";
 import { formatBeijing, formatMsatAsSats, formatSats, formatUsd, shortId } from "../../lib/format";
 import {
   CopyButton,
@@ -28,6 +29,12 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   const order = useQuery({
     queryKey: ["admin", "order", orderId],
     queryFn: ({ signal }) => adminApi.order(orderId, signal),
+  });
+  const settlementId = order.data?.settlementId ?? null;
+  const settlement = useQuery({
+    queryKey: ["admin", "settlement", settlementId],
+    queryFn: ({ signal }) => adminApi.settlement(settlementId!, signal),
+    enabled: settlementId !== null,
   });
   const names = useMerchantNames();
   const crumbs = [{ label: "订单", to: "/orders" }, { label: shortId(orderId) }];
@@ -125,7 +132,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             </CardHeader>
             <CardContent className="flex flex-col gap-5">
               <dl className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-x-6 gap-y-4">
-                <Detail label="创建时间">{formatBeijing(data.createdAt)}</Detail>
+                <Detail label="开票时间">{formatBeijing(invoiceCreatedAt(data.invoice))}</Detail>
                 <Detail label="到期时间">{formatBeijing(data.expiresAt)}</Detail>
                 <Detail label="Invoice 金额">
                   <span className="font-mono">{formatSats(data.amountSat)} sats</span>
@@ -151,7 +158,12 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                     <>
                       <span className="font-mono">{formatMsatAsSats(data.receivedMsat)} sats</span>
                       <span className="block font-mono text-xs text-muted-foreground">
-                        {data.receivedMsat.toLocaleString("en-US")} msat
+                        {data.receivedMsat.toLocaleString("en-US")} msat ·{" "}
+                        {data.receivedMsat === data.amountSat * 1000 ? (
+                          "与 invoice 金额核对一致"
+                        ) : (
+                          <span className="text-destructive">与 invoice 金额不一致</span>
+                        )}
                       </span>
                     </>
                   )}
@@ -175,6 +187,14 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
           </Card>
         </div>
         <div className="flex min-w-0 flex-[1_1_300px] flex-col gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>时间线</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Timeline events={timeline(data, settlement.data)} />
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader>
               <CardTitle>结算</CardTitle>
@@ -244,5 +264,61 @@ function LongValue({
         {value ?? "—"}
       </p>
     </div>
+  );
+}
+
+type TimelineEvent = { label: string; at: string | null; tone: string; detail?: string };
+
+/** Order history from the timestamps the order and its settlement record. */
+function timeline(order: AdminOrderData, settlement: SettlementData | undefined): TimelineEvent[] {
+  const events: TimelineEvent[] = [
+    { label: "订单创建，报价锁定", at: order.createdAt, tone: "bg-primary" },
+  ];
+  if (order.invoice)
+    events.push({
+      label: "Invoice 已创建",
+      at: invoiceCreatedAt(order.invoice),
+      tone: "bg-primary",
+    });
+  if (order.paidAt) events.push({ label: "后端核实到账", at: order.paidAt, tone: "bg-success" });
+  else if (order.status === "expired")
+    events.push({ label: "Invoice 已过期", at: order.expiresAt, tone: "bg-muted-foreground" });
+  else if (order.status === "failed")
+    events.push({ label: "开票失败", at: null, tone: "bg-destructive" });
+  if (order.settlementId) {
+    const pending = order.settlementStatus === "pending";
+    events.push({
+      label: pending ? "进入结算单（待付款）" : "进入结算单",
+      at: settlement?.createdAt ?? null,
+      tone: pending ? "bg-warning" : "bg-primary",
+      detail: shortId(order.settlementId),
+    });
+    if (settlement?.status === "settled")
+      events.push({ label: "结算单已确认付款", at: settlement.confirmedAt, tone: "bg-success" });
+  }
+  return events;
+}
+
+function Timeline({ events }: { events: TimelineEvent[] }) {
+  return (
+    <ol className="flex flex-col text-sm">
+      {events.map((event, index) => (
+        <li key={event.label} className="flex gap-3">
+          <div className="flex flex-col items-center">
+            <span aria-hidden="true" className={`mt-1.5 size-2.5 rounded-full ${event.tone}`} />
+            {index < events.length - 1 ? (
+              <span aria-hidden="true" className="min-h-7 w-px flex-1 bg-border" />
+            ) : null}
+          </div>
+          <div className={index < events.length - 1 ? "pb-4" : undefined}>
+            <p className="font-medium">{event.label}</p>
+            <p className="text-muted-foreground tabular-nums">
+              {formatBeijing(event.at)}
+              {event.detail ? <span className="font-mono"> · {event.detail}</span> : null}
+            </p>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }
