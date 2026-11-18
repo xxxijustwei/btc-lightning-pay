@@ -15,6 +15,26 @@ Applies to `apps/frontend`, `apps/pay` and `packages/ui`.
 - Create QueryClient instances per router and keep Jotai state within the app Provider
   for SSR isolation. Preserve the Query SSR integration and nuqs adapter in place.
 
+## Admin lists and forms
+
+- Lists use TanStack Table through `components/data-table`: `table-hook.ts` registers
+  the features and typed column/table meta once; pages build columns with
+  `createAppColumnHelper`, call `useAppTable`, and render `<DataTable />` and
+  `<DataTablePagination />` inside `<table.AppTable>`. Define columns at module scope
+  (or memoize them when they close over props) and keep empty-data constants stable.
+- Filters and pagination live in the URL. Declare parsers in `lib/list-search.ts`,
+  read them with `useQueryStates`, register `searchSchema(parsers)` as the route's
+  `validateSearch`, and pass pagination to the table as controlled state. Lists
+  paginate on the server with `manualPagination`; when the API returns no total,
+  fetch one extra row, derive `pageCount`, and set `meta.totalKnown = false`.
+- Forms use TanStack Form inside `FormDialog`. Field rules come from the shared
+  contract schemas in `lib/validation.ts`; server conflicts stay in mutation state
+  and render under the matching field. Simple confirmations use `ConfirmDialog`.
+- Successful writes report through the shadcn toast (`toast.add`); `<Toaster />` is
+  mounted once in the admin shell. Failures stay inline in the dialog or page.
+- Admin times display in Beijing time through `lib/format.ts` (`@date-fns/tz`);
+  date-range filters store calendar days in the URL and send UTC instants to the API.
+
 ## Shared UI
 
 - Use the existing shadcn/ui source with preset `bIkeymG`, Base UI primitives,

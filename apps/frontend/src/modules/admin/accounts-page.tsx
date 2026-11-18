@@ -8,19 +8,15 @@ import {
   FieldLabel,
 } from "@btc-lightning-pay/ui/components/field";
 import { Input } from "@btc-lightning-pay/ui/components/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@btc-lightning-pay/ui/components/table";
+import { toast } from "@btc-lightning-pay/ui/components/toast";
 import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
+import { useForm } from "@tanstack/react-form";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useQueryStates } from "nuqs";
+import { useMemo, useState } from "react";
+import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
+import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
 import {
   AdminApiError,
   adminApi,
@@ -28,31 +24,106 @@ import {
   type ManagedUserData,
 } from "../../lib/api/admin";
 import { formatBeijing } from "../../lib/format";
-import { ConfirmDialog, EmptyRow, ErrorState, ListPagination, LoadingRows } from "./common";
-import { useMerchantNames } from "./merchant-select";
+import { accountsSearch, paginationState, paginationUpdate } from "../../lib/list-search";
+import { fieldErrors, normalizeEmail, validateEmail, validateName } from "../../lib/validation";
+import { ConfirmDialog, ErrorState } from "./common";
+import { FormDialog } from "./form-dialog";
+import { MerchantCell } from "./merchant-select";
 import { AdminPage } from "./shell";
 
-type Role = "all" | "admin" | "merchant";
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const helper = createAppColumnHelper<ManagedUserData>();
+const noRows: ManagedUserData[] = [];
 
 export function AccountsPage({ currentUserId }: { currentUserId: string }) {
-  const [role, setRole] = useState<Role>("all");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [search, setSearch] = useQueryStates(accountsSearch);
   const [creating, setCreating] = useState(false);
   const [target, setTarget] = useState<ManagedUserData | null>(null);
-  const merchants = useMerchantNames();
+  const pagination = paginationState(search);
   const query = {
-    limit: pageSize + 1,
-    offset: (page - 1) * pageSize,
-    role: role === "all" ? undefined : role,
+    // One extra row tells whether a next page exists; the API returns no total.
+    limit: search.size + 1,
+    offset: search.page * search.size,
+    role: search.role ?? undefined,
   };
   const users = useQuery({
     queryKey: ["admin", "users", query],
     queryFn: ({ signal }) => adminApi.users(query, signal),
     placeholderData: keepPreviousData,
   });
-  const rows = users.data?.slice(0, pageSize) ?? [];
+  const fetched = users.data ?? noRows;
+  const hasNext = fetched.length > search.size;
+  const columns = useMemo(
+    () =>
+      helper.columns([
+        helper.accessor("name", {
+          header: "名称",
+          meta: { cellClassName: "font-medium" },
+          cell: ({ getValue, row }) => (
+            <>
+              {getValue()}
+              {row.original.id === currentUserId ? (
+                <span className="font-normal text-muted-foreground">（你）</span>
+              ) : null}
+            </>
+          ),
+        }),
+        helper.accessor("email", {
+          header: "邮箱",
+          meta: { cellClassName: "text-muted-foreground" },
+        }),
+        helper.accessor("role", {
+          header: "角色",
+          cell: ({ getValue }) =>
+            getValue() === "admin" ? <Badge>管理员</Badge> : <Badge variant="outline">商户</Badge>,
+        }),
+        helper.accessor("banned", {
+          header: "状态",
+          cell: ({ getValue }) =>
+            getValue() ? (
+              <Badge variant="secondary">已禁用</Badge>
+            ) : (
+              <Badge variant="success">正常</Badge>
+            ),
+        }),
+        helper.accessor("merchantId", {
+          header: "关联商户",
+          cell: ({ getValue }) => {
+            const merchantId = getValue();
+            return merchantId ? (
+              <MerchantCell merchantId={merchantId} />
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            );
+          },
+        }),
+        helper.accessor("createdAt", {
+          header: "创建时间",
+          meta: { cellClassName: "text-muted-foreground tabular-nums" },
+          cell: ({ getValue }) => formatBeijing(getValue(), false),
+        }),
+        helper.display({
+          id: "actions",
+          header: () => <span className="sr-only">操作</span>,
+          meta: { headerClassName: "text-right", cellClassName: "text-right" },
+          cell: ({ row }) => (
+            <Button variant="outline" size="sm" onClick={() => setTarget(row.original)}>
+              {row.original.banned ? "恢复" : "禁用"}
+            </Button>
+          ),
+        }),
+      ]),
+    [currentUserId],
+  );
+  const table = useAppTable({
+    columns,
+    data: hasNext ? fetched.slice(0, search.size) : fetched,
+    getRowId: (user) => user.id,
+    manualPagination: true,
+    pageCount: search.page + (hasNext ? 2 : 1),
+    state: { pagination },
+    onPaginationChange: (updater) => void setSearch(paginationUpdate(pagination, updater)),
+    meta: { totalKnown: false, emptyMessage: "没有账号。" },
+  });
 
   return (
     <AdminPage
@@ -66,114 +137,31 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
         </Button>
       }
     >
-      <section aria-label="账号列表" className="flex flex-col gap-3">
-        <ToggleGroup
-          variant="outline"
-          size="sm"
-          spacing={0}
-          aria-label="角色"
-          value={[role]}
-          onValueChange={(values) => {
-            const next = values[0] as Role | undefined;
-            if (next) {
-              setRole(next);
-              setPage(1);
-            }
-          }}
-        >
-          <ToggleGroupItem value="all">全部</ToggleGroupItem>
-          <ToggleGroupItem value="admin">管理员</ToggleGroupItem>
-          <ToggleGroupItem value="merchant">商户</ToggleGroupItem>
-        </ToggleGroup>
-        {users.isError ? (
-          <ErrorState error={users.error} onRetry={() => void users.refetch()} />
-        ) : (
-          <div className="overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader className="bg-muted">
-                <TableRow>
-                  <TableHead className="pl-4">名称</TableHead>
-                  <TableHead>邮箱</TableHead>
-                  <TableHead>角色</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>关联商户</TableHead>
-                  <TableHead>创建时间</TableHead>
-                  <TableHead className="pr-4 text-right">
-                    <span className="sr-only">操作</span>
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.isPending ? (
-                  <LoadingRows columns={7} />
-                ) : rows.length === 0 ? (
-                  <EmptyRow columns={7}>没有账号。</EmptyRow>
-                ) : (
-                  rows.map((user) => {
-                    const merchant = user.merchantId ? merchants.get(user.merchantId) : undefined;
-                    return (
-                      <TableRow key={user.id}>
-                        <TableCell className="pl-4 font-medium">
-                          {user.name}
-                          {user.id === currentUserId ? (
-                            <span className="font-normal text-muted-foreground">（你）</span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">{user.email}</TableCell>
-                        <TableCell>
-                          {user.role === "admin" ? (
-                            <Badge>管理员</Badge>
-                          ) : (
-                            <Badge variant="outline">商户</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {user.banned ? (
-                            <Badge variant="secondary">已禁用</Badge>
-                          ) : (
-                            <Badge variant="success">正常</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {user.merchantId ? (
-                            <Link
-                              to="/merchants/$merchantId"
-                              params={{ merchantId: user.merchantId }}
-                              className="underline-offset-4 hover:underline"
-                            >
-                              {merchant ? `${merchant.name} · /${merchant.slug}` : "查看商户"}
-                            </Link>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground tabular-nums">
-                          {formatBeijing(user.createdAt, false)}
-                        </TableCell>
-                        <TableCell className="pr-4 text-right">
-                          <Button variant="outline" size="sm" onClick={() => setTarget(user)}>
-                            {user.banned ? "恢复" : "禁用"}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-        <ListPagination
-          page={page}
-          pageSize={pageSize}
-          hasNext={(users.data?.length ?? 0) > pageSize}
-          onPageChange={setPage}
-          onPageSizeChange={(size) => {
-            setPageSize(size);
-            setPage(1);
-          }}
-        />
-      </section>
+      <table.AppTable>
+        <section aria-label="账号列表" className="flex flex-col gap-3">
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="角色"
+            value={[search.role ?? "all"]}
+            onValueChange={(values) => {
+              const next = values[0] as "all" | "admin" | "merchant" | undefined;
+              if (next) void setSearch({ role: next === "all" ? null : next, page: null });
+            }}
+          >
+            <ToggleGroupItem value="all">全部</ToggleGroupItem>
+            <ToggleGroupItem value="admin">管理员</ToggleGroupItem>
+            <ToggleGroupItem value="merchant">商户</ToggleGroupItem>
+          </ToggleGroup>
+          {users.isError ? (
+            <ErrorState error={users.error} onRetry={() => void users.refetch()} />
+          ) : (
+            <DataTable loading={users.isPending} />
+          )}
+          <DataTablePagination />
+        </section>
+      </table.AppTable>
       <CreateAdminDialog open={creating} onOpenChange={setCreating} />
       <BanDialog user={target} currentUserId={currentUserId} onClose={() => setTarget(null)} />
     </AdminPage>
@@ -188,78 +176,90 @@ function CreateAdminDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ name: "", email: "" });
-  const [touched, setTouched] = useState(false);
-  const create = useMutation({
-    mutationFn: adminApi.createAdmin,
-    onSuccess: async () => {
+  const create = useMutation({ mutationFn: adminApi.createAdmin });
+  const form = useForm({
+    defaultValues: { name: "", email: "" },
+    onSubmit: async ({ value }) => {
+      const admin = await create
+        .mutateAsync({ name: value.name.trim(), email: normalizeEmail(value.email) })
+        .catch(() => null);
+      if (!admin) return;
       await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      toast.add({ title: "管理员已创建", description: admin.email, type: "success" });
       close();
     },
   });
+  const emailTaken = create.error instanceof AdminApiError && create.error.code === "EMAIL_EXISTS";
   function close() {
-    setForm({ name: "", email: "" });
-    setTouched(false);
+    form.reset();
     create.reset();
     onOpenChange(false);
   }
-  const name = form.name.trim();
-  const email = form.email.trim().toLowerCase();
-  const nameError = !name ? "请填写名称。" : name.length > 100 ? "名称最多 100 个字符。" : "";
-  const emailTaken = create.error instanceof AdminApiError && create.error.code === "EMAIL_EXISTS";
-  const emailError = emailTaken
-    ? describeAdminError(create.error)
-    : !email
-      ? "请填写登录邮箱。"
-      : !EMAIL.test(email)
-        ? "邮箱格式不正确。"
-        : "";
+
   return (
-    <ConfirmDialog
+    <FormDialog
       open={open}
       onOpenChange={(next) => (next ? onOpenChange(true) : close())}
       title="新建管理员"
       description="新管理员与你权限相同。不会发送邀请邮件，对方用该邮箱请求验证码即可登录。"
-      confirmLabel="创建管理员"
-      pending={create.isPending}
+      submitLabel="创建管理员"
+      submitting={create.isPending}
       error={create.isError && !emailTaken ? describeAdminError(create.error) : undefined}
-      onConfirm={() => {
-        setTouched(true);
-        if (!nameError && !emailError) create.mutate({ name, email });
-      }}
+      onSubmit={() => void form.handleSubmit()}
     >
       <FieldGroup>
-        <Field data-invalid={touched && nameError ? true : undefined}>
-          <FieldLabel htmlFor="admin-name">名称</FieldLabel>
-          <Input
-            id="admin-name"
-            value={form.name}
-            maxLength={100}
-            aria-invalid={touched && nameError ? true : undefined}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-          />
-          {touched && nameError ? <FieldError>{nameError}</FieldError> : null}
-        </Field>
-        <Field data-invalid={(touched || emailTaken) && emailError ? true : undefined}>
-          <FieldLabel htmlFor="admin-email">登录邮箱</FieldLabel>
-          <Input
-            id="admin-email"
-            type="email"
-            value={form.email}
-            aria-invalid={(touched || emailTaken) && emailError ? true : undefined}
-            onChange={(event) => {
-              setForm({ ...form, email: event.target.value });
-              if (emailTaken) create.reset();
-            }}
-          />
-          {(touched || emailTaken) && emailError ? (
-            <FieldError>{emailError}</FieldError>
-          ) : (
-            <FieldDescription>全平台唯一，创建后不能修改；角色也不能再转换。</FieldDescription>
-          )}
-        </Field>
+        <form.Field name="name" validators={{ onBlur: validateName, onSubmit: validateName }}>
+          {(field) => {
+            const errors = fieldErrors(field.state.meta.errors);
+            return (
+              <Field data-invalid={errors.length ? true : undefined}>
+                <FieldLabel htmlFor="admin-name">名称</FieldLabel>
+                <Input
+                  id="admin-name"
+                  maxLength={100}
+                  value={field.state.value}
+                  onBlur={field.handleBlur}
+                  onChange={(event) => field.handleChange(event.target.value)}
+                  aria-invalid={errors.length ? true : undefined}
+                />
+                {errors.length ? <FieldError errors={errors} /> : null}
+              </Field>
+            );
+          }}
+        </form.Field>
+        <form.Field name="email" validators={{ onBlur: validateEmail, onSubmit: validateEmail }}>
+          {(field) => {
+            const errors = fieldErrors([
+              ...field.state.meta.errors,
+              emailTaken ? describeAdminError(create.error) : undefined,
+            ]);
+            return (
+              <Field data-invalid={errors.length ? true : undefined}>
+                <FieldLabel htmlFor="admin-email">登录邮箱</FieldLabel>
+                <Input
+                  id="admin-email"
+                  type="email"
+                  value={field.state.value}
+                  onBlur={field.handleBlur}
+                  onChange={(event) => {
+                    field.handleChange(event.target.value);
+                    if (emailTaken) create.reset();
+                  }}
+                  aria-invalid={errors.length ? true : undefined}
+                />
+                {errors.length ? (
+                  <FieldError errors={errors} />
+                ) : (
+                  <FieldDescription>
+                    全平台唯一，创建后不能修改；角色也不能再转换。
+                  </FieldDescription>
+                )}
+              </Field>
+            );
+          }}
+        </form.Field>
       </FieldGroup>
-    </ConfirmDialog>
+    </FormDialog>
   );
 }
 
@@ -276,13 +276,18 @@ function BanDialog({
   const update = useMutation({
     mutationFn: (input: { id: string; banned: boolean }) =>
       adminApi.updateUser(input.id, { banned: input.banned }),
-    onSuccess: async (_, input) => {
+    onSuccess: async (updated, input) => {
       // Disabling yourself revokes this session; leave for the sign-in page instead of failing requests.
       if (input.banned && input.id === currentUserId) {
         window.location.assign("/sign-in");
         return;
       }
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
+      toast.add({
+        title: input.banned ? "账号已禁用" : "账号已恢复",
+        description: updated.email,
+        type: "success",
+      });
       update.reset();
       onClose();
     },

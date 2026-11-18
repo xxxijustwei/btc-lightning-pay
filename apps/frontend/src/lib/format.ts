@@ -1,36 +1,31 @@
-const beijing = new Intl.DateTimeFormat("zh-CN", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
+import { TZDate } from "@date-fns/tz";
+import { addDays, format, isValid } from "date-fns";
 
-/** Formats an ISO timestamp in Beijing time as `YYYY-MM-DD HH:mm:ss`. */
+/** The admin console shows and filters every time in Beijing time, whatever the browser's zone. */
+export const ADMIN_TIME_ZONE = "Asia/Shanghai";
+
+/** Formats an ISO timestamp in Beijing time as `yyyy-MM-dd HH:mm(:ss)`. */
 export function formatBeijing(iso: string | null | undefined, withSeconds = true) {
   if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  const parts = Object.fromEntries(
-    beijing.formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  const time = withSeconds
-    ? `${parts.hour}:${parts.minute}:${parts.second}`
-    : `${parts.hour}:${parts.minute}`;
-  return `${parts.year}-${parts.month}-${parts.day} ${time}`;
+  const date = new TZDate(iso, ADMIN_TIME_ZONE);
+  if (!isValid(date)) return "—";
+  return format(date, withSeconds ? "yyyy-MM-dd HH:mm:ss" : "yyyy-MM-dd HH:mm");
 }
 
-/** Turns a Beijing calendar date (YYYY-MM-DD) into the ISO instant at its start. */
-export function beijingDayStart(date: string) {
-  return new Date(`${date}T00:00:00+08:00`).toISOString();
+function beijingMidnight(day: string) {
+  const [year, month, date] = day.split("-").map(Number);
+  return new TZDate(year!, month! - 1, date!, ADMIN_TIME_ZONE);
 }
 
-/** Exclusive end of a Beijing calendar date. */
-export function beijingDayEnd(date: string) {
-  return new Date(new Date(`${date}T00:00:00+08:00`).getTime() + 86_400_000).toISOString();
+/** Start of a Beijing calendar day (`yyyy-MM-dd`) as an ISO instant. */
+// TZDate#toISOString keeps the +08:00 offset; the API filters take UTC instants.
+export function beijingDayStart(day: string) {
+  return new Date(beijingMidnight(day).getTime()).toISOString();
+}
+
+/** Exclusive end of a Beijing calendar day, for `to` filters. */
+export function beijingDayEnd(day: string) {
+  return new Date(addDays(beijingMidnight(day), 1).getTime()).toISOString();
 }
 
 export function formatSats(sats: number) {

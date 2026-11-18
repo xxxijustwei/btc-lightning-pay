@@ -9,23 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@btc-lightning-pay/ui/components/dialog";
-import {
-  Pagination,
-  PaginationContent,
-  PaginationEllipsis,
-  PaginationItem,
-} from "@btc-lightning-pay/ui/components/pagination";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@btc-lightning-pay/ui/components/select";
-import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
-import { TableCell, TableRow } from "@btc-lightning-pay/ui/components/table";
-import { Check, ChevronLeft, ChevronRight, CircleAlert, Copy } from "lucide-react";
+import { Check, CircleAlert, Copy } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   describeAdminError,
@@ -96,114 +81,6 @@ export function EnabledBadge({ enabled }: { enabled: boolean }) {
   );
 }
 
-export const PAGE_SIZES = [10, 20, 30, 40, 50] as const;
-
-function pageNumbers(page: number, count: number): (number | "…")[] {
-  if (count <= 7) return Array.from({ length: count }, (_, index) => index + 1);
-  if (page <= 4) return [1, 2, 3, 4, 5, "…", count];
-  if (page >= count - 3) return [1, "…", count - 4, count - 3, count - 2, count - 1, count];
-  return [1, "…", page - 1, page, page + 1, "…", count];
-}
-
-/**
- * Footer for list pages. With `total` it shows every page; without it (APIs that return
- * bare arrays) it shows the current page and relies on `hasNext`.
- */
-export function ListPagination({
-  page,
-  pageSize,
-  onPageChange,
-  onPageSizeChange,
-  total,
-  hasNext,
-}: {
-  page: number;
-  pageSize: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
-  total?: number;
-  hasNext?: boolean;
-}) {
-  const count = total === undefined ? undefined : Math.max(1, Math.ceil(total / pageSize));
-  const atLast = count === undefined ? !hasNext : page >= count;
-  const numbers = count === undefined ? [page] : pageNumbers(page, count);
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-      <p className="text-muted-foreground">
-        {total === undefined ? `第 ${page} 页` : `共 ${total} 条 · 第 ${page} / ${count} 页`}
-      </p>
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-        <div className="flex items-center gap-2">
-          <span id="page-size-label" className="font-medium whitespace-nowrap">
-            每页行数
-          </span>
-          <Select
-            value={String(pageSize)}
-            onValueChange={(value) => value && onPageSizeChange(Number(value))}
-            items={PAGE_SIZES.map((size) => ({ value: String(size), label: String(size) }))}
-          >
-            <SelectTrigger size="sm" className="w-[72px]" aria-labelledby="page-size-label">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PAGE_SIZES.map((size) => (
-                <SelectItem key={size} value={String(size)}>
-                  {size}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Pagination className="mx-0 w-auto">
-          <PaginationContent>
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                className="pl-2"
-                disabled={page <= 1}
-                onClick={() => onPageChange(page - 1)}
-              >
-                <ChevronLeft data-icon="inline-start" aria-hidden="true" />
-                上一页
-              </Button>
-            </PaginationItem>
-            {numbers.map((value, index) =>
-              value === "…" ? (
-                <PaginationItem key={`gap-${index}`}>
-                  <PaginationEllipsis />
-                </PaginationItem>
-              ) : (
-                <PaginationItem key={value}>
-                  <Button
-                    variant={value === page ? "outline" : "ghost"}
-                    size="icon"
-                    aria-current={value === page ? "page" : undefined}
-                    aria-label={`第 ${value} 页`}
-                    onClick={() => onPageChange(value)}
-                  >
-                    {value}
-                  </Button>
-                </PaginationItem>
-              ),
-            )}
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                className="pr-2"
-                disabled={atLast}
-                onClick={() => onPageChange(page + 1)}
-              >
-                下一页
-                <ChevronRight data-icon="inline-end" aria-hidden="true" />
-              </Button>
-            </PaginationItem>
-          </PaginationContent>
-        </Pagination>
-      </div>
-    </div>
-  );
-}
-
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   return (
     <Alert variant="destructive">
@@ -221,28 +98,6 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   );
 }
 
-export function LoadingRows({ columns, rows = 5 }: { columns: number; rows?: number }) {
-  return Array.from({ length: rows }, (_, row) => (
-    <TableRow key={row}>
-      {Array.from({ length: columns }, (_, column) => (
-        <TableCell key={column}>
-          <Skeleton className="h-4 w-full max-w-32" />
-        </TableCell>
-      ))}
-    </TableRow>
-  ));
-}
-
-export function EmptyRow({ columns, children }: { columns: number; children: ReactNode }) {
-  return (
-    <TableRow>
-      <TableCell colSpan={columns} className="h-24 text-center text-muted-foreground">
-        {children}
-      </TableCell>
-    </TableRow>
-  );
-}
-
 /** Confirmation dialog for writes; keeps the dialog open and shows the error when the write fails. */
 export function ConfirmDialog({
   open,
@@ -254,8 +109,6 @@ export function ConfirmDialog({
   pending,
   error,
   onConfirm,
-  children,
-  confirmDisabled,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -266,8 +119,6 @@ export function ConfirmDialog({
   pending?: boolean;
   error?: string;
   onConfirm: () => void;
-  children?: ReactNode;
-  confirmDisabled?: boolean;
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
@@ -276,7 +127,6 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
-        {children}
         {error ? (
           <Alert variant="destructive">
             <CircleAlert aria-hidden="true" />
@@ -289,7 +139,7 @@ export function ConfirmDialog({
           </Button>
           <Button
             variant={destructive ? "destructive" : "default"}
-            disabled={pending || confirmDisabled}
+            disabled={pending}
             aria-busy={pending}
             onClick={onConfirm}
           >

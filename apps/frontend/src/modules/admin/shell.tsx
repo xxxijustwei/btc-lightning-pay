@@ -23,6 +23,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@btc-lightning-pay/ui/components/sidebar";
+import { Toaster } from "@btc-lightning-pay/ui/components/toast";
 import { TooltipProvider } from "@btc-lightning-pay/ui/components/tooltip";
 import { Link, useMatchRoute } from "@tanstack/react-router";
 import { Receipt, Store, Users, Wallet, Zap } from "lucide-react";
@@ -85,6 +86,7 @@ export function AdminShell({
         </Sidebar>
         <SidebarInset>{children}</SidebarInset>
       </SidebarProvider>
+      <Toaster />
     </TooltipProvider>
   );
 }

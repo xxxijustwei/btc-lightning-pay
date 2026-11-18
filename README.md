@@ -101,17 +101,19 @@ Vite+ 的内置 Vite fork 版本号是 `1.6.0`，因此只对其 `vitest` 和 `@
 
 以下依赖已按 2026-11-17 的 npm 稳定版本核对并安装，具体版本见 workspace catalog：
 
-| 能力            | 依赖                                                        | 当前接入                                                                                                  |
-| --------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 请求与 SSR 缓存 | `@tanstack/react-query`、`@tanstack/react-router-ssr-query` | `getRouter()` 内创建独立 QueryClient；健康检查使用 Query                                                  |
-| 表单校验        | `@tanstack/react-form`、`zod`                               | 已通过表单提交与校验集成测试；API 契约仍使用 Effect Schema                                                |
-| URL 状态        | `nuqs`                                                      | 根路由已配置 TanStack Router adapter                                                                      |
-| 客户端共享状态  | `jotai`                                                     | 根路由已配置 Provider，避免 SSR 使用全局默认 store                                                        |
-| 动效            | `motion`、`tw-animate-css`                                  | MotionConfig 跟随系统减少动态效果设置；CSS 动效已导入，使用时配合 `motion-safe:` / `motion-reduce:`       |
-| 日期与时间      | `date-fns`、`@daypicker/react`                              | 日期库已验证；使用日历时在对应入口导入 `@daypicker/react/style.css`，时间控件使用原生 `input type="time"` |
-| 二维码          | `qrcode`、`@types/qrcode`                                   | 已验证 SVG 生成，无需浏览器 canvas；尚未接入支付数据                                                      |
-| 图标            | `lucide-react`                                              | 健康检查按钮使用图标                                                                                      |
-| 测试            | Testing Library（React、DOM、user-event）、`happy-dom`      | Vite+ 分开运行 Node 后端测试与 DOM 前端测试                                                               |
+| 能力            | 依赖                                                        | 当前接入                                                                                                 |
+| --------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 请求与 SSR 缓存 | `@tanstack/react-query`、`@tanstack/react-router-ssr-query` | `getRouter()` 内创建独立 QueryClient；健康检查使用 Query                                                 |
+| 表单校验        | `@tanstack/react-form`、`zod`                               | 已通过表单提交与校验集成测试；API 契约仍使用 Effect Schema                                               |
+| URL 状态        | `nuqs`                                                      | 根路由已配置 TanStack Router adapter；管理端列表的筛选与分页保存在 URL                                   |
+| 表格            | `@tanstack/react-table`                                     | 管理端列表通过 `apps/frontend/src/components/data-table` 统一渲染 shadcn Table 与分页                    |
+| 提示            | shadcn toast（Base UI Toast）                               | 管理端写操作成功后提示，`<Toaster />` 挂在管理端 shell                                                   |
+| 客户端共享状态  | `jotai`                                                     | 根路由已配置 Provider，避免 SSR 使用全局默认 store                                                       |
+| 动效            | `motion`、`tw-animate-css`                                  | MotionConfig 跟随系统减少动态效果设置；CSS 动效已导入，使用时配合 `motion-safe:` / `motion-reduce:`      |
+| 日期与时间      | `date-fns`、`@date-fns/tz`、`@daypicker/react`              | 管理端按北京时间显示与筛选；日期范围使用 shadcn Calendar + Popover，时间控件使用原生 `input type="time"` |
+| 二维码          | `qrcode`、`@types/qrcode`                                   | 已验证 SVG 生成，无需浏览器 canvas；尚未接入支付数据                                                     |
+| 图标            | `lucide-react`                                              | 健康检查按钮使用图标                                                                                     |
+| 测试            | Testing Library（React、DOM、user-event）、`happy-dom`      | Vite+ 分开运行 Node 后端测试与 DOM 前端测试                                                              |
 
 Query 管理服务端数据，Jotai 管理客户端共享状态，nuqs 管理 URL 状态。表单、日期、二维码的最小使用示例位于 `apps/frontend/src/test/libraries.test.tsx`，不增加演示业务页面。UI 使用 shadcn/ui，官方 CLI 按 preset `bIkeymG` 初始化（`base-vega`、neutral、Lucide、Inter）。preset 不包含底层 primitive 选择，本项目使用 Base UI（`--base base`）。已生成 Button、Card 及登录所需的 Field、Input Group、Input OTP、Alert、Spinner 等官方组件；日期、表单、二维码等既有依赖继续保留。
 

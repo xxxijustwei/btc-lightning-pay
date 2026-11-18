@@ -3,6 +3,7 @@ import { Badge } from "@btc-lightning-pay/ui/components/badge";
 import { Button } from "@btc-lightning-pay/ui/components/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -17,14 +18,8 @@ import {
 import { Input } from "@btc-lightning-pay/ui/components/input";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@btc-lightning-pay/ui/components/table";
+import { toast } from "@btc-lightning-pay/ui/components/toast";
+import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Ban, CircleAlert, ExternalLink, Info, Pencil, Plus } from "lucide-react";
@@ -34,20 +29,17 @@ import {
   adminApi,
   describeAdminError,
   type MerchantData,
+  type SettlementData,
 } from "../../lib/api/admin";
-import { formatBeijing, formatSats, shortId } from "../../lib/format";
-import {
-  ConfirmDialog,
-  Detail,
-  EmptyRow,
-  EnabledBadge,
-  ErrorState,
-  LoadingRows,
-  SettlementStatusBadge,
-  newIdempotencyKey,
-} from "./common";
+import { DataTable } from "../../components/data-table/data-table";
+import { useAppTable } from "../../components/data-table/table-hook";
+import { formatBeijing, formatSats } from "../../lib/format";
+import { fieldErrors, validateName } from "../../lib/validation";
+import { Detail, EnabledBadge, ErrorState, newIdempotencyKey } from "./common";
+import { FormDialog } from "./form-dialog";
 import { ToggleMerchantDialog } from "./merchants-page";
 import { merchantQuery, summaryQuery } from "./queries";
+import { settlementColumns } from "./settlements-page";
 import { AdminPage } from "./shell";
 
 const payOrigin = import.meta.env.VITE_PAY_ORIGIN as string | undefined;
@@ -170,6 +162,11 @@ function SummarySection({ merchantId }: { merchantId: string }) {
     onSuccess: async (settlement) => {
       key.current = null;
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
+      toast.add({
+        title: "结算单已生成",
+        description: `${settlement.orderCount} 笔订单 · ${formatSats(settlement.amountSat)} sats`,
+        type: "success",
+      });
       await navigate({ to: "/settlements/$settlementId", params: { settlementId: settlement.id } });
     },
     onError: (error) => {
@@ -276,81 +273,46 @@ function SummarySection({ merchantId }: { merchantId: string }) {
   );
 }
 
+const noSettlements: SettlementData[] = [];
+
 function MerchantSettlements({ merchantId }: { merchantId: string }) {
   const settlements = useQuery({
     queryKey: ["admin", "settlements", { merchantId, limit: 5 }],
     queryFn: ({ signal }) => adminApi.settlements({ merchantId, limit: 5, offset: 0 }, signal),
   });
+  // Same columns as the settlements list; the merchant and creation time are implied here.
+  const table = useAppTable({
+    columns: settlementColumns,
+    data: settlements.data?.items ?? noSettlements,
+    getRowId: (settlement) => settlement.id,
+    initialState: { columnVisibility: { merchantId: false, createdAt: false } },
+    meta: { emptyMessage: "还没有结算单。" },
+  });
   return (
-    <Card className="gap-0 pb-0">
-      <CardHeader className="pb-4">
+    <Card>
+      <CardHeader>
         <CardTitle>该商户的结算单</CardTitle>
-        <Link
-          to="/settlements"
-          search={{ merchantId }}
-          className="col-start-2 row-start-1 self-center justify-self-end text-sm font-medium underline-offset-4 hover:underline"
-        >
-          查看全部
-        </Link>
+        <CardDescription>最近 5 张。</CardDescription>
+        <CardAction>
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link to="/settlements" search={{ merchantId }} />}
+          >
+            查看全部
+          </Button>
+        </CardAction>
       </CardHeader>
-      {settlements.isError ? (
-        <div className="p-6">
+      <CardContent>
+        {settlements.isError ? (
           <ErrorState error={settlements.error} onRetry={() => void settlements.refetch()} />
-        </div>
-      ) : (
-        <Table>
-          <TableHeader className="bg-muted">
-            <TableRow>
-              <TableHead className="pl-6">编号</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead className="text-right">应付 (sats)</TableHead>
-              <TableHead>笔数</TableHead>
-              <TableHead>截止时间（北京）</TableHead>
-              <TableHead className="pr-6 text-right">
-                <span className="sr-only">操作</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {settlements.isPending ? (
-              <LoadingRows columns={6} rows={3} />
-            ) : settlements.data.items.length === 0 ? (
-              <EmptyRow columns={6}>还没有结算单。</EmptyRow>
-            ) : (
-              settlements.data.items.map((settlement) => (
-                <TableRow key={settlement.id}>
-                  <TableCell className="pl-6 font-mono">{shortId(settlement.id)}</TableCell>
-                  <TableCell>
-                    <SettlementStatusBadge status={settlement.status} />
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {formatSats(settlement.amountSat)}
-                  </TableCell>
-                  <TableCell>{settlement.orderCount} 笔</TableCell>
-                  <TableCell className="text-muted-foreground tabular-nums">
-                    {formatBeijing(settlement.cutoffAt)}
-                  </TableCell>
-                  <TableCell className="pr-6 text-right">
-                    <Button
-                      variant={settlement.status === "pending" ? "outline" : "ghost"}
-                      size="sm"
-                      nativeButton={false}
-                      render={
-                        <Link
-                          to="/settlements/$settlementId"
-                          params={{ settlementId: settlement.id }}
-                        />
-                      }
-                    >
-                      {settlement.status === "pending" ? "去确认付款" : "查看"}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      )}
+        ) : (
+          <table.AppTable>
+            <DataTable loading={settlements.isPending} />
+          </table.AppTable>
+        )}
+      </CardContent>
     </Card>
   );
 }
@@ -365,48 +327,64 @@ function RenameDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState(merchant.name);
   const rename = useMutation({
     mutationFn: (name: string) => adminApi.updateMerchant(merchant.id, { name }),
-    onSuccess: async () => {
+  });
+  const form = useForm({
+    defaultValues: { name: merchant.name },
+    onSubmit: async ({ value }) => {
+      const name = value.name.trim();
+      if (name === merchant.name) return close();
+      const updated = await rename.mutateAsync(name).catch(() => null);
+      if (!updated) return;
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      rename.reset();
-      onOpenChange(false);
+      toast.add({ title: "名称已更新", description: updated.name, type: "success" });
+      close();
     },
   });
-  const name = draft.trim();
-  const invalid = !name || name.length > 100;
+  function close() {
+    rename.reset();
+    onOpenChange(false);
+  }
   return (
-    <ConfirmDialog
+    <FormDialog
       open={open}
       onOpenChange={(next) => {
-        if (next) setDraft(merchant.name);
+        // Start each edit from the saved name.
+        if (next) form.reset({ name: merchant.name });
         rename.reset();
         onOpenChange(next);
       }}
       title="修改名称"
       description="名称仅管理员可见，不会出现在付款页。slug 和邮箱不能修改。"
-      confirmLabel="保存"
-      pending={rename.isPending}
-      confirmDisabled={invalid || name === merchant.name}
+      submitLabel="保存"
+      submitting={rename.isPending}
       error={rename.isError ? describeAdminError(rename.error) : undefined}
-      onConfirm={() => rename.mutate(name)}
+      onSubmit={() => void form.handleSubmit()}
     >
-      <Field data-invalid={invalid ? true : undefined}>
-        <FieldLabel htmlFor="rename-merchant">名称</FieldLabel>
-        <Input
-          id="rename-merchant"
-          value={draft}
-          maxLength={100}
-          aria-invalid={invalid ? true : undefined}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        {invalid ? (
-          <FieldError>名称需 1–100 个字符，不能全是空格。</FieldError>
-        ) : (
-          <FieldDescription>1–100 个字符。</FieldDescription>
-        )}
-      </Field>
-    </ConfirmDialog>
+      <form.Field name="name" validators={{ onChange: validateName, onSubmit: validateName }}>
+        {(field) => {
+          const errors = fieldErrors(field.state.meta.errors);
+          return (
+            <Field data-invalid={errors.length ? true : undefined}>
+              <FieldLabel htmlFor="rename-merchant">名称</FieldLabel>
+              <Input
+                id="rename-merchant"
+                maxLength={100}
+                value={field.state.value}
+                onBlur={field.handleBlur}
+                onChange={(event) => field.handleChange(event.target.value)}
+                aria-invalid={errors.length ? true : undefined}
+              />
+              {errors.length ? (
+                <FieldError errors={errors} />
+              ) : (
+                <FieldDescription>1–100 个字符。</FieldDescription>
+              )}
+            </Field>
+          );
+        }}
+      </form.Field>
+    </FormDialog>
   );
 }
