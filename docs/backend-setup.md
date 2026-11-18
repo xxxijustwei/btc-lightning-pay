@@ -1,15 +1,15 @@
 # Breez Spark 后端接入与部署
 
-`apps/backend` 是 Cloudflare Worker 业务后端，`apps/wallet` 是北美 Node.js 26 钱包服务（wallet-service）。钱包服务直接运行 `@breeztech/breez-sdk-spark` 0.28.4，平台控制一个主网 Spark 钱包；商户、订单和结算由 Worker 管理。用户前端不加载 SDK、不接触钱包密钥。
+`apps/backend` 是 Cloudflare Worker 业务后端，`apps/wallet` 是北美 Bun 1.4.2 钱包服务（wallet-service）。钱包服务直接运行 `@breeztech/breez-sdk-spark` 0.28.4，平台控制一个主网 Spark 钱包；商户、订单和结算由 Worker 管理。用户前端不加载 SDK、不接触钱包密钥。
 
 ## 本地初始化
 
-1. `pnpm install --frozen-lockfile`。SDK 的可选 SQLite 构建被禁用，实际使用 PostgreSQL。
+1. 安装 Bun 1.4.2（`bun --version` 核对），再执行 `pnpm install --frozen-lockfile`。SDK 的可选 SQLite 构建被禁用，实际使用 PostgreSQL。
 2. 准备两个独立 PostgreSQL 数据库和账号：业务数据库，以及 SDK 专用数据库。不要让 SDK 使用业务数据库；业务账号配置见 [认证配置](auth-setup.md)。
 3. 在 `packages/db/.env` 配置所有者连接 `DATABASE_ADMIN_URL`，执行 `pnpm --filter @btc-lightning-pay/db run init`，然后由所有者执行 `packages/db/sql/provision-backend-role.sql` 并安全设置账号密码。Worker 使用受限 `btc_backend` 账号。
 4. 当前为 greenfield：只维护 `packages/db/sql/schema.sql` 全新建库基线，不维护历史升级。`init` 只用于空数据库，已存在表时会失败并回滚，不自动删除数据。模型变更后执行 `pnpm --filter @btc-lightning-pay/db generate` 重新生成基线。需要重置时删除并重建明确指定的开发业务数据库，然后重新 init 和预开户；不要重置 SDK 钱包库。
 5. 安全生成并备份一套新的 BIP39 助记词，将 `apps/wallet/.env.example` 复制为 `.env` 后填写。助记词不应来自文档示例、聊天或代码仓库。执行 `pnpm --filter @btc-lightning-pay/wallet identity` 离线导出公钥，将输出填入 `BREEZ_IDENTITY_PUBKEY`；服务启动会校验该身份，配置错误时拒绝启动。
-6. 在 Worker `.dev.vars` 中合并下表配置；不要覆盖已有认证配置。分别执行 `pnpm dev:wallet` 和 `pnpm dev:backend`。默认钱包入口为 `127.0.0.1:9741`。
+6. 在 Worker `.dev.vars` 中合并下表配置；不要覆盖已有认证配置。分别执行 `pnpm dev:wallet` 和 `pnpm dev:backend`。默认钱包入口为 `127.0.0.1:9741`。Wallet 的 dev/start/identity 脚本均使用 Bun，显式读取 `apps/wallet/.env`；不自动加载其他 `.env.*`。
 
 | 变量                          | 位置     | 用途                                            |
 | ----------------------------- | -------- | ----------------------------------------------- |
@@ -138,7 +138,7 @@ Worker 先保存订单报价，再创建和保存 invoice。已展示的 invoice
 
 ## Dokploy / OrbStack
 
-使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。只有 wallet-service 容器；SDK 数据库可使用 Dokploy 管理的 PostgreSQL 中的独立库。通过内部网络连接数据库，数据库不需要公网入口。
+使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件；保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。只有 wallet-service 容器；SDK 数据库可使用 Dokploy 管理的 PostgreSQL 中的独立库。通过内部网络连接数据库，数据库不需要公网入口。
 
 生产在 Dokploy Domains 中将 HTTPS 域名路由到 wallet-service 的 9741 端口。Worker 配置相同 token 和对应 origin。保持单副本，更新时先停止旧实例再启动新实例，不采用两个钱包实例重叠运行的滚动发布。SDK 初始化、同步和身份验证完成后才开始监听 HTTP。
 
@@ -146,7 +146,7 @@ Worker 先保存订单报价，再创建和保存 invoice。已展示的 invoice
 
 ## 验证与人工验收
 
-本地自动检查：`pnpm ready`。真实 PostgreSQL 并发测试需要设置 `PAYMENT_TEST_DATABASE_URL`，只允许本机独占的空 `payments_test` 数据库。测试会初始化基线和角色，不可指向业务库。`BREEZ_TEST_DATABASE_URL` 可指向独立本地 `wallet_test`，验证真实 SDK PostgreSQL 的初始化、重连和关闭（公开测试助记词、regtest、不交易）。
+本地自动检查：`pnpm ready`。钱包 runtime 测试由 Vite+ 启动 Bun 子进程，验证共享 API、真实 Breez WASM、公钥推导、HTTP 鉴权以及服务资源释放；不读取真实钱包环境或访问资金。Breez 的官方入口仍为 `/nodejs`，升级 Bun 或 SDK 后需要重新验证，不能仅凭 Node 下的单元测试通过判断兼容。真实 PostgreSQL 并发测试需要设置 `PAYMENT_TEST_DATABASE_URL`，只允许本机独占的空 `payments_test` 数据库。测试会初始化基线和角色，不可指向业务库。`BREEZ_TEST_DATABASE_URL` 可指向独立本地 `wallet_test`，验证真实 SDK PostgreSQL 的初始化、重连和关闭（公开测试助记词、regtest、不交易）。
 
 正式收款前手动完成：主网小额 Cash App 支付、页面关闭后的补记、重启恢复、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。人工结算仍仅登记已完成的外部付款；本服务没有转账 API，实际资金转出流程需另行验收。
 

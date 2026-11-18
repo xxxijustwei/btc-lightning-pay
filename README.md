@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-Monorepo：两个 TanStack Start 前端（平台管理端、付款页）、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
+Monorepo：两个 TanStack Start 前端（平台管理端、付款页）、Cloudflare Workers 业务后端、独立 Bun 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
 
 用户、商户与两个独立管理前端的边界见 [用户管理](docs/user-management.md)。业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
 
@@ -10,7 +10,7 @@ AI 协作约定见 [AGENTS.md](AGENTS.md)，Claude Code 通过 [CLAUDE.md](CLAUD
 
 ## 快速开始
 
-使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Wallet 使用 Node 原生 TypeScript，要求 Node 26；其他应用也支持满足根 `package.json` engines 的 Node.js 22/24。
+使用 Node.js 26（本地验证版本见 `.node-version`）和 pnpm 12.21.0。Wallet 运行时固定为 Bun 1.4.2，需另行安装；pnpm 和其他工具仍使用 Node.js。依赖统一使用 pnpm 安装，不生成 bun.lock。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -37,7 +37,7 @@ apps/
   frontend/       平台管理端：React + TanStack Start + Tailwind CSS，管理员登录
   pay/            付款页：/:slug 选金额、/pay/invoice/:id 付款，无需登录
   backend/        Workers + Effect HttpApi
-  wallet/        Node.js + Effect HttpApi，Breez Spark SDK 平台钱包
+  wallet/        Bun + Effect HttpApi，Breez Spark SDK 平台钱包
 packages/
   api/            Effect Schema 与 HTTP API 契约
   db/             Drizzle schema、建库基线和 PostgreSQL 连接
