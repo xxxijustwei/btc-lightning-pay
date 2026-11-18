@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import { SignInPage } from "./sign-in-page";
-import { AccountHeader } from "./account-header";
+import { AccountMenu } from "./account-menu";
 
 const { send, verify, signOut, navigate, clearCache } = vi.hoisted(() => ({
   send: vi.fn(),
@@ -127,7 +127,7 @@ test("upstream errors do not introduce a client cooldown", async () => {
 test("logout only clears cache and redirects after server success", async () => {
   signOut.mockResolvedValueOnce({ error: { status: 503 } }).mockResolvedValueOnce({ error: null });
   const client = mount(
-    <AccountHeader
+    <AccountMenu
       user={{ role: "admin", id: "u1", name: "Test User", email: "user@example.com" }}
     />,
   );

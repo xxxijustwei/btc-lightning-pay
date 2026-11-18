@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "pnpm --parallel --filter @btc-lightning-pay/frontend --filter @btc-lightning-pay/backend run dev",
+    "dev": "pnpm --parallel --filter @btc-lightning-pay/frontend --filter @btc-lightning-pay/pay --filter @btc-lightning-pay/backend run dev",
     "dev:wallet": "pnpm --filter @btc-lightning-pay/wallet dev",
     "dev:frontend": "pnpm --filter @btc-lightning-pay/frontend dev",
+    "dev:pay": "pnpm --filter @btc-lightning-pay/pay dev",
     "dev:backend": "pnpm --filter @btc-lightning-pay/backend dev",
     "build": "pnpm -r run build",
     "typegen": "pnpm --filter './apps/*' run typegen",

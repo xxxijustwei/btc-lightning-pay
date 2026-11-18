@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-Monorepo：TanStack Start 前端、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
+Monorepo：两个 TanStack Start 前端（平台管理端、付款页）、Cloudflare Workers 业务后端、独立 Node.js 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
 
 用户、商户与两个独立管理前端的边界见 [用户管理](docs/user-management.md)。业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
 
@@ -24,9 +24,9 @@ npx --yes pnpm@12.21.0 install --frozen-lockfile
 npx --yes pnpm@12.21.0 dev
 ```
 
-打开 <http://127.0.0.1:3000>，未登录会进入登录页；完成下方认证配置后登录，首页可点击「检查连接」。后端地址为 <http://127.0.0.1:8787/api/health>，成功返回 `{"status":"ok"}`。
+平台管理端：<http://127.0.0.1:3000>，未登录会进入登录页；完成下方认证配置并以管理员登录后进入商户、订单、结算单和账号页面。付款页：<http://127.0.0.1:3001/onne>（`onne` 换成商户 slug），无需登录。后端地址为 <http://127.0.0.1:8787/api/health>，成功返回 `{"status":"ok"}`。
 
-两个应用都在本地 Workers 运行时运行，无需登录 Cloudflare。也可以分别执行 `pnpm dev:frontend` 和 `pnpm dev:backend`。
+三个应用都在本地 Workers 运行时运行，无需登录 Cloudflare。也可以分别执行 `pnpm dev:frontend`、`pnpm dev:pay` 和 `pnpm dev:backend`。
 
 开发命令使用 POSIX 环境变量语法，适用于 macOS/Linux；Windows 使用 WSL。两端显式共用项目内的 `.wrangler/dev-registry`，因为当前 Wrangler 和 Cloudflare Vite 插件的默认服务注册目录不同。
 
@@ -34,7 +34,8 @@ npx --yes pnpm@12.21.0 dev
 
 ```text
 apps/
-  frontend/       React + TanStack Start + Tailwind CSS
+  frontend/       平台管理端：React + TanStack Start + Tailwind CSS，管理员登录
+  pay/            付款页：/:slug 选金额、/pay/invoice/:id 付款，无需登录
   backend/        Workers + Effect HttpApi
   wallet/        Node.js + Effect HttpApi，Breez Spark SDK 平台钱包
 packages/
@@ -43,7 +44,7 @@ packages/
   ui/             shadcn/ui 组件源码、主题与样式工具
 ```
 
-浏览器请求同源 `/api/health` → 前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
+浏览器请求同源 `/api/*` → 所在前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。平台管理端代理 `/api/auth/*`、`/api/me`、`/api/admin/*`；付款页只代理 `/api/public/*`，不转发 cookie，也不接触登录和管理接口。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
 
 `packages/api` 和 `packages/ui` 直接导出源码，由使用它们的应用打包。shadcn/ui 组件代码归本项目维护，多个前端从 `@btc-lightning-pay/ui/components/*` 导入同一份源码，通过共享样式入口使用同一主题；应用路由、状态和业务逻辑留在各前端。
 
@@ -51,7 +52,8 @@ packages/
 
 | 命令              | 用途                                       |
 | ----------------- | ------------------------------------------ |
-| `pnpm dev`        | 同时启动前后端                             |
+| `pnpm dev`        | 同时启动管理端、付款页和后端               |
+| `pnpm dev:pay`    | 单独启动付款页（端口 3001）                |
 | `pnpm dev:wallet` | 独立启动北美收款后端（需配置 `.env`）      |
 | `pnpm build`      | 构建前端、打包后端；后端仅 dry-run，不部署 |
 | `pnpm typegen`    | 根据 Wrangler 配置生成运行时与绑定类型     |
@@ -67,7 +69,7 @@ packages/
 
 健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；第一阶段仅限已开通且启用的管理员登录，商户账号已建模但不开放登录。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
-前端 `wrangler.jsonc` 的 `BACKEND` 绑定名称对应后端 Worker 的 `name`；重命名时需同步修改。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
+两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin，例如 `https://pay.example.com`），用于显示和打开商户收款链接；未设置时只显示路径。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
 ## 技术栈与版本选择
 
@@ -133,7 +135,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页面与管理页面交给 Claude 实现。不包含商户独立钱包、退款或自动提现。业务库按 greenfield 全新初始化；钱包密钥和 SDK 数据库需独立备份。
+已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页（`apps/pay`）与平台管理端页面（`apps/frontend`）已接入这些 API，尚未与真实后端和钱包联调。不包含商户独立钱包、退款或自动提现。业务库按 greenfield 全新初始化；钱包密钥和 SDK 数据库需独立备份。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

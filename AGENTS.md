@@ -1,8 +1,9 @@
 # AGENTS.md
 
-BTC Lightning Pay currently contains a frontend, a backend, shared API contracts,
-shared UI source, and a database package. Health checks and email OTP authentication
-are implemented. The homepage requires a session; payment behavior is not implemented.
+BTC Lightning Pay contains two frontends (`apps/frontend` platform admin, `apps/pay`
+payer pages), a Worker backend, a wallet service, shared API contracts, shared UI
+source, and a database package. The admin frontend requires an admin session; the
+payer app needs no login and may only reach `/api/public/*`.
 
 ## Task routing
 

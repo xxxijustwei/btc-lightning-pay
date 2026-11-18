@@ -1,0 +1,23 @@
+@import "@btc-lightning-pay/ui/globals.css";
+
+@source ".";
+@source "../../../packages/ui/src";
+
+/* Payer palette, matched to the approved payment-page design. Text colors keep 4.5:1 contrast. */
+@theme {
+  --color-pay-ink: #182032;
+  --color-pay-muted: #6b7280;
+  --color-pay-line: #e5eaf0;
+  --color-pay-surface: #f7f7f9;
+  --color-pay-panel: #eefff0;
+  --color-pay-pill: #eefbf0;
+  --color-pay-toggle: #c6f6d0;
+  --color-pay-edge: #c8f1d1;
+  --color-pay-focus: #5dd669;
+  --color-pay-brand: #58d058;
+  --color-pay-action: #178236;
+  --color-pay-action-hover: #11632a;
+  --color-pay-text: #1d7a34;
+  --color-pay-text-strong: #166b2c;
+  --color-pay-danger: #b42318;
+}

@@ -29,6 +29,14 @@ export default defineConfig({
           setupFiles: ["apps/frontend/src/test/setup.ts"],
         },
       },
+      {
+        test: {
+          name: "pay",
+          environment: "happy-dom",
+          include: ["apps/pay/src/**/*.test.{ts,tsx}"],
+          setupFiles: ["apps/pay/src/test/setup.ts"],
+        },
+      },
     ],
   },
 });

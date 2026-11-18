@@ -1,6 +1,6 @@
 # Frontend
 
-Applies to `apps/frontend` and `packages/ui`.
+Applies to `apps/frontend`, `apps/pay` and `packages/ui`.
 
 ## Ownership
 
