@@ -1,5 +1,7 @@
 import { createDatabase } from "@btc-lightning-pay/db/client";
 import { Context, Effect, Layer } from "effect";
+import type { AuthBindings } from "./auth/config";
+import { AdminSessions, betterAuthSessions } from "./payments/admin-session";
 import { createCrediting, type Crediting } from "./payments/crediting";
 import { PaymentFailure } from "./payments/errors";
 import { createOrderIntake, type OrderIntake, type Quote } from "./payments/intake";
@@ -20,7 +22,7 @@ export type DatabaseBindings = {
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
 };
-export type RuntimeBindings = DatabaseBindings & WalletBindings;
+export type RuntimeBindings = DatabaseBindings & WalletBindings & AuthBindings;
 /** Opens a database connection; tests pass one backed by PGlite. */
 export type Connect = (url: string) => ReturnType<typeof createDatabase>;
 /** What one request or scheduled run brings with it. */
@@ -157,5 +159,12 @@ export function runtimeLayer(
       }),
     ),
   );
-  return paymentsLayer(invocation.signal).pipe(Layer.provideMerge(base));
+  const sessions = Layer.effect(
+    AdminSessions,
+    Effect.gen(function* () {
+      const { database } = yield* Database;
+      return betterAuthSessions(env, database, log);
+    }),
+  );
+  return Layer.mergeAll(paymentsLayer(invocation.signal), sessions).pipe(Layer.provideMerge(base));
 }

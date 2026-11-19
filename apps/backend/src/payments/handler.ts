@@ -1,20 +1,10 @@
 import { paymentErrorStatus } from "@btc-lightning-pay/api";
-import { Cause, Context, Effect, Exit } from "effect";
-import { parseAuthConfig, type AuthBindings } from "../auth/config";
-import { readAdminSession } from "../auth/handler";
-import {
-  Database,
-  parseRuntimeConfig,
-  Payments,
-  RequestLog,
-  runtimeLayer,
-  type Connect,
-  type RuntimeBindings,
-} from "../runtime";
-import { paymentApp, PaymentRequest } from "./app";
+import { Cause, Effect, Exit } from "effect";
+import type { AuthBindings } from "../auth/config";
+import { parseRuntimeConfig, runtimeLayer, type Connect, type RuntimeBindings } from "../runtime";
+import { handlePaymentApp, type PaymentAppServices } from "./app";
 import { errorFields, paymentLogger } from "./logging";
 import { PaymentFailure } from "./errors";
-import { Wallet } from "./wallet";
 
 type RateLimiter = { limit(options: { key: string }): Promise<{ success: boolean }> };
 export type PaymentsBindings = AuthBindings &
@@ -88,22 +78,10 @@ async function handleRequest(
   const started = Date.now();
   try {
     const path = new URL(original.url).pathname;
-    const admin = path.startsWith("/api/admin/");
-    let authConfig: ReturnType<typeof parseAuthConfig> | undefined;
-    let creating = false;
-    if (admin) {
-      try {
-        authConfig = parseAuthConfig(env);
-      } catch {
-        return json({ code: "PAYMENTS_UNAVAILABLE", message: "Authentication unavailable" }, 503);
-      }
-      // Compared with the normalized origin, so a trailing slash in the setting cannot lock writes out.
-      if (
-        !["GET", "HEAD"].includes(original.method) &&
-        original.headers.get("origin") !== authConfig.url
-      )
-        throw new PaymentFailure({ code: "ORIGIN_REJECTED" });
-    } else creating = await admitPublic(original, path, env);
+    // Admin requests are identified by the admin group's middleware; payers face edge limits.
+    const creating = path.startsWith("/api/admin/")
+      ? false
+      : await admitPublic(original, path, env);
     // Reads tolerate a missing wallet setting: the Wallet fails them `not_configured`, they keep
     // the stored state and log it. Creation fails fast, before touching the database.
     if (creating && !parseRuntimeConfig(env).wallet)
@@ -113,33 +91,11 @@ async function handleRequest(
     const request = await bounded(new Request(original, { headers: requestHeaders }));
     // One connection serves the whole request, the admin session check included.
     const respond = Effect.gen(function* () {
-      const { database } = yield* Database;
-      const context = yield* Effect.context<Payments | RequestLog | Wallet>();
+      const context = yield* Effect.context<PaymentAppServices>();
       return yield* Effect.promise(async () => {
-        let actor: string | undefined;
-        let refreshedCookies: string[] = [];
-        if (authConfig) {
-          let session;
-          try {
-            session = await readAdminSession(authConfig, database, original.headers);
-          } catch (error) {
-            log({ operation: "read_admin_session", ...errorFields(error) });
-            return json(
-              { code: "PAYMENTS_UNAVAILABLE", message: "Authentication unavailable" },
-              503,
-            );
-          }
-          refreshedCookies = session.headers.getSetCookie();
-          if (!session.user) return json({ code: "UNAUTHORIZED", message: "UNAUTHORIZED" }, 401);
-          actor = session.user.id;
-        }
-        const response = await paymentApp.handler(
-          request,
-          Context.add(context, PaymentRequest, { actor }),
-        );
+        const response = await handlePaymentApp(request, context);
         const headers = new Headers(response.headers);
         headers.set("cache-control", "no-store");
-        for (const cookie of refreshedCookies) headers.append("set-cookie", cookie);
         return new Response(response.body, { status: response.status, headers });
       });
     });

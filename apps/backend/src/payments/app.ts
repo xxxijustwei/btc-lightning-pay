@@ -1,4 +1,4 @@
-import { PaymentsApi } from "@btc-lightning-pay/api";
+import { AdminActor, PaymentsApi } from "@btc-lightning-pay/api";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -9,25 +9,16 @@ import { errorFields, type PaymentLog } from "./logging";
 import { errorBoundary, problem } from "./http";
 import type { Wallet } from "./wallet";
 import { Payments, RequestLog } from "../runtime";
+import { AdminSessionLive, type AdminSessions } from "./admin-session";
 
-/** Request identity: the admin's user id once the session check has passed. */
-export class PaymentRequest extends Context.Service<PaymentRequest, { actor?: string }>()(
-  "backend/PaymentRequest",
-) {}
-type Runtime = typeof Payments.Service & { log: PaymentLog; actor?: string };
+type Runtime = typeof Payments.Service & { log: PaymentLog };
 
 const run = <A>(
   operation: string,
   work: (runtime: Runtime) => Effect.Effect<A, PaymentError, Wallet>,
-  admin = false,
 ) =>
   Effect.gen(function* () {
-    const runtime: Runtime = {
-      ...(yield* Payments),
-      log: (yield* RequestLog).log,
-      actor: (yield* PaymentRequest).actor,
-    };
-    if (admin && !runtime.actor) return problem("ADMIN_REQUIRED");
+    const runtime: Runtime = { ...(yield* Payments), log: (yield* RequestLog).log };
     const started = Date.now();
     return yield* work(runtime).pipe(
       Effect.catch((error) => {
@@ -38,8 +29,11 @@ const run = <A>(
       }),
     );
   });
-const read = <A>(operation: string, work: (runtime: Runtime) => Promise<A>, admin = false) =>
-  run(operation, (runtime) => paymentTask(operation, () => work(runtime)), admin);
+const read = <A>(operation: string, work: (runtime: Runtime) => Promise<A>) =>
+  run(operation, (runtime) => paymentTask(operation, () => work(runtime)));
+/** Hands an admin endpoint the admin it acts as; only the admin group's middleware provides it. */
+const asAdmin = <A, E, R>(work: (actor: string) => Effect.Effect<A, E, R>) =>
+  Effect.flatMap(Effect.service(AdminActor), (admin) => work(admin.id));
 const dated = <A extends { createdAt: Date }>(row: A) => ({
   ...row,
   createdAt: row.createdAt.toISOString(),
@@ -85,119 +79,98 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
 const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) =>
   handlers.handleAll({
     createAdmin: ({ payload }) =>
-      read("create_admin", async (r) => dated(await r.store.createAdmin(payload, r.actor!)), true),
+      asAdmin((actor) =>
+        read("create_admin", async (r) => dated(await r.store.createAdmin(payload, actor))),
+      ),
     users: ({ query }) =>
-      read(
-        "list_users",
-        async (r) => (await r.store.users(query.role, ...paging(query))).map(dated),
-        true,
+      read("list_users", async (r) =>
+        (await r.store.users(query.role, ...paging(query))).map(dated),
       ),
     user: ({ params }) =>
-      read("read_user", async (r) => dated(await r.store.managedUser(params.userId)), true),
+      read("read_user", async (r) => dated(await r.store.managedUser(params.userId))),
     updateUser: ({ params, payload }) =>
-      read(
-        "update_user",
-        async (r) => dated(await r.store.updateUser(params.userId, payload.banned, r.actor!)),
-        true,
+      asAdmin((actor) =>
+        read("update_user", async (r) =>
+          dated(await r.store.updateUser(params.userId, payload.banned, actor)),
+        ),
       ),
     merchant: ({ params }) =>
-      read(
-        "admin_merchant",
-        async (r) => dated(await r.store.adminMerchant(params.merchantId)),
-        true,
-      ),
+      read("admin_merchant", async (r) => dated(await r.store.adminMerchant(params.merchantId))),
     createMerchant: ({ payload }) =>
-      read(
-        "create_merchant",
-        async (r) => dated(await r.store.createMerchant(payload, r.actor!)),
-        true,
+      asAdmin((actor) =>
+        read("create_merchant", async (r) => dated(await r.store.createMerchant(payload, actor))),
       ),
     merchants: ({ query }) =>
-      read(
-        "list_merchants",
-        async (r) => (await r.store.merchants(...paging(query))).map(dated),
-        true,
-      ),
+      read("list_merchants", async (r) => (await r.store.merchants(...paging(query))).map(dated)),
     updateMerchant: ({ params, payload }) =>
-      read(
-        "update_merchant",
-        async (r) => dated(await r.store.updateMerchant(params.merchantId, payload, r.actor!)),
-        true,
+      asAdmin((actor) =>
+        read("update_merchant", async (r) =>
+          dated(await r.store.updateMerchant(params.merchantId, payload, actor)),
+        ),
       ),
     orders: ({ query }) =>
-      read(
-        "list_orders",
-        async (r) => (await r.store.orders(query, ...paging(query))).map(adminOrder),
-        true,
+      read("list_orders", async (r) =>
+        (await r.store.orders(query, ...paging(query))).map(adminOrder),
       ),
     // An admin read always asks the wallet, however old the unpaid order is.
     order: ({ params }) =>
-      run(
-        "read_admin_order",
-        (r) => r.payments.order(params.orderId, true).pipe(Effect.map(adminOrder)),
-        true,
+      run("read_admin_order", (r) =>
+        r.payments.order(params.orderId, true).pipe(Effect.map(adminOrder)),
       ),
-    summary: ({ params }) =>
-      read("merchant_summary", (r) => r.store.summary(params.merchantId), true),
+    summary: ({ params }) => read("merchant_summary", (r) => r.store.summary(params.merchantId)),
     settle: ({ payload, headers }) =>
-      run(
-        "settle_orders",
-        (r) =>
-          r.payments.settle(headers["idempotency-key"], payload, r.actor!).pipe(
+      asAdmin((actor) =>
+        run("settle_orders", (r) =>
+          r.payments.settle(headers["idempotency-key"], payload, actor).pipe(
             Effect.map((result) =>
               HttpServerResponse.jsonUnsafe(settlementView(result.record), {
                 status: result.created ? 201 : 200,
               }),
             ),
           ),
-        true,
+        ),
       ),
     settlement: ({ params }) =>
-      read(
-        "read_settlement",
-        async (r) => settlementView(await r.store.settlement(params.settlementId)),
-        true,
+      read("read_settlement", async (r) =>
+        settlementView(await r.store.settlement(params.settlementId)),
       ),
     settlementOrders: ({ params, query }) =>
-      read(
-        "settlement_orders",
-        (r) => r.store.settlementOrders(params.settlementId, ...paging(query)),
-        true,
+      read("settlement_orders", (r) =>
+        r.store.settlementOrders(params.settlementId, ...paging(query)),
       ),
     confirmSettlement: ({ params, payload }) =>
-      read(
-        "confirm_settlement",
-        async (r) =>
+      asAdmin((actor) =>
+        read("confirm_settlement", async (r) =>
           settlementView(
-            await r.store.confirmSettlement(params.settlementId, payload.proof, r.actor!),
+            await r.store.confirmSettlement(params.settlementId, payload.proof, actor),
           ),
-        true,
+        ),
       ),
     cancelSettlement: ({ params, payload }) =>
-      read(
-        "cancel_settlement",
-        async (r) =>
+      asAdmin((actor) =>
+        read("cancel_settlement", async (r) =>
           settlementView(
-            await r.store.cancelSettlement(params.settlementId, payload.reason, r.actor!),
+            await r.store.cancelSettlement(params.settlementId, payload.reason, actor),
           ),
-        true,
+        ),
       ),
     settlements: ({ query }) =>
-      read(
-        "list_settlements",
-        async (r) => {
-          const page = await r.store.settlements(query, ...paging(query));
-          return { ...page, items: page.items.map(settlementView) };
-        },
-        true,
-      ),
+      read("list_settlements", async (r) => {
+        const page = await r.store.settlements(query, ...paging(query));
+        return { ...page, items: page.items.map(settlementView) };
+      }),
   }),
 );
 export const paymentApp = HttpRouter.toWebHandler(
   HttpApiBuilder.layer(PaymentsApi).pipe(
     Layer.provide([PublicLive, AdminLive]),
+    Layer.provide(AdminSessionLive),
     Layer.provide(HttpServer.layerServices),
     Layer.provide(errorBoundary),
   ),
   { disableLogger: true },
 );
+/** What every request brings: the admin middleware reads `AdminSessions` from it. */
+export type PaymentAppServices = Payments | RequestLog | Wallet | AdminSessions;
+export const handlePaymentApp = (request: Request, context: Context.Context<PaymentAppServices>) =>
+  paymentApp.handler(request, context);

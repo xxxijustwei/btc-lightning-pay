@@ -1,5 +1,5 @@
-import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import { Context, Schema } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware } from "effect/http-api";
 
 export const MerchantSlug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{2,31}$/));
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -187,6 +187,18 @@ const merchantParams = { merchantId: MerchantId };
 const orderParams = { orderId: OrderId };
 const settlementParams = { settlementId: SettlementId };
 const idempotencyHeaders = { "idempotency-key": IdempotencyKey };
+/** The enabled admin an admin request acts as, established once by `AdminSession`. */
+export class AdminActor extends Context.Service<AdminActor, { readonly id: string }>()(
+  "api/AdminActor",
+) {}
+/**
+ * Runs before every admin endpoint: checks the request's origin and admin session, then provides
+ * `AdminActor`. Implemented by the backend; clients need nothing.
+ */
+export class AdminSession extends HttpApiMiddleware.Service<
+  AdminSession,
+  { provides: AdminActor }
+>()("api/AdminSession") {}
 export const PaymentsApi = HttpApi.make("PaymentsApi").add(
   HttpApiGroup.make("publicPayments").add(
     HttpApiEndpoint.get("merchant", "/api/public/merchants/:slug", {
@@ -207,111 +219,113 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
       error: errors,
     }),
   ),
-  HttpApiGroup.make("adminPayments").add(
-    HttpApiEndpoint.post("createAdmin", "/api/admin/users", {
-      payload: NewAdmin,
-      success: ManagedUser,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("users", "/api/admin/users", {
-      query: { ...paging, role: Schema.optional(Schema.Literals(["admin", "merchant"])) },
-      success: Schema.Array(ManagedUser),
-      error: errors,
-    }),
-    HttpApiEndpoint.get("user", "/api/admin/users/:userId", {
-      params: { userId: Schema.String },
-      success: ManagedUser,
-      error: errors,
-    }),
-    HttpApiEndpoint.patch("updateUser", "/api/admin/users/:userId", {
-      params: { userId: Schema.String },
-      payload: strict({ banned: Schema.Boolean }),
-      success: ManagedUser,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("merchant", "/api/admin/merchants/:merchantId", {
-      params: merchantParams,
-      success: Merchant,
-      error: errors,
-    }),
-    HttpApiEndpoint.post("createMerchant", "/api/admin/merchants", {
-      payload: NewMerchant,
-      success: Merchant,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("merchants", "/api/admin/merchants", {
-      query: paging,
-      success: Schema.Array(Merchant),
-      error: errors,
-    }),
-    HttpApiEndpoint.patch("updateMerchant", "/api/admin/merchants/:merchantId", {
-      params: merchantParams,
-      payload: MerchantUpdate,
-      success: Merchant,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("orders", "/api/admin/orders", {
-      query: {
-        ...paging,
-        merchantId: Schema.optional(MerchantId),
-        status: Schema.optional(PaymentStatus),
-        from: Schema.optional(Schema.String),
-        to: Schema.optional(Schema.String),
-      },
-      success: Schema.Array(AdminOrder),
-      error: errors,
-    }),
-    HttpApiEndpoint.get("order", "/api/admin/orders/:orderId", {
-      params: orderParams,
-      success: AdminOrder,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("summary", "/api/admin/merchants/:merchantId/summary", {
-      params: merchantParams,
-      success: Summary,
-      error: errors,
-    }),
-    HttpApiEndpoint.post("settle", "/api/admin/settlements", {
-      headers: idempotencyHeaders,
-      payload: NewSettlement,
-      success: [Settlement, Settlement.annotate({ httpApiStatus: 201 })],
-      error: errors,
-    }),
-    HttpApiEndpoint.get("settlement", "/api/admin/settlements/:settlementId", {
-      params: settlementParams,
-      success: Settlement,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:settlementId/orders", {
-      params: settlementParams,
-      query: paging,
-      success: SettlementOrderPage,
-      error: errors,
-    }),
-    HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:settlementId/confirm", {
-      params: settlementParams,
-      payload: ConfirmSettlement,
-      success: Settlement,
-      error: errors,
-    }),
-    HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:settlementId/cancel", {
-      params: settlementParams,
-      payload: CancelSettlement,
-      success: Settlement,
-      error: errors,
-    }),
-    HttpApiEndpoint.get("settlements", "/api/admin/settlements", {
-      query: {
-        ...paging,
-        merchantId: Schema.optional(MerchantId),
-        status: Schema.optional(SettlementStatus),
-        from: Schema.optional(Schema.String),
-        to: Schema.optional(Schema.String),
-      },
-      success: SettlementPage,
-      error: errors,
-    }),
-  ),
+  HttpApiGroup.make("adminPayments")
+    .add(
+      HttpApiEndpoint.post("createAdmin", "/api/admin/users", {
+        payload: NewAdmin,
+        success: ManagedUser,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("users", "/api/admin/users", {
+        query: { ...paging, role: Schema.optional(Schema.Literals(["admin", "merchant"])) },
+        success: Schema.Array(ManagedUser),
+        error: errors,
+      }),
+      HttpApiEndpoint.get("user", "/api/admin/users/:userId", {
+        params: { userId: Schema.String },
+        success: ManagedUser,
+        error: errors,
+      }),
+      HttpApiEndpoint.patch("updateUser", "/api/admin/users/:userId", {
+        params: { userId: Schema.String },
+        payload: strict({ banned: Schema.Boolean }),
+        success: ManagedUser,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("merchant", "/api/admin/merchants/:merchantId", {
+        params: merchantParams,
+        success: Merchant,
+        error: errors,
+      }),
+      HttpApiEndpoint.post("createMerchant", "/api/admin/merchants", {
+        payload: NewMerchant,
+        success: Merchant,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("merchants", "/api/admin/merchants", {
+        query: paging,
+        success: Schema.Array(Merchant),
+        error: errors,
+      }),
+      HttpApiEndpoint.patch("updateMerchant", "/api/admin/merchants/:merchantId", {
+        params: merchantParams,
+        payload: MerchantUpdate,
+        success: Merchant,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("orders", "/api/admin/orders", {
+        query: {
+          ...paging,
+          merchantId: Schema.optional(MerchantId),
+          status: Schema.optional(PaymentStatus),
+          from: Schema.optional(Schema.String),
+          to: Schema.optional(Schema.String),
+        },
+        success: Schema.Array(AdminOrder),
+        error: errors,
+      }),
+      HttpApiEndpoint.get("order", "/api/admin/orders/:orderId", {
+        params: orderParams,
+        success: AdminOrder,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("summary", "/api/admin/merchants/:merchantId/summary", {
+        params: merchantParams,
+        success: Summary,
+        error: errors,
+      }),
+      HttpApiEndpoint.post("settle", "/api/admin/settlements", {
+        headers: idempotencyHeaders,
+        payload: NewSettlement,
+        success: [Settlement, Settlement.annotate({ httpApiStatus: 201 })],
+        error: errors,
+      }),
+      HttpApiEndpoint.get("settlement", "/api/admin/settlements/:settlementId", {
+        params: settlementParams,
+        success: Settlement,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:settlementId/orders", {
+        params: settlementParams,
+        query: paging,
+        success: SettlementOrderPage,
+        error: errors,
+      }),
+      HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:settlementId/confirm", {
+        params: settlementParams,
+        payload: ConfirmSettlement,
+        success: Settlement,
+        error: errors,
+      }),
+      HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:settlementId/cancel", {
+        params: settlementParams,
+        payload: CancelSettlement,
+        success: Settlement,
+        error: errors,
+      }),
+      HttpApiEndpoint.get("settlements", "/api/admin/settlements", {
+        query: {
+          ...paging,
+          merchantId: Schema.optional(MerchantId),
+          status: Schema.optional(SettlementStatus),
+          from: Schema.optional(Schema.String),
+          to: Schema.optional(Schema.String),
+        },
+        success: SettlementPage,
+        error: errors,
+      }),
+    )
+    .middleware(AdminSession),
 );
 
 export const WalletRequest = Schema.Struct({ orderId: OrderId, amountSat: Sats });

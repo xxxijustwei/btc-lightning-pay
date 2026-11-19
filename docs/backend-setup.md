@@ -28,7 +28,7 @@
 
 ## 给 Claude 的接口约定
 
-共享 Schema 从 `@btc-lightning-pay/api` 导入；完整路径和字段位于 [payments.ts](../packages/api/src/payments.ts)。前端添加同源 `/api/public/*` 与 `/api/admin/*` 代理，复用 `proxyBackendRequest` 和 `BACKEND` binding；不要把 Wallet token 暴露给浏览器。后端关闭了 `workers_dev` 和预览 URL，只能经前端的服务绑定访问。管理员写请求必须保留 `Origin`，且与 `BETTER_AUTH_URL` 的 origin 相同（末尾斜杠不影响）；管理接口同时要求真实会话和启用的管理员账号。
+共享 Schema 从 `@btc-lightning-pay/api` 导入；完整路径和字段位于 [payments.ts](../packages/api/src/payments.ts)。前端添加同源 `/api/public/*` 与 `/api/admin/*` 代理，复用 `proxyBackendRequest` 和 `BACKEND` binding；不要把 Wallet token 暴露给浏览器。后端关闭了 `workers_dev` 和预览 URL，只能经前端的服务绑定访问。管理员写请求必须保留 `Origin`，且与 `BETTER_AUTH_URL` 的 origin 相同（末尾斜杠不影响）；管理接口同时要求真实会话和启用的管理员账号。这些检查只在一处：契约给 `adminPayments` 组声明了 `AdminSession` middleware，后端实现（`payments/admin-session.ts`）依次检查认证配置（不可用返回 503）、写请求的 `Origin`（`ORIGIN_REJECTED`）、会话和管理员状态（未通过返回 401），通过后向管理接口提供 `AdminActor`，并回写刷新后的会话 cookie。公开接口拿不到 `AdminActor`，误用会是类型错误。
 
 账号与商户接口完整说明见 [用户管理与前端交接](user-management.md)。管理员由数据库 `role=admin` 且 `banned=false` 授权，使用同一套邮箱 OTP 登录。
 

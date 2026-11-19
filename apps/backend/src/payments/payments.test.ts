@@ -15,7 +15,8 @@ import { createCrediting } from "./crediting";
 import { UpstreamFailure } from "./errors";
 import { makeWallet, parseWalletConfig, Wallet } from "./wallet";
 import { memoryWallet, type MemoryWallet } from "./wallet-memory";
-import { paymentApp, PaymentRequest } from "./app";
+import { handlePaymentApp, paymentApp } from "./app";
+import { AdminSessions } from "./admin-session";
 import { runScheduled, syncPayments } from "./jobs";
 import { and, eq, sql } from "drizzle-orm";
 import { makeWorker } from "../index";
@@ -57,7 +58,8 @@ let wallet: MemoryWallet;
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: { "content-type": "application/json", ...headers },
+    // Same origin as the test admin sessions below, so admin writes pass the origin check.
+    headers: { "content-type": "application/json", origin: "http://localhost", ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const log = vi.fn();
@@ -89,15 +91,24 @@ const createOrder = (
       .create(merchant === onne ? "onne" : merchant === other ? "other" : merchant, key, input)
       .pipe(Effect.provideService(Wallet, wallet.wallet)),
   );
-const call = (req: Request, actor?: string) =>
-  paymentApp.handler(
+/** Calls the payments app directly with the given admin sessions. */
+const callWith = (req: Request, sessions: Partial<typeof AdminSessions.Service>) =>
+  handlePaymentApp(
     req,
     Context.make(Payments, { store, crediting, payments, intake }).pipe(
       Context.add(RequestLog, { log }),
-      Context.add(PaymentRequest, { actor }),
+      Context.add(AdminSessions, {
+        origin: "http://localhost",
+        log,
+        read: async () => ({ actor: null, cookies: [] }),
+        ...sessions,
+      }),
       Context.add(Wallet, wallet.wallet),
     ),
   );
+/** Calls the payments app directly; `actor` is the admin the session check would establish. */
+const call = (req: Request, actor?: string) =>
+  callWith(req, { read: async () => ({ actor: actor ?? null, cookies: [] }) });
 const invoice = (id: string, amountSat = 10000) => ({
   orderId: id,
   amountSat,
@@ -369,9 +380,10 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
   expect(
     await (await call(request(`/api/admin/settlements/${batch.id}/orders`), "admin")).json(),
   ).toMatchObject({ total: 1, items: [{ orderId: row.id }] });
+  // Without an admin session the middleware answers before any admin endpoint runs.
   expect(
     (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }))).status,
-  ).toBe(403);
+  ).toBe(401);
   expect(
     (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }), "admin"))
       .status,
@@ -435,8 +447,39 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   expect(query.headers.get("cache-control")).toBe("no-store");
   expect(await query.json()).toMatchObject({ id: body.id });
   expect(close).toHaveBeenCalled();
-  expect((await call(request("/api/admin/orders"))).status).toBe(403);
+  expect((await call(request("/api/admin/orders"))).status).toBe(401);
   expect((await call(request("/api/admin/orders"), "admin")).status).toBe(200);
+});
+test("admin requests pass one seam: auth settings, write origin, session, then the endpoint", async () => {
+  const orders = request("/api/admin/orders");
+  // Unusable auth settings or a failed session lookup are outages, not anonymous requests.
+  for (const sessions of [{ origin: undefined }, { read: async () => "unavailable" as const }]) {
+    const response = await callWith(orders, sessions);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      code: "PAYMENTS_UNAVAILABLE",
+      message: "Authentication unavailable",
+    });
+  }
+  const read = vi.fn(async () => ({
+    actor: "admin",
+    cookies: ["btclp.session_token=refreshed; Max-Age=600; Path=/; HttpOnly; SameSite=Lax"],
+  }));
+  // A write from another origin is refused before the session is read.
+  const foreign = request(
+    "/api/admin/merchants",
+    { name: "N" },
+    { origin: "https://evil.example" },
+  );
+  expect((await callWith(foreign, { read })).status).toBe(403);
+  expect(read).not.toHaveBeenCalled();
+  // A read needs no origin; the refreshed session cookie goes back with the endpoint's answer.
+  const response = await callWith(new Request("http://localhost/api/admin/orders"), { read });
+  expect(response.status).toBe(200);
+  const [cookie] = response.headers.getSetCookie();
+  expect(cookie).toContain("btclp.session_token=refreshed");
+  for (const attribute of ["Max-Age=600", "Path=/", "HttpOnly", "SameSite=Lax"])
+    expect(cookie.toLowerCase()).toContain(attribute.toLowerCase());
 });
 test("removed sync endpoint cannot mutate orders", async () => {
   expect((await worker.fetch(request("/api/internal/payments/sync", {}), bindings)).status).toBe(
@@ -708,7 +751,7 @@ test("merchant provisioning is atomic, keeps identity immutable and hides privat
         await call(
           new Request(`http://localhost/api/admin/merchants/${m.id}`, {
             method: "PATCH",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", origin: "http://localhost" },
             body: JSON.stringify(body),
           }),
           "admin",

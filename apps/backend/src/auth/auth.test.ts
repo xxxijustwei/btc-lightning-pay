@@ -440,7 +440,9 @@ test("merchant and banned accounts cannot receive login emails or create session
     const auth = makeAuth();
     expect((await auth.handler(sendRequest(`${id}@example.com`))).status).toBe(200);
     expect(send).not.toHaveBeenCalled();
-    // Even a valid server-generated OTP must not admit a merchant or banned user.
+    // Even a valid server-generated OTP must not admit a merchant or banned user. The request
+    // above stored a code too; both rows may share a millisecond, and the newest one wins.
+    await database.delete(schema.verification);
     const otp = await auth.api.createVerificationOTP({
       body: { email: `${id}@example.com`, type: "sign-in" },
     });
