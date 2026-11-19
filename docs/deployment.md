@@ -41,6 +41,7 @@
 1. 本地把助记词临时写入 `apps/wallet/.env` 的 `BREEZ_MNEMONIC`，执行 `pnpm --filter @btc-lightning-pay/wallet identity`（离线），输出即 `BREEZ_IDENTITY_PUBKEY`；随后删除本地助记词。
 2. Dokploy 新建 **Compose**：类型 Docker Compose（Stack 不支持 `build`），Provider 选 GitHub 仓库 `main` 分支，Compose Path `apps/wallet/deploy/compose.yaml`。Compose 已加入 Dokploy 自带的外部网络 `dokploy-network`。
 3. Advanced → Mounts 新建 **File Mount**，路径 `breez_mnemonic`，内容只有助记词。文件位于 `/etc/dokploy/compose/<appName>/files/breez_mnemonic`（`<appName>` 见服务页）。删除该 Compose 服务会一并删除此文件，所以必须另有离线备份。
+   再新建一个 File Mount，路径 `supabase_ca.crt`，内容为 Supabase 控制台 Database Settings → SSL Configuration 下载的根证书。Supabase 用自有 CA 签发数据库证书，SDK 会验证证书链，缺少它会报 `self signed certificate in certificate chain`；不要改用 `sslmode=no-verify`。
 4. Environment 填：
 
    ```text
@@ -49,6 +50,7 @@
    BREEZ_IDENTITY_PUBKEY=<第 1 步输出>
    BREEZ_DATABASE_URL=<wallet 连接串>
    BREEZ_MNEMONIC_SECRET_FILE=/etc/dokploy/compose/<appName>/files/breez_mnemonic
+   SUPABASE_CA_FILE=/etc/dokploy/compose/<appName>/files/supabase_ca.crt
    ```
 
 5. 不在 Domains 页添加域名：经 Traefik 暴露会让直连服务器 IP 绕过 Access。点 Deploy；SDK 初始化与同步完成后才监听，首次较慢。始终单副本，更新时不让新旧实例重叠。

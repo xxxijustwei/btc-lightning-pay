@@ -14,8 +14,11 @@ services:
       BREEZ_MNEMONIC_FILE: /run/secrets/breez_mnemonic
       BREEZ_IDENTITY_PUBKEY: ${BREEZ_IDENTITY_PUBKEY:?Set BREEZ_IDENTITY_PUBKEY}
       BREEZ_DATABASE_URL: ${BREEZ_DATABASE_URL:?Set the PostgreSQL URL for btc_wallet}
+      # Supabase signs database certificates with its own root CA, which is not in the system store.
+      NODE_EXTRA_CA_CERTS: /run/secrets/supabase_ca
     secrets:
       - breez_mnemonic
+      - supabase_ca
     expose:
       - "9741"
     # Shared with the cloudflared container, which publishes the wallet through Cloudflare Tunnel.
@@ -40,3 +43,5 @@ networks:
 secrets:
   breez_mnemonic:
     file: ${BREEZ_MNEMONIC_SECRET_FILE:?Set the path of a file holding only the mnemonic}
+  supabase_ca:
+    file: ${SUPABASE_CA_FILE:?Set the path of the Supabase root CA certificate}
