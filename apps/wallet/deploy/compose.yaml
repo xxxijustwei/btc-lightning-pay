@@ -18,6 +18,9 @@ services:
       - breez_mnemonic
     expose:
       - "9741"
+    # Shared with the cloudflared container, which publishes the wallet through Cloudflare Tunnel.
+    networks:
+      - dokploy-network
     healthcheck:
       test:
         [
@@ -30,6 +33,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+networks:
+  # Created by Dokploy; elsewhere run `docker network create dokploy-network` once.
+  dokploy-network:
+    external: true
 secrets:
   breez_mnemonic:
     file: ${BREEZ_MNEMONIC_SECRET_FILE:?Set the path of a file holding only the mnemonic}

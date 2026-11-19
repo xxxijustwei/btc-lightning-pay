@@ -28,7 +28,7 @@
   // Run request handlers next to the business database: one order makes about a dozen sequential
   // queries, so each must be a short round trip. Keep this equal to DATABASE_URL's Supabase region.
   // Placement applies to fetch handlers only; the cron makes a single write and is unaffected.
-  "placement": { "region": "aws:ap-south-1" },
+  "placement": { "region": "aws:us-east-1" },
   // Pooled connections remove the per-request connect cost. Create the config first (see
   // docs/backend-setup.md), then uncomment with its real id and run `pnpm typegen`:
   // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive-config-id>" }],

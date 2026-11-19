@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "CLOUDFLARE_DEV_REGISTRY_PATH=../../.wrangler/dev-registry vite dev",
     "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
     "preview": "vite preview",
     "typegen": "wrangler types",
     "typecheck": "vite build && tsc --noEmit"

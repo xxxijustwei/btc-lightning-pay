@@ -161,7 +161,7 @@ Worker Cron 每分钟运行（`* * * * *`），各任务互不影响：
 
 ## Worker 部署位置与连接池
 
-一次创建订单约有十几次顺序数据库往返，耗时主要取决于 Worker 到业务库的距离。`apps/backend/wrangler.jsonc` 的 `placement.region` 让请求处理固定在业务库所在区域运行，目前是 `aws:ap-south-1`；更换 Supabase 区域时必须同步修改。Placement 只作用于 fetch 请求，Cron 不受影响。`wrangler dev` 仍在本机运行，本地耗时不会因此变化。
+一次创建订单约有十几次顺序数据库往返，耗时主要取决于 Worker 到业务库的距离。`apps/backend/wrangler.jsonc` 的 `placement.region` 让请求处理固定在业务库所在区域运行，目前是 `aws:us-east-1`（Supabase 所在区域）；更换 Supabase 区域时必须同步修改。Placement 只作用于 fetch 请求，Cron 不受影响。`wrangler dev` 仍在本机运行，本地耗时不会因此变化。
 
 **上线前必须启用 Hyperdrive。** 没有它，每个请求都要新建一条到 Supabase 的 TLS 连接，付款页每 3 秒轮询一次，几十个付款人同时在线就可能打满直连数上限。管理端请求的会话校验与业务查询共用同一条连接。Hyperdrive 复用数据库连接，省去每个请求新建连接的耗时。按 [认证接入](auth-setup.md#cloudflare-部署前) 的要求使用 Supabase Direct connection 和 `btc_backend` 账号，并关闭查询缓存（订单和会话都是先写后读）。在自己的终端运行下面的命令，密码只在本地终端输入，不要写进仓库或聊天记录：
 
@@ -173,17 +173,17 @@ pnpm --filter @btc-lightning-pay/backend exec wrangler hyperdrive create btc-lig
 
 ## Dokploy / OrbStack
 
-使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件。保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。
+逐步部署清单见 [部署指南](deployment.md)。使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件。保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。
 
 在 Supabase 的 **Connect** 取连接串，将用户名改为 `btc_wallet`，密码使用该账号的 URL 编码密码，保留 `sslmode=require`。优先用 Direct connection，只有 IPv4 时用 Session pooler（5432），用户名为 `btc_wallet.<项目 ref>`。钱包和 Worker 的连接串指向同一个数据库。首次启动前，用钱包连接串执行 `SELECT current_user, current_schema();`，结果应为 `btc_wallet` 和 `breez_wallet`。参考 [Supabase 连接方式](https://supabase.com/docs/guides/database/connecting-to-postgres)。
 
-助记词以文件方式注入：在宿主机上创建只含助记词的文件（权限 0400，属主为容器内 `bun` 用户 uid 1000），把路径填入 `BREEZ_MNEMONIC_SECRET_FILE`，Compose 将其挂载为 `/run/secrets/breez_mnemonic` 并设置 `BREEZ_MNEMONIC_FILE`，`docker inspect` 中看不到助记词。
+助记词以文件方式注入：在宿主机上创建只含助记词的文件（Dokploy 用 File Mount；手动创建时权限 0400，属主为容器内 `bun` 用户 uid 1000），把路径填入 `BREEZ_MNEMONIC_SECRET_FILE`，Compose 将其挂载为 `/run/secrets/breez_mnemonic` 并设置 `BREEZ_MNEMONIC_FILE`，`docker inspect` 中看不到助记词。
 
 钱包服务不开放公网端口，经 Cloudflare Tunnel 暴露，并用 Cloudflare Access 保护：
 
-1. 在 Zero Trust 创建 Tunnel（`cloudflared` 与 wallet-service 同一内部网络），公共主机名如 `wallet.<你的域名>` 指向 `http://wallet-service:9741`。
+1. 在 Zero Trust 创建 Tunnel。wallet-service 加入外部网络 `dokploy-network`（Dokploy 自带；OrbStack 等其他环境先执行一次 `docker network create dokploy-network`），`cloudflared` 也运行在该网络。公共主机名 `x-wallet.cashpayment.co` 指向 `http://<Compose appName>-wallet-service-1:9741`；用完整容器名，避免与同网络的其他服务重名。
 2. 为该主机名创建 Access 应用，策略只允许一个 Service Token（Action 选 Service Auth）。
-3. 把该 Service Token 的 ID 和 secret 用 `wrangler secret put` 写入 Worker 的 `WALLET_ACCESS_CLIENT_ID` 与 `WALLET_ACCESS_CLIENT_SECRET`，`WALLET_URL` 设为 `https://wallet.<你的域名>`。`APP_ENV=production` 时缺少这两项，Worker 返回 `WALLET_NOT_CONFIGURED`。
+3. 把该 Service Token 的 ID 和 secret 用 `wrangler secret put` 写入 Worker 的 `WALLET_ACCESS_CLIENT_ID` 与 `WALLET_ACCESS_CLIENT_SECRET`，`WALLET_URL` 设为 `https://x-wallet.cashpayment.co`。`APP_ENV=production` 时缺少这两项，Worker 返回 `WALLET_NOT_CONFIGURED`。
 
 Bearer token 保留为第二层校验，Worker 配置相同的 `WALLET_TOKEN`。保持单副本，更新时先停止旧实例再启动新实例，不采用两个钱包实例重叠运行的滚动发布。SDK 初始化、同步和身份验证完成后才开始监听 HTTP。
 

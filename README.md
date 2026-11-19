@@ -69,7 +69,7 @@ packages/
 
 健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，认证表放在 `public`；第一阶段仅限已开通且启用的管理员登录，商户账号已建模但不开放登录。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
-两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin，例如 `https://pay.example.com`），用于显示和打开商户收款链接；未设置时只显示路径。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
+两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin），用于显示和打开商户收款链接；未设置时只显示路径，生产构建从已提交的 `apps/frontend/.env.production` 读取（`https://www.cashpayment.co`），本地 `pnpm dev` 不读取该文件。兼容日期固定为 `2026-11-17`。生产域名、部署顺序和 Dokploy 钱包配置见 [部署指南](docs/deployment.md)。
 
 付款页的浏览器标题统一为 `Lightning Payment`。页面中的品牌标志和 favicon 共用 `apps/pay/public/payment-logo.png`。
 

@@ -5,6 +5,7 @@
   "compatibility_date": "2026-11-17",
   // shortcut: Vite plugin 1.69.1 misroutes node:process with the new registry; recheck after upgrading.
   "compatibility_flags": ["nodejs_compat", "legacy_module_registry"],
+  "routes": [{ "pattern": "www.cashpayment.co", "custom_domain": true }],
   "services": [{ "binding": "BACKEND", "service": "btc-lightning-pay-backend" }],
   "observability": { "enabled": true, "traces": { "enabled": true } },
 }
