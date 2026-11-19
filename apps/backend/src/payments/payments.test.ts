@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/tes
 import { createPaymentStore } from "./store";
 import { publicOrder } from "./projection";
 import { createPaymentService } from "./service";
+import { createCrediting } from "./crediting";
 import { UpstreamFailure } from "./errors";
 import { makeWallet, parseWalletConfig, Wallet } from "./wallet";
 import { memoryWallet, type MemoryWallet } from "./wallet-memory";
@@ -44,7 +45,17 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const log = vi.fn();
-const payments = createPaymentService(store, quote, log);
+const crediting = createCrediting(store, log);
+const payments = createPaymentService(store, crediting, quote, log);
+/** Credits a receipt as the payment sync does; the result says whether it was an anomaly. */
+const credited = (payment: Parameters<typeof crediting.credit>[0]) =>
+  Effect.runPromise(crediting.credit(payment));
+/** Credits a receipt that must match its order and returns the order as stored now. */
+const credit = async (payment: Parameters<typeof crediting.credit>[0]) => {
+  const result = await credited(payment);
+  if (!("order" in result)) throw new Error(`Unexpected anomaly: ${result.anomaly}`);
+  return result.order;
+};
 const createOrder = (
   merchant: string,
   key: string,
@@ -217,11 +228,11 @@ test("order creation logs per-step timing without payer data", async () => {
 test("payment updates are monotonic, late payments are credited and net cost is separate from merchant payable", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const pending = { ...invoice(row.id), expiresAt: new Date(Date.now() - 1000).toISOString() };
-  expect(publicOrder(await store.sync(pending)).status).toBe("expired");
+  expect(publicOrder(await credit(pending)).status).toBe("expired");
   const payment = { ...paid(row.id), expiresAt: pending.expiresAt };
-  await store.sync(payment);
-  await store.sync(payment);
-  await store.sync(pending);
+  await credit(payment);
+  await credit(payment);
+  await credit(pending);
   expect(publicOrder(await store.getOrder(row.id)).status).toBe("paid");
   expect(await store.summary(onne)).toMatchObject({
     merchantId: onne,
@@ -230,15 +241,16 @@ test("payment updates are monotonic, late payments are credited and net cost is 
     unsettledSat: 10000,
   });
   expect(await store.summary(other)).toMatchObject({ paidSat: 0 });
-  await expect(store.sync({ ...payment, receivedMsat: 1 })).rejects.toMatchObject({
-    code: "PAYMENT_MISMATCH",
+  expect(await credited({ ...payment, receivedMsat: 1 })).toEqual({
+    anomaly: "amount_changed",
+    orderId: row.id,
   });
 });
 test("batch lifecycle freezes amounts, reserves orders, retains cancelled history and confirms idempotently", async () => {
   const a = await createOrder(onne, key, { amountUsdCents: 1000 });
   const b = await createOrder(other, key, { amountUsdCents: 1000 });
-  await store.sync(paid(a.id));
-  await store.sync(paid(b.id));
+  await credit(paid(a.id));
+  await credit(paid(b.id));
   const { record } = await store.settle(key, { merchantId: onne }, "admin");
   expect(record).toMatchObject({
     status: "pending",
@@ -259,7 +271,7 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
     store.settle("other-batch-key", { merchantId: onne }, "admin"),
   ).rejects.toMatchObject({ code: "NO_ELIGIBLE_ORDERS" });
   const later = await createOrder(onne, "later-order-key-0001", { amountUsdCents: 1000 });
-  await store.sync(paid(later.id));
+  await credit(paid(later.id));
   expect((await store.settlementOrders(record.id, 50, 0)).items).toEqual([
     { orderId: a.id, merchantId: onne, amountSat: 10000 },
   ]);
@@ -296,7 +308,7 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
 
 test("batch HTTP rejects old bodies, paginates history, and exposes independent settlement status", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  await store.sync(paid(row.id));
+  await credit(paid(row.id));
   const headers = { "idempotency-key": key };
   expect(
     (
@@ -418,7 +430,7 @@ test("admission bounds per-merchant invoice creation without charging duplicate 
     vi.restoreAllMocks();
   }
 });
-test("the HTTP wallet refuses redirects, mismatched order data and bodies it cannot read", async () => {
+test("the HTTP wallet refuses redirects and bodies it cannot read", async () => {
   const id = crypto.randomUUID();
   const fetcher = vi
     .fn<typeof fetch>()
@@ -438,8 +450,6 @@ test("the HTTP wallet refuses redirects, mismatched order data and bodies it can
     );
   await expect(issue()).rejects.toMatchObject({ reason: "http", upstreamStatus: 302 });
   expect(fetcher.mock.calls[0][1]?.redirect).toBe("manual");
-  fetcher.mockResolvedValueOnce(Response.json(invoice(crypto.randomUUID())));
-  await expect(issue()).rejects.toMatchObject({ reason: "mismatch" });
   fetcher.mockResolvedValueOnce(Response.json(null, { status: 202 }));
   await expect(issue()).rejects.toMatchObject({ reason: "invalid_response" });
   fetcher.mockRejectedValueOnce(new TypeError("connection reset"));
@@ -562,7 +572,7 @@ test.each(["pending", "expired"])(
       ...paid(row.id),
       expiresAt: new Date(Date.now() + (status === "expired" ? -1000 : 3600000)).toISOString(),
     };
-    await store.sync({ ...payment, paidAt: null, receivedMsat: null });
+    await credit({ ...payment, paidAt: null, receivedMsat: null });
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payment));
     vi.stubGlobal("fetch", fetcher);
     try {
@@ -594,6 +604,38 @@ test("a failed invoice creation stores nothing and the same key can retry", asyn
   const retry = await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(retry).toMatchObject({ status: "pending", invoice: "lnbc100u1test" });
   expect(wallet.asked.issueInvoice).toBe(3);
+});
+
+test("an invoice that contradicts its reservation is an anomaly and stores nothing", async () => {
+  const create = (issuer: typeof Wallet.Service) =>
+    Effect.runPromise(
+      payments
+        .createOrder("onne", key, { amountUsdCents: 1000 })
+        .pipe(Effect.provideService(Wallet, issuer)),
+    );
+  const overcharging = {
+    ...wallet.wallet,
+    issueInvoice: (request: { orderId: string; amountSat: number }) =>
+      wallet.wallet.issueInvoice({ ...request, amountSat: request.amountSat + 1 }),
+  };
+  log.mockClear();
+  await expect(create(overcharging)).rejects.toMatchObject({ code: "WALLET_UNAVAILABLE" });
+  expect(await findOrder(onne, key)).toBeNull();
+  expect(log).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "payment_anomaly",
+      operation: "create_invoice",
+      anomaly: "contradicts_order",
+    }),
+  );
+  // An anomaly is not also logged as a failure.
+  expect(log.mock.calls.filter(([entry]) => entry.event !== "payment_anomaly")).toHaveLength(0);
+  wallet.failNext("issueInvoice", "mismatch");
+  await expect(create(wallet.wallet)).rejects.toMatchObject({ code: "WALLET_UNAVAILABLE" });
+  expect(log).toHaveBeenLastCalledWith(
+    expect.objectContaining({ event: "payment_anomaly", anomaly: "wallet_reported" }),
+  );
+  expect(await create(wallet.wallet)).toMatchObject({ status: "pending" });
 });
 
 test("merchant provisioning is atomic, keeps identity immutable and hides private fields", async () => {
@@ -677,7 +719,7 @@ test("only the merchant API disables a merchant; it stops new payments and keeps
   await expect(
     createOrder(onne, "disabled-new-key", { amountUsdCents: 1000 }),
   ).rejects.toMatchObject({ code: "MERCHANT_DISABLED" });
-  await store.sync(paid(row.id));
+  await credit(paid(row.id));
   const batch = await store.settle("disabled-merchant-settle", { merchantId: onne }, "admin");
   expect(batch.record.amountSat).toBe(10000);
   await store.updateMerchant(onne, { enabled: true }, "admin");
@@ -735,13 +777,14 @@ const walletEnv = {
 
 test("an overpaid order is paid; the excess is recorded but never owed to the merchant", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  await store.sync({ ...paid(row.id), receivedMsat: 12_000_000 });
+  await credit({ ...paid(row.id), receivedMsat: 12_000_000 });
   const admin = await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json();
   expect(admin).toMatchObject({ status: "paid", receivedMsat: 12_000_000, excessMsat: 2_000_000 });
   expect(await store.summary(onne)).toMatchObject({ paidSat: 10000 });
   const short = await createOrder(onne, `${key}-short`, { amountUsdCents: 1000 });
-  await expect(store.sync({ ...paid(short.id), receivedMsat: 9_999_000 })).rejects.toMatchObject({
-    code: "PAYMENT_MISMATCH",
+  expect(await credited({ ...paid(short.id), receivedMsat: 9_999_000 })).toEqual({
+    anomaly: "underpaid",
+    orderId: short.id,
   });
 });
 
@@ -755,22 +798,34 @@ test("a receipt that contradicts its order is logged as an anomaly and the order
   expect(log).toHaveBeenCalledWith(
     expect.objectContaining({
       event: "payment_anomaly",
+      operation: "refresh_order",
       orderId: row.id,
-      code: "PAYMENT_MISMATCH",
+      anomaly: "underpaid",
     }),
   );
   // The wallet's own 409 is an anomaly too, never an outage verdict.
   wallet.failNext("lookup", "mismatch");
   expect((await call(request(`/api/public/orders/${row.id}`))).status).toBe(200);
   expect(log).toHaveBeenLastCalledWith(
-    expect.objectContaining({ event: "payment_anomaly", orderId: row.id, reason: "mismatch" }),
+    expect.objectContaining({
+      event: "payment_anomaly",
+      orderId: row.id,
+      anomaly: "wallet_reported",
+    }),
   );
+  // Receipts the sync reads are judged the same way.
+  expect(await credited({ ...paid(row.id), paymentHash: "f".repeat(64) })).toEqual({
+    anomaly: "contradicts_order",
+    orderId: row.id,
+  });
+  const stranger = crypto.randomUUID();
+  expect(await credited(paid(stranger))).toEqual({ anomaly: "unknown_order", orderId: stranger });
   expect((await store.getOrder(row.id)).status).toBe("pending");
 });
 
 test("payer reads stop asking the wallet ten minutes after expiry; admin reads always ask", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  await store.sync({
+  await credit({
     ...invoice(row.id),
     expiresAt: new Date(Date.now() - 11 * 60_000).toISOString(),
   });
@@ -805,18 +860,18 @@ test("the payment sync credits receipts nobody polled, skips anomalies and keeps
   log.mockClear();
   const info = vi.spyOn(console, "info").mockImplementation(() => {});
   try {
-    await syncPayments(store, list, log);
+    await syncPayments(store, crediting, list, log);
     expect(completedSince).toHaveBeenCalledWith(0);
     expect((await store.getOrder(row.id)).status).toBe("paid");
     expect((await store.getOrder(contradicted.id)).status).toBe("pending");
     expect(log.mock.calls.filter(([entry]) => entry.event === "payment_anomaly")).toHaveLength(2);
     // Re-reading overlapping receipts is harmless: crediting is idempotent.
-    await syncPayments(store, list, log);
+    await syncPayments(store, crediting, list, log);
     expect(completedSince).toHaveBeenLastCalledWith(latest - 600);
     completedSince.mockReturnValueOnce(
       Effect.fail(new UpstreamFailure({ dependency: "wallet", reason: "network" })),
     );
-    await expect(syncPayments(store, list, log)).rejects.toThrow();
+    await expect(syncPayments(store, crediting, list, log)).rejects.toThrow();
     expect(await store.walletCursor()).toEqual(new Date(latest * 1000));
   } finally {
     info.mockRestore();
@@ -924,7 +979,7 @@ test("the payer API refuses requests over the edge rate limits, keyed by IP and 
 test("unconfirmed orders count only invoices that can still be paid", async () => {
   await createOrder(onne, key, { amountUsdCents: 1000 });
   const old = await createOrder(onne, `${key}-old`, { amountUsdCents: 1000 });
-  await store.sync({ ...invoice(old.id), expiresAt: new Date(Date.now() - 1000).toISOString() });
+  await credit({ ...invoice(old.id), expiresAt: new Date(Date.now() - 1000).toISOString() });
   expect(await store.summary(onne)).toMatchObject({ unconfirmedOrderCount: 1 });
 });
 

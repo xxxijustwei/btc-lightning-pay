@@ -6,14 +6,17 @@ import {
   settlement,
   walletSyncCursor,
 } from "@btc-lightning-pay/db/schema";
-import type { WalletPayment, NewOrder } from "@btc-lightning-pay/api";
+import type { NewOrder } from "@btc-lightning-pay/api";
 import { getTableColumns, and, count, desc, eq, gte, lt, ne, sql, type SQL } from "drizzle-orm";
 import { PaymentFailure, StorageFailure } from "./errors";
-import { assertSameOrder, newInvoice, paymentUpdate } from "./rules";
+import { assertSameOrder } from "./rules";
 
 type StoredOrder = typeof paymentOrder.$inferSelect;
 /** An order whose invoice exists: every order outside the store's reservation path. */
 export type OrderRow = StoredOrder & { invoice: string; paymentHash: string; expiresAt: Date };
+export type OrderUpdate = Partial<
+  Pick<StoredOrder, "expiresAt" | "paidAt" | "receivedMsat" | "status">
+>;
 export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export type Scope = {
   admin?: boolean;
@@ -169,14 +172,15 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
         return { reservation };
       });
     },
-    /** Stores the wallet's invoice on a reservation, making it a payable order. */
-    async attachInvoice(id: string, amountSat: number, payment: typeof WalletPayment.Type) {
-      const { id: _id, ...invoice } = newInvoice(payment, amountSat);
-      if (_id !== id) throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
+    /** Stores a checked invoice on a reservation, making it a payable order. */
+    async attachInvoice(
+      id: string,
+      invoice: Pick<OrderRow, "invoice" | "paymentHash" | "expiresAt">,
+    ) {
       return transaction({ admin: true }, async (tx) => {
         const [row] = await tx
           .update(paymentOrder)
-          .set(invoice)
+          .set({ ...invoice, status: "pending" })
           .where(and(eq(paymentOrder.id, id), eq(paymentOrder.status, "creating")))
           .returning();
         // Released meanwhile as abandoned; the invoice was never shown, so nobody can pay it.
@@ -242,22 +246,29 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
           });
       });
     },
-    async sync(payment: typeof WalletPayment.Type) {
+    /**
+     * Crediting's seam: locks an order, writes the update `judge` returns, and hands back the
+     * order as stored now with the judgement; null when no such order exists.
+     */
+    async applyToOrder<J extends { update?: OrderUpdate }>(
+      id: string,
+      judge: (row: OrderRow) => J,
+    ) {
       return transaction({ admin: true }, async (tx) => {
         const [row] = await tx
           .select()
           .from(paymentOrder)
-          .where(and(eq(paymentOrder.id, payment.orderId), ne(paymentOrder.status, "creating")))
+          .where(and(eq(paymentOrder.id, id), ne(paymentOrder.status, "creating")))
           .for("update");
-        if (!row) throw new PaymentFailure({ code: "ORDER_NOT_FOUND" });
-        const update = paymentUpdate(issued(row), payment);
-        if (!update) return issued(row);
+        if (!row) return null;
+        const judgement = judge(issued(row));
+        if (!judgement.update) return { row: issued(row), judgement };
         const [updated] = await tx
           .update(paymentOrder)
-          .set(update)
+          .set(judgement.update)
           .where(eq(paymentOrder.id, row.id))
           .returning();
-        return issued(updated);
+        return { row: issued(updated), judgement };
       });
     },
     ...createAdministrationStore(transaction),

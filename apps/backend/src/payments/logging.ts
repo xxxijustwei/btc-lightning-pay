@@ -1,3 +1,4 @@
+import type { Anomaly } from "./crediting";
 import { PaymentFailure, StorageFailure, UpstreamFailure } from "./errors";
 
 export type PaymentLog = (entry: {
@@ -10,6 +11,8 @@ export type PaymentLog = (entry: {
   dependency?: string;
   reason?: string;
   upstreamStatus?: number;
+  /** Set on `payment_anomaly`: how the wallet fact contradicts its order. */
+  anomaly?: Anomaly;
 }) => void;
 export const paymentLogger =
   (requestId: string): PaymentLog =>

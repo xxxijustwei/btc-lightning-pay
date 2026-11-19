@@ -1,7 +1,7 @@
 import type { WalletPayment } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import { UpstreamFailure } from "./errors";
-import { walletFrom, type Wallet } from "./wallet";
+import type { Wallet } from "./wallet";
 
 type Payment = typeof WalletPayment.Type;
 type Operation = keyof typeof Wallet.Service;
@@ -36,7 +36,7 @@ export function memoryWallet() {
     contradicted.has(payment.orderId)
       ? { ...payment, paidAt: new Date().toISOString(), receivedMsat: 1 }
       : payment;
-  const wallet = walletFrom({
+  const wallet: typeof Wallet.Service = {
     issueInvoice: ({ orderId, amountSat }) =>
       enter("issueInvoice").pipe(
         Effect.map(() => {
@@ -84,7 +84,7 @@ export function memoryWallet() {
           return { payments, latest: times.length ? Math.max(...times) : null, more: false };
         }),
       ),
-  });
+  };
   return {
     wallet,
     asked,

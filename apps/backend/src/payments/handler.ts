@@ -11,6 +11,7 @@ import {
   type WalletBindings,
   type WalletConfig,
 } from "./wallet";
+import { createCrediting } from "./crediting";
 import { createPaymentService } from "./service";
 import { errorFields, paymentLogger } from "./logging";
 import { PaymentFailure } from "./errors";
@@ -132,7 +133,7 @@ async function handleRequest(
     requestHeaders.set("x-request-id", requestId);
     const request = await bounded(new Request(original, { headers: requestHeaders }));
     const store = createPaymentStore(resource.database, original.signal);
-    const payments = createPaymentService(store, quote, log);
+    const payments = createPaymentService(store, createCrediting(store, log), quote, log);
     const response = await paymentApp.handler(
       request,
       Context.make(PaymentRuntime, { store, actor, payments, log }).pipe(

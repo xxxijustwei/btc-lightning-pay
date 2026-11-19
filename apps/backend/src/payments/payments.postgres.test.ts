@@ -5,6 +5,8 @@ import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test";
 import { createPaymentStore } from "./store";
+import type { WalletPayment } from "@btc-lightning-pay/api";
+import { createCrediting } from "./crediting";
 import { createPaymentService } from "./service";
 import { Wallet } from "./wallet";
 import { memoryWallet } from "./wallet-memory";
@@ -18,13 +20,14 @@ async function storeOrder(
   key: string,
   input: { amountUsdCents: number },
   price: { rateUsd: string; quotedAt: Date; amountSat: number },
-  issued: Parameters<Store["attachInvoice"]>[2],
+  issued: typeof WalletPayment.Type,
 ) {
   const reserved = await store.reserveOrder(merchantId, key, input, price);
   if ("order" in reserved) return reserved.order;
-  return store.attachInvoice(reserved.reservation.id, price.amountSat, {
-    ...issued,
-    orderId: reserved.reservation.id,
+  return store.attachInvoice(reserved.reservation.id, {
+    invoice: issued.invoice,
+    paymentHash: issued.paymentHash,
+    expiresAt: new Date(issued.expiresAt),
   });
 }
 const findOrder = async (database: ReturnType<typeof createDatabase>["database"], key: string) =>
@@ -189,12 +192,14 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const store = createPaymentStore(clients[0].database);
     const issued = payment();
     const order = await storeOrder(store, id, "paid-order-key-0001", input, price, issued);
-    await store.sync({
-      ...issued,
-      orderId: order.id,
-      paidAt: new Date().toISOString(),
-      receivedMsat: 10000000,
-    });
+    await Effect.runPromise(
+      createCrediting(store, vi.fn()).credit({
+        ...issued,
+        orderId: order.id,
+        paidAt: new Date().toISOString(),
+        receivedMsat: 10000000,
+      }),
+    );
     const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);
     const pending = Promise.allSettled(
       clients
@@ -358,8 +363,10 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       quote = deferred<typeof price>();
     // The reservation is taken under the merchant lock before invoicing, so no invoice is wasted.
     const wallet = memoryWallet();
+    const serviceStore = createPaymentStore(clients[0].database);
     const service = createPaymentService(
-      createPaymentStore(clients[0].database),
+      serviceStore,
+      createCrediting(serviceStore, vi.fn()),
       async () => {
         entered.resolve();
         return quote.promise;

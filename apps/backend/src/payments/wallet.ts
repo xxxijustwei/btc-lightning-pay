@@ -14,9 +14,10 @@ type Payment = typeof WalletPayment.Type;
 type Failure = Effect.Effect<never, UpstreamFailure>;
 
 /**
- * The platform wallet as the Worker sees it. Every fact returned belongs to the order it was
- * asked about; anything else fails as `mismatch`. Failures are always `UpstreamFailure`, and an
- * unusable configuration fails every call as `not_configured` instead of preventing the build.
+ * The platform wallet as the Worker sees it. It reports facts as the wallet states them; checking
+ * them against orders is Crediting's job. `mismatch` means the wallet itself refused a fact as
+ * contradicting its order (HTTP 409). Failures are always `UpstreamFailure`, and an unusable
+ * configuration fails every call as `not_configured` instead of preventing the build.
  */
 export class Wallet extends Context.Service<
   Wallet,
@@ -83,25 +84,6 @@ export function parseWalletConfig(env: WalletBindings): WalletConfig {
 const failure = (reason: UpstreamFailure["reason"], upstreamStatus?: number) =>
   new UpstreamFailure({ dependency: "wallet", reason, upstreamStatus });
 
-/**
- * Builds the Wallet over raw wallet calls, adding the checks every adapter shares: a fact for
- * another order, amount or invoice is a `mismatch`.
- */
-export function walletFrom(calls: typeof Wallet.Service): typeof Wallet.Service {
-  const belongs =
-    (request: typeof WalletRequest.Type & { paymentHash?: string }) => (payment: Payment) =>
-      payment.orderId === request.orderId &&
-      payment.amountSat === request.amountSat &&
-      (request.paymentHash === undefined || payment.paymentHash === request.paymentHash)
-        ? Effect.succeed(payment)
-        : Effect.fail(failure("mismatch"));
-  return {
-    issueInvoice: (request) => calls.issueInvoice(request).pipe(Effect.flatMap(belongs(request))),
-    lookup: (request) => calls.lookup(request).pipe(Effect.flatMap(belongs(request))),
-    completedSince: (since) => calls.completedSince(since),
-  };
-}
-
 /** Longer waits belong to a wallet that is down; the reservation is released instead. */
 const WALLET_TIMEOUT = "15 seconds";
 
@@ -144,12 +126,12 @@ function httpWallet(config: WalletConfig, requestId: string | undefined, fetcher
               : failure("invalid_response"),
       ),
     );
-  return walletFrom({
+  return {
     issueInvoice: (payload) => call((wallet) => wallet.create({ payload, headers: {} })),
     lookup: (payload) => call((wallet) => wallet.lookup({ payload, headers: {} })),
     completedSince: (since) =>
       call((wallet) => wallet.completed({ payload: { since }, headers: {} })),
-  });
+  } satisfies typeof Wallet.Service;
 }
 const isTransportError = (error: unknown) =>
   HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError";

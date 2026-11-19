@@ -1,6 +1,6 @@
 import { createDatabase } from "@btc-lightning-pay/db/client";
 import { pruneOtpThrottle } from "../auth/throttle";
-import { PaymentFailure } from "./errors";
+import { createCrediting, type Crediting } from "./crediting";
 import { errorFields, paymentLogger, type PaymentLog } from "./logging";
 import { saveQuote } from "./quote-job";
 import { createPaymentStore } from "./store";
@@ -18,6 +18,7 @@ export const SYNC_OVERLAP_SECONDS = 600;
  */
 export async function syncPayments(
   store: ReturnType<typeof createPaymentStore>,
+  crediting: Crediting,
   wallet: typeof Wallet.Service,
   log: PaymentLog,
 ) {
@@ -27,25 +28,10 @@ export async function syncPayments(
     : 0;
   const page = await Effect.runPromise(wallet.completedSince(since));
   let paid = 0;
+  // An anomaly is logged by Crediting and skipped; a storage failure stops the run.
   for (const payment of page.payments) {
-    try {
-      if ((await store.sync(payment)).paidAt) paid++;
-    } catch (error) {
-      // A receipt that matches no order, or contradicts its order, is reported and skipped.
-      if (
-        error instanceof PaymentFailure &&
-        (error.code === "ORDER_NOT_FOUND" || error.code === "PAYMENT_MISMATCH")
-      ) {
-        log({
-          event: "payment_anomaly",
-          operation: "sync_payment",
-          orderId: payment.orderId,
-          code: error.code,
-        });
-        continue;
-      }
-      throw error;
-    }
+    const credited = await Effect.runPromise(crediting.credit(payment));
+    if ("order" in credited && credited.order.paidAt) paid++;
   }
   if (page.latest !== null) {
     const next = new Date(page.latest * 1000);
@@ -93,7 +79,9 @@ export async function runScheduled(
       // The sync then fails alone, logged as `not_configured`.
     }
     const wallet = makeWallet(walletConfig, { requestId: runId, fetcher });
-    await task("sync_payments", () => syncPayments(store, wallet, log));
+    await task("sync_payments", () =>
+      syncPayments(store, createCrediting(store, log), wallet, log),
+    );
     await task("release_reservations", async () => {
       const released = await store.releaseAbandonedReservations();
       if (released)

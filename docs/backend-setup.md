@@ -24,7 +24,7 @@
 | `BREEZ_DATABASE_URL`          | 钱包服务 | 同一个 PostgreSQL 数据库的 `btc_wallet` 连接串，远端连接验证 TLS 证书 |
 | `WALLET_HOST` / `WALLET_PORT` | 钱包服务 | 默认 127.0.0.1 / 9741                                                 |
 
-平台不向商户扣收款手续费，订单 API 和数据库均没有费用字段。商户应收为固定 `amountSat`；`receivedMsat` 直接来自 SDK 收款金额乘 1000。完成且到账金额不少于 invoice 金额的支付即为已付；多付部分记为 `excessMsat`，归平台人工处理，不计入商户应收。到账少于 invoice 金额、或 invoice 与订单不符的记录是异常：钱包返回 409 `PAYMENT_MISMATCH`，Worker 记 `payment_anomaly` 日志，订单保持原状，付款页照常显示。Spark 收款不扣费（`fees` 为 0）；上线前在真实环境确认一次 `receivePayment` 返回的 `fee` 为 0。
+平台不向商户扣收款手续费，订单 API 和数据库均没有费用字段。商户应收为固定 `amountSat`；`receivedMsat` 直接来自 SDK 收款金额乘 1000。完成且到账金额不少于 invoice 金额的支付即为已付；多付部分记为 `excessMsat`，归平台人工处理，不计入商户应收。到账少于 invoice 金额、或 invoice 与订单不符的记录是异常：钱包返回 409 `PAYMENT_MISMATCH`，Worker 记 `payment_anomaly` 日志，订单保持原状，付款页照常显示。Worker 对钱包给出的每条事实（查询结果、到账同步的收款、新开的发票）都在入账模块（`payments/crediting.ts`）里再核对一次，日志的 `anomaly` 字段说明原因：`unknown_order`（没有对应订单）、`contradicts_order`（订单号、发票、hash 或金额不符）、`underpaid`（到账不足）、`amount_changed`（已付订单的到账金额被改报）、`wallet_reported`（钱包自己返回 409）。开票时的异常同样释放占位并返回 `WALLET_UNAVAILABLE`，但记为异常而不是故障。Spark 收款不扣费（`fees` 为 0）；上线前在真实环境确认一次 `receivePayment` 返回的 `fee` 为 0。
 
 ## 给 Claude 的接口约定
 
@@ -145,7 +145,7 @@ Content-Type: application/json
 - `POST /v1/payments/query`：`{orderId, amountSat, paymentHash, invoice}`，核对 invoice 的订单说明、网络、金额、hash；只接纳 SDK 已完成的 Lightning 收款记录。
 - `POST /v1/payments/completed`：`{since}`（Unix 秒），返回该时刻起已完成收款的一页（最多 500 条，按时间升序）：`{payments, latest, more}`。非订单 invoice 的收款跳过；与订单不符的收款记 `payment_anomaly` 后跳过。
 
-响应为 `{orderId, amountSat, paymentHash, invoice, expiresAt, paidAt, receivedMsat}`。未到账时最后两个字段为 null；开票和查询都直接返回 200 和这份事实，没有 202 中间态。Worker 核对返回的订单号、金额和 hash，不一致记为 `mismatch`。Worker 未配置钱包时，下单返回 `WALLET_NOT_CONFIGURED`，查询保留已存订单并在日志里记录 `reason: "not_configured"`，到账同步单独失败。SDK 的 payment ID 与 payment hash 不混用。SDK 内部记录的 preimage、费用和钱包密钥不出现在接口或日志中。
+响应为 `{orderId, amountSat, paymentHash, invoice, expiresAt, paidAt, receivedMsat}`。未到账时最后两个字段为 null；开票和查询都直接返回 200 和这份事实，没有 202 中间态。Worker 的 Wallet 只如实转达这份事实，核对由入账模块负责；`mismatch` 只表示钱包自己返回了 409。Worker 未配置钱包时，下单返回 `WALLET_NOT_CONFIGURED`，查询保留已存订单并在日志里记录 `reason: "not_configured"`，到账同步单独失败。SDK 的 payment ID 与 payment hash 不混用。SDK 内部记录的 preimage、费用和钱包密钥不出现在接口或日志中。
 
 单笔查询不维护全量索引：钱包从 invoice 解析出创建时间和有效期，只读取「创建前 60 秒到到期后 5 分钟」之间完成的收款，耗时与历史收款总量无关。同一 hash 出现多条记录时只让该订单返回 `PAYMENT_MISMATCH`，不影响其他订单。SDK 网络同步与这里的查询是两层不同的工作；同步故障或查询故障不会把订单标成支付失败。
 

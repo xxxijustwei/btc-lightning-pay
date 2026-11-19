@@ -1,7 +1,7 @@
 import type { NewOrder, NewSettlement } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
-import { PaymentFailure, UpstreamFailure, type PaymentError } from "./errors";
-import { Wallet } from "./wallet";
+import type { Crediting } from "./crediting";
+import { PaymentFailure, type PaymentError } from "./errors";
 import type { createPaymentStore, OrderRow } from "./store";
 import { quoteSats } from "./quote";
 import { assertSameOrder } from "./rules";
@@ -23,44 +23,13 @@ function isUsable(quote: Quote, now: number) {
 }
 export function createPaymentService(
   store: ReturnType<typeof createPaymentStore>,
+  crediting: Crediting,
   quote: (signal?: AbortSignal) => Promise<Quote>,
   log: PaymentLog,
 ) {
-  /** Ask the wallet whether the invoice was paid; paid orders are final. */
+  /** The order as it stands after asking the wallet; an anomaly leaves it as stored. */
   const refresh = <R extends OrderRow>(row: R) =>
-    Effect.gen(function* () {
-      if (row.paidAt) return row;
-      const wallet = yield* Wallet;
-      const result = yield* wallet.lookup({
-        orderId: row.id,
-        amountSat: row.amountSat,
-        paymentHash: row.paymentHash,
-        invoice: row.invoice,
-      });
-      const synced = yield* paymentTask("confirm_payment", () => store.sync(result));
-      // Keep any joined fields (such as settlement status) the stored row does not carry.
-      return { ...row, ...synced };
-    }).pipe(Effect.withSpan("payments.refresh"));
-  const isAnomaly = (error: unknown) =>
-    (error instanceof UpstreamFailure && error.reason === "mismatch") ||
-    (error instanceof PaymentFailure && error.code === "PAYMENT_MISMATCH");
-  // Neither an unreachable wallet nor a contradicting receipt changes what the payer sees: the
-  // stored state stays, and an anomaly is logged on its own for follow-up.
-  const refreshOrKeep = <R extends OrderRow>(row: R, operation: string) =>
-    refresh(row).pipe(
-      Effect.catch((error) => {
-        const anomaly = isAnomaly(error);
-        log({
-          ...(anomaly ? { event: "payment_anomaly" as const } : {}),
-          operation,
-          orderId: row.id,
-          ...errorFields(error),
-        });
-        return anomaly || error instanceof UpstreamFailure
-          ? Effect.succeed(row)
-          : Effect.fail(error);
-      }),
-    );
+    crediting.check(row).pipe(Effect.map((result) => ("order" in result ? result.order : row)));
   return {
     /** A payer's read stops asking the wallet shortly after expiry; an admin's read always asks. */
     order: Effect.fn("payments.order")(function* (id: string, admin = false) {
@@ -71,7 +40,7 @@ export function createPaymentService(
         Date.now() > row.expiresAt.getTime() + PUBLIC_REFRESH_AFTER_EXPIRY_MS
       )
         return row;
-      return yield* refreshOrKeep(row, "refresh_order");
+      return yield* refresh(row);
     }),
     createOrder: Effect.fn("payments.createOrder")(function* (
       slug: string,
@@ -80,7 +49,7 @@ export function createPaymentService(
     ) {
       const started = Date.now();
       const steps: Record<string, number> = {};
-      const timed = <A, E>(step: string, effect: Effect.Effect<A, E>) =>
+      const timed = <A, E, R>(step: string, effect: Effect.Effect<A, E, R>) =>
         Effect.suspend(() => {
           const stepStarted = Date.now();
           return effect.pipe(
@@ -97,7 +66,7 @@ export function createPaymentService(
         } catch {
           return yield* new PaymentFailure({ code: "IDEMPOTENCY_CONFLICT" });
         }
-        return yield* refreshOrKeep(opened.order, "refresh_order");
+        return yield* refresh(opened.order);
       }
       if (!opened.enabled) return yield* new PaymentFailure({ code: "MERCHANT_DISABLED" });
       // The cron stores a quote every five minutes; fetch live only when it has fallen behind.
@@ -125,11 +94,13 @@ export function createPaymentService(
           store.reserveOrder(opened.merchantId, key, input, { ...price, amountSat }),
         ),
       );
-      if ("order" in reserved) return yield* refreshOrKeep(reserved.order, "refresh_order");
+      if ("order" in reserved) return yield* refresh(reserved.order);
       const id = reserved.reservation.id;
-      const release = (operation: string, error: unknown): Effect.Effect<never, PaymentError> =>
+      // An anomaly was logged by Crediting; any other failure is logged here.
+      const release = (operation: string, error?: unknown): Effect.Effect<never, PaymentError> =>
         Effect.gen(function* () {
-          log({ operation, orderId: id, durationMs: steps.invoiceMs, ...errorFields(error) });
+          if (error !== undefined)
+            log({ operation, orderId: id, durationMs: steps.invoiceMs, ...errorFields(error) });
           // A reservation left behind is released by the scheduled job.
           yield* paymentTask("release_order", () => store.releaseOrder(id)).pipe(
             Effect.catch((cause) =>
@@ -140,18 +111,13 @@ export function createPaymentService(
           );
           return yield* new PaymentFailure({ code: "WALLET_UNAVAILABLE" });
         });
-      const wallet = yield* Wallet;
-      const payment = yield* timed(
-        "invoiceMs",
-        wallet.issueInvoice({ orderId: id, amountSat }),
-      ).pipe(Effect.catch((error) => release("create_invoice", error)));
+      const issued = yield* timed("invoiceMs", crediting.issueInvoice({ id, amountSat })).pipe(
+        Effect.catch((error) => release("create_invoice", error)),
+      );
+      if ("anomaly" in issued) return yield* release("create_invoice");
       const row = yield* timed(
         "storeMs",
-        paymentTask("attach_invoice", () => store.attachInvoice(id, amountSat, payment)),
-      ).pipe(
-        Effect.catch((error) =>
-          error instanceof PaymentFailure ? release("attach_invoice", error) : Effect.fail(error),
-        ),
+        paymentTask("attach_invoice", () => store.attachInvoice(id, issued.invoice)),
       );
       // Per-step timing shows where a slow creation spent its time; it carries no payer data.
       yield* Effect.sync(() =>
