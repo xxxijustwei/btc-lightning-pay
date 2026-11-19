@@ -2,10 +2,10 @@ import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 export const MerchantSlug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{2,31}$/));
-export const OrderId = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
-);
-export const MerchantId = OrderId;
+const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const OrderId = Schema.String.check(Schema.isPattern(uuidV4));
+export const MerchantId = Schema.String.check(Schema.isPattern(uuidV4));
+export const SettlementId = Schema.String.check(Schema.isPattern(uuidV4));
 export const AccountName = Schema.String.check(Schema.isPattern(/\S/), Schema.isMaxLength(100));
 export const AccountEmail = Schema.String.check(
   Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),
@@ -82,8 +82,9 @@ export const AdminOrder = Schema.Struct({
   paidAt: Schema.NullOr(Schema.String),
   paymentHash: Schema.String,
   receivedMsat: Schema.NullOr(Millisats),
-
-  settlementId: Schema.NullOr(OrderId),
+  /** Received beyond the invoice amount; recorded for the platform, never paid to the merchant. */
+  excessMsat: Schema.NullOr(Millisats),
+  settlementId: Schema.NullOr(SettlementId),
   settlementStatus: Schema.NullOr(Schema.Literals(["pending", "settled"])),
 });
 export const SettlementStatus = Schema.Literals(["pending", "settled", "cancelled"]);
@@ -102,7 +103,7 @@ export const CancelSettlement = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 ).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "reason")));
 export const Settlement = Schema.Struct({
-  id: OrderId,
+  id: SettlementId,
   merchantId: MerchantId,
   status: SettlementStatus,
   amountSat: SettlementAmount,
@@ -136,44 +137,39 @@ export const Summary = Schema.Struct({
   unsettledSat: Schema.Int,
   pendingSettlementSat: Schema.Int,
   availableSettlementSat: Schema.Int,
+  /** Unexpired invoices still awaiting payment. */
   unconfirmedOrderCount: Schema.Int,
 });
 export const paymentErrorStatus = {
   INVALID_INPUT: 400,
-  USER_NOT_FOUND: 404,
-  EMAIL_EXISTS: 409,
-  LAST_ADMIN: 409,
-  NO_ELIGIBLE_ORDERS: 409,
-  SETTLEMENT_NOT_FOUND: 404,
-  SETTLEMENT_STATE_CONFLICT: 409,
-  SETTLEMENT_PROOF_CONFLICT: 409,
-  SETTLEMENT_REASON_CONFLICT: 409,
-
-  INVALID_BODY: 400,
-  INVALID_EVENT: 400,
   BODY_TOO_LARGE: 400,
   INVALID_DATE: 400,
   INVALID_PAGINATION: 400,
-  DUPLICATE_ORDER: 400,
   UNAUTHORIZED: 401,
   ADMIN_REQUIRED: 403,
   ORIGIN_REJECTED: 403,
   NOT_FOUND: 404,
+  USER_NOT_FOUND: 404,
   MERCHANT_NOT_FOUND: 404,
   ORDER_NOT_FOUND: 404,
-  METHOD_NOT_ALLOWED: 405,
+  SETTLEMENT_NOT_FOUND: 404,
+  EMAIL_EXISTS: 409,
+  LAST_ADMIN: 409,
+  USER_IS_MERCHANT: 409,
+  NO_ELIGIBLE_ORDERS: 409,
+  SETTLEMENT_STATE_CONFLICT: 409,
+  SETTLEMENT_PROOF_CONFLICT: 409,
+  SETTLEMENT_REASON_CONFLICT: 409,
   IDEMPOTENCY_CONFLICT: 409,
+  ORDER_IN_PROGRESS: 409,
   MERCHANT_DISABLED: 409,
   MERCHANT_EXISTS: 409,
-  SETTLEMENT_CONFLICT: 409,
   PAYMENT_MISMATCH: 409,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
   QUOTE_UNAVAILABLE: 503,
-  SYNC_NOT_CONFIGURED: 503,
   WALLET_NOT_CONFIGURED: 503,
   PAYMENTS_NOT_CONFIGURED: 503,
-  WEBHOOK_NOT_CONFIGURED: 503,
   PAYMENTS_UNAVAILABLE: 503,
   WALLET_UNAVAILABLE: 503,
   AMOUNT_OVERFLOW: 503,
@@ -189,6 +185,7 @@ const errors = [400, 401, 403, 404, 405, 409, 429, 500, 503].map((httpApiStatus)
 const paging = { limit: Schema.optional(Schema.String), offset: Schema.optional(Schema.String) };
 const merchantParams = { merchantId: MerchantId };
 const orderParams = { orderId: OrderId };
+const settlementParams = { settlementId: SettlementId };
 const idempotencyHeaders = { "idempotency-key": IdempotencyKey };
 export const PaymentsApi = HttpApi.make("PaymentsApi").add(
   HttpApiGroup.make("publicPayments").add(
@@ -280,25 +277,25 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
       success: [Settlement, Settlement.annotate({ httpApiStatus: 201 })],
       error: errors,
     }),
-    HttpApiEndpoint.get("settlement", "/api/admin/settlements/:orderId", {
-      params: orderParams,
+    HttpApiEndpoint.get("settlement", "/api/admin/settlements/:settlementId", {
+      params: settlementParams,
       success: Settlement,
       error: errors,
     }),
-    HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:orderId/orders", {
-      params: orderParams,
+    HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:settlementId/orders", {
+      params: settlementParams,
       query: paging,
       success: SettlementOrderPage,
       error: errors,
     }),
-    HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:orderId/confirm", {
-      params: orderParams,
+    HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:settlementId/confirm", {
+      params: settlementParams,
       payload: ConfirmSettlement,
       success: Settlement,
       error: errors,
     }),
-    HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:orderId/cancel", {
-      params: orderParams,
+    HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:settlementId/cancel", {
+      params: settlementParams,
       payload: CancelSettlement,
       success: Settlement,
       error: errors,
@@ -338,6 +335,17 @@ export const WalletLookup = Schema.Struct({
   paymentHash: WalletInvoice.fields.paymentHash,
   invoice: WalletInvoice.fields.invoice,
 });
+/** Completed receipts since a Unix time in seconds, oldest first, at most one page. */
+export const WalletCompletedRequest = Schema.Struct({
+  since: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4_102_444_800 })),
+});
+export const WalletCompletedPage = Schema.Struct({
+  payments: Schema.Array(WalletPayment),
+  /** Latest receipt time seen on this page, including receipts that are not order invoices. */
+  latest: Schema.NullOr(Schema.Int),
+  /** True when the page was full and more receipts may follow `latest`. */
+  more: Schema.Boolean,
+});
 export const WalletApi = HttpApi.make("LightningWalletApi").add(
   HttpApiGroup.make("wallet").add(
     HttpApiEndpoint.get("health", "/health", {
@@ -357,6 +365,12 @@ export const WalletApi = HttpApi.make("LightningWalletApi").add(
       headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletLookup,
       success: [WalletPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
+      error: errors,
+    }),
+    HttpApiEndpoint.post("completed", "/v1/payments/completed", {
+      headers: { authorization: Schema.optional(Schema.String) },
+      payload: WalletCompletedRequest,
+      success: WalletCompletedPage,
       error: errors,
     }),
   ),

@@ -1,6 +1,7 @@
 import { defaultExternalSigners } from "@breeztech/breez-sdk-spark/nodejs";
-const mnemonic = process.env.BREEZ_MNEMONIC;
-if (!mnemonic) throw new Error("Missing BREEZ_MNEMONIC");
+import { readSecret } from "./config.ts";
+const mnemonic = readSecret(process.env, "BREEZ_MNEMONIC");
+if (!mnemonic) throw new Error("Missing BREEZ_MNEMONIC or BREEZ_MNEMONIC_FILE");
 try {
   const signers = defaultExternalSigners(mnemonic, undefined, "mainnet");
   const key = await signers.sparkSigner.getIdentityPublicKey();

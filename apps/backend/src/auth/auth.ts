@@ -9,6 +9,18 @@ import type { Database } from "@btc-lightning-pay/db/client";
 import * as schema from "@btc-lightning-pay/db/schema";
 import type { AuthConfig } from "./config";
 import { OTP_EXPIRATION_SECONDS, type SendOTP } from "./email";
+import { takeOtpRequest } from "./throttle";
+
+/**
+ * Per-IP limits on the code endpoints, counted in the database so every Worker isolate shares
+ * them; the per-email limit in `takeOtpRequest` covers attackers who rotate addresses.
+ */
+export const AUTH_RATE_LIMITS = {
+  "/email-otp/send-verification-otp": { window: 600, max: 5 },
+  "/sign-in/email-otp": { window: 600, max: 10 },
+  // Session reads back every page load and carry no guessable secret.
+  "/get-session": false,
+} as const;
 
 export function createAuth(
   config: Pick<AuthConfig, "url" | "secret">,
@@ -30,13 +42,23 @@ export function createAuth(
       useSecureCookies: config.url.startsWith("https:"),
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
     },
-    rateLimit: { enabled: false },
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      window: 60,
+      max: 100,
+      customRules: AUTH_RATE_LIMITS,
+    },
     logger: { disabled: true },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path === "/email-otp/send-verification-otp" && ctx.body?.type !== "sign-in") {
+        if (ctx.path !== "/email-otp/send-verification-otp") return;
+        if (ctx.body?.type !== "sign-in")
           throw new APIError("BAD_REQUEST", { message: "Unsupported verification flow" });
-        }
+        const email =
+          typeof ctx.body?.email === "string" ? ctx.body.email.trim().toLowerCase() : "";
+        if (email && !(await takeOtpRequest(database, email)))
+          throw new APIError("TOO_MANY_REQUESTS", { message: "Too many sign-in codes requested" });
       }),
     },
     databaseHooks: {

@@ -17,6 +17,8 @@ const ACTIVE_POLL_MS = 3_000;
 const HIDDEN_POLL_MS = 15_000;
 const EXPIRED_POLL_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
+/** The backend stops asking the wallet this long after expiry, so polling stops too. */
+export const POLL_AFTER_EXPIRY_MS = 10 * 60_000;
 
 /** Poll fast while the payer is looking, slow down in the background, back off on failures. */
 export function orderPollInterval(query: Query<PublicOrderData, Error>): number | false {
@@ -25,7 +27,12 @@ export function orderPollInterval(query: Query<PublicOrderData, Error>): number 
   if (fetchFailureCount > 0)
     return Math.min(ACTIVE_POLL_MS * 2 ** fetchFailureCount, MAX_BACKOFF_MS);
   if (data?.status === "paid") return false;
-  if (data?.status === "expired") return EXPIRED_POLL_MS;
+  if (data?.status === "expired") {
+    // Measured on the server clock, which the response carries.
+    const skew = Date.parse(data.serverTime) - query.state.dataUpdatedAt;
+    const expired = Date.now() + skew - Date.parse(data.expiresAt);
+    return expired > POLL_AFTER_EXPIRY_MS ? false : EXPIRED_POLL_MS;
+  }
   if (typeof document !== "undefined" && document.visibilityState === "hidden")
     return HIDDEN_POLL_MS;
   return ACTIVE_POLL_MS;

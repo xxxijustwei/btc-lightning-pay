@@ -4,7 +4,13 @@ import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { Wallet } from "./wallet.ts";
-import { WalletFailure, walletErrorFields, logWalletFailure } from "./errors.ts";
+import {
+  WalletDependencyFailure,
+  WalletFailure,
+  logWalletAnomaly,
+  logWalletFailure,
+  walletErrorFields,
+} from "./errors.ts";
 import { walletTask } from "./runtime.ts";
 import type { WalletConfig } from "./config.ts";
 import { errorBoundary, problem, RequestTrace } from "./http.ts";
@@ -15,8 +21,17 @@ function equal(actual: string, expected: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 const failure = (error: unknown, requestId: string, operation: string, orderId?: string) => {
+  // A receipt that contradicts its order is answered as such, so the Worker never mistakes it for an outage.
+  if (error instanceof WalletDependencyFailure && error.reason === "mismatch") {
+    logWalletAnomaly({ requestId, operation, orderId });
+    return problem("PAYMENT_MISMATCH");
+  }
   logWalletFailure({ requestId, operation, orderId, ...walletErrorFields(error) });
   return problem(error instanceof WalletFailure ? error.code : "WALLET_UNAVAILABLE");
+};
+const authorize = (authorization: string | undefined, token: string) => {
+  if (!equal(authorization ?? "", `Bearer ${token}`))
+    throw new WalletFailure({ code: "UNAUTHORIZED" });
 };
 export function walletRoutes(config: WalletConfig) {
   const live = HttpApiBuilder.group(WalletApi, "wallet", (handlers) =>
@@ -35,8 +50,7 @@ export function walletRoutes(config: WalletConfig) {
           const wallet = yield* Wallet;
           const { requestId } = yield* RequestTrace;
           return yield* walletTask(async () => {
-            if (!equal(headers.authorization ?? "", `Bearer ${config.token}`))
-              throw new WalletFailure({ code: "UNAUTHORIZED" });
+            authorize(headers.authorization, config.token);
             const result = await wallet.create(payload.orderId, payload.amountSat);
             return result ?? HttpServerResponse.jsonUnsafe(null, { status: 202 });
           }).pipe(
@@ -51,8 +65,7 @@ export function walletRoutes(config: WalletConfig) {
           const wallet = yield* Wallet;
           const { requestId } = yield* RequestTrace;
           return yield* walletTask(async () => {
-            if (!equal(headers.authorization ?? "", `Bearer ${config.token}`))
-              throw new WalletFailure({ code: "UNAUTHORIZED" });
+            authorize(headers.authorization, config.token);
             return (
               (await wallet.find(
                 payload.orderId,
@@ -65,6 +78,18 @@ export function walletRoutes(config: WalletConfig) {
             Effect.catch((error) =>
               Effect.succeed(failure(error, requestId, "query_payment", payload.orderId)),
             ),
+          );
+        }),
+      )
+      .handle("completed", ({ payload, headers }) =>
+        Effect.gen(function* () {
+          const wallet = yield* Wallet;
+          const { requestId } = yield* RequestTrace;
+          return yield* walletTask(async () => {
+            authorize(headers.authorization, config.token);
+            return await wallet.completed(payload.since);
+          }).pipe(
+            Effect.catch((error) => Effect.succeed(failure(error, requestId, "list_completed"))),
           );
         }),
       ),

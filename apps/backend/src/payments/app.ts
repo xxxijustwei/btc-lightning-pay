@@ -133,10 +133,11 @@ const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) 
         async (r) => (await r.store.orders(query, ...paging(query))).map(adminOrder),
         true,
       ),
+    // An admin read always asks the wallet, however old the unpaid order is.
     order: ({ params }) =>
-      read(
+      run(
         "read_admin_order",
-        async (r) => adminOrder(await r.store.getOrder(params.orderId, true)),
+        (r) => r.payments.order(params.orderId, true).pipe(Effect.map(adminOrder)),
         true,
       ),
     summary: ({ params }) =>
@@ -157,27 +158,31 @@ const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) 
     settlement: ({ params }) =>
       read(
         "read_settlement",
-        async (r) => settlementView(await r.store.settlement(params.orderId)),
+        async (r) => settlementView(await r.store.settlement(params.settlementId)),
         true,
       ),
     settlementOrders: ({ params, query }) =>
       read(
         "settlement_orders",
-        (r) => r.store.settlementOrders(params.orderId, ...paging(query)),
+        (r) => r.store.settlementOrders(params.settlementId, ...paging(query)),
         true,
       ),
     confirmSettlement: ({ params, payload }) =>
       read(
         "confirm_settlement",
         async (r) =>
-          settlementView(await r.store.confirmSettlement(params.orderId, payload.proof, r.actor!)),
+          settlementView(
+            await r.store.confirmSettlement(params.settlementId, payload.proof, r.actor!),
+          ),
         true,
       ),
     cancelSettlement: ({ params, payload }) =>
       read(
         "cancel_settlement",
         async (r) =>
-          settlementView(await r.store.cancelSettlement(params.orderId, payload.reason, r.actor!)),
+          settlementView(
+            await r.store.cancelSettlement(params.settlementId, payload.reason, r.actor!),
+          ),
         true,
       ),
     settlements: ({ query }) =>

@@ -51,7 +51,11 @@ export function SignInPage() {
         type: "sign-in",
       });
       if (result.error) {
-        setError("验证码发送失败，请稍后重试。");
+        setError(
+          result.error.status === 429
+            ? "请求过于频繁，请稍后再试。"
+            : "验证码发送失败，请稍后重试。",
+        );
         return;
       }
       setEmail(address);
@@ -83,7 +87,9 @@ export function SignInPage() {
           setError(
             result.error.status >= 500
               ? "登录服务暂时不可用，请稍后重试。"
-              : "验证码无效、已过期或尝试次数过多，请重新获取。",
+              : result.error.status === 429
+                ? "请求过于频繁，请稍后再试。"
+                : "验证码无效、已过期或尝试次数过多，请重新获取。",
           );
           codeForm.reset();
           return;

@@ -1,11 +1,6 @@
 import { Schema } from "effect";
 export class WalletFailure extends Schema.TaggedError<WalletFailure>()("WalletFailure", {
-  code: Schema.Literals([
-    "IDEMPOTENCY_CONFLICT",
-    "UNAUTHORIZED",
-    "WEBHOOK_NOT_CONFIGURED",
-    "INVALID_EVENT",
-  ]),
+  code: Schema.Literals(["UNAUTHORIZED"]),
 }) {}
 export class WalletDependencyFailure extends Schema.TaggedError<WalletDependencyFailure>()(
   "WalletDependencyFailure",
@@ -39,4 +34,12 @@ export function logWalletFailure(entry: {
   upstreamStatus?: number;
 }) {
   console.error(JSON.stringify({ event: "wallet_failure", ...entry }));
+}
+/** A receipt or invoice that contradicts its order: never an outage, never silently dropped. */
+export function logWalletAnomaly(entry: {
+  operation: string;
+  orderId?: string;
+  requestId?: string;
+}) {
+  console.error(JSON.stringify({ event: "payment_anomaly", ...entry }));
 }

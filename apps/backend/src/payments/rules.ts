@@ -1,7 +1,10 @@
 import type { WalletPayment, NewOrder } from "@btc-lightning-pay/api";
 import type { OrderRow } from "./store";
 import { PaymentFailure } from "./errors";
-export function assertSameOrder(row: OrderRow, input: typeof NewOrder.Type) {
+export function assertSameOrder(
+  row: Pick<OrderRow, "amountUsdCents" | "reference">,
+  input: typeof NewOrder.Type,
+) {
   if (row.amountUsdCents !== input.amountUsdCents || row.reference !== (input.reference ?? ""))
     throw new PaymentFailure({ code: "IDEMPOTENCY_CONFLICT" });
 }
@@ -23,6 +26,7 @@ export function newInvoice(payment: typeof WalletPayment.Type, amountSat: number
     status: "pending",
   };
 }
+/** Validates a wallet payment fact against its order; overpayment is paid, never a mismatch. */
 export function paymentUpdate(row: OrderRow, payment: typeof WalletPayment.Type) {
   const expiry = new Date(payment.expiresAt);
   const paidAt = payment.paidAt ? new Date(payment.paidAt) : null;
@@ -44,7 +48,7 @@ export function paymentUpdate(row: OrderRow, payment: typeof WalletPayment.Type)
     paidAt &&
     (payment.receivedMsat === null ||
       payment.receivedMsat <= 0 ||
-      payment.receivedMsat !== row.amountSat * 1000)
+      payment.receivedMsat < row.amountSat * 1000)
   )
     throw new PaymentFailure({ code: "PAYMENT_MISMATCH" });
   if (!paidAt && payment.receivedMsat !== null)

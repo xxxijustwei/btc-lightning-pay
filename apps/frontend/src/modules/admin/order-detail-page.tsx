@@ -159,10 +159,12 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                       <span className="font-mono">{formatMsatAsSats(data.receivedMsat)} sats</span>
                       <span className="block font-mono text-xs text-muted-foreground">
                         {data.receivedMsat.toLocaleString("en-US")} msat ·{" "}
-                        {data.receivedMsat === data.amountSat * 1000 ? (
-                          "与 invoice 金额核对一致"
+                        {data.excessMsat ? (
+                          <span className="text-destructive">
+                            超额 {formatMsatAsSats(data.excessMsat)} sats，不计入商户应收
+                          </span>
                         ) : (
-                          <span className="text-destructive">与 invoice 金额不一致</span>
+                          "与 invoice 金额核对一致"
                         )}
                       </span>
                     </>

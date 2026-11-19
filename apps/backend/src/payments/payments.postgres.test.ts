@@ -8,6 +8,26 @@ import { createPaymentStore } from "./store";
 import { createPaymentService } from "./service";
 import { paymentTask } from "./runtime";
 
+type Store = ReturnType<typeof createPaymentStore>;
+/** Reserves a key and attaches the wallet's invoice, as order creation does around the wallet call. */
+async function storeOrder(
+  store: Store,
+  merchantId: string,
+  key: string,
+  input: { amountUsdCents: number },
+  price: { rateUsd: string; quotedAt: Date; amountSat: number },
+  issued: Parameters<Store["attachInvoice"]>[2],
+) {
+  const reserved = await store.reserveOrder(merchantId, key, input, price);
+  if ("order" in reserved) return reserved.order;
+  return store.attachInvoice(reserved.reservation.id, price.amountSat, {
+    ...issued,
+    orderId: reserved.reservation.id,
+  });
+}
+const findOrder = async (database: ReturnType<typeof createDatabase>["database"], key: string) =>
+  (await database.execute(sql`SELECT id FROM payment_order WHERE idempotency_key=${key}`))[0] ??
+  null;
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (error: unknown) => void;
@@ -139,27 +159,24 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     }
   });
 
-  test("overlapping duplicate creation returns one order and RLS scope resets", async () => {
+  test("overlapping reservations claim a key once and RLS scope resets", async () => {
     const id = await fixture();
     const release = await hold(sql`SELECT id FROM merchant WHERE id=${id} FOR UPDATE`);
     const pending = clients
       .slice(0, 2)
       .map((client) =>
-        createPaymentStore(client.database).createOrder(
-          id,
-          "same-order-key-0001",
-          input,
-          price,
-          payment(),
-        ),
+        createPaymentStore(client.database).reserveOrder(id, "same-order-key-0001", input, price),
       );
     try {
       await blocked(2);
     } finally {
       await release();
     }
-    const [a, b] = await Promise.all(pending);
-    expect(a.id).toBe(b.id);
+    const results = await Promise.allSettled(pending);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({
+      reason: { code: "ORDER_IN_PROGRESS" },
+    });
     for (const client of clients.slice(0, 2)) {
       expect(await client.database.execute(sql`SELECT id FROM payment_order`)).toHaveLength(0);
     }
@@ -169,8 +186,13 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const id = await fixture();
     const store = createPaymentStore(clients[0].database);
     const issued = payment();
-    const order = await store.createOrder(id, "paid-order-key-0001", input, price, issued);
-    await store.sync({ ...issued, paidAt: new Date().toISOString(), receivedMsat: 10000000 });
+    const order = await storeOrder(store, id, "paid-order-key-0001", input, price, issued);
+    await store.sync({
+      ...issued,
+      orderId: order.id,
+      paidAt: new Date().toISOString(),
+      receivedMsat: 10000000,
+    });
     const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);
     const pending = Promise.allSettled(
       clients
@@ -303,8 +325,8 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const release = await hold(sql`SELECT id FROM merchant WHERE id=${id} FOR UPDATE`);
     const cleanup = vi.fn();
     const pending = Effect.runPromise(
-      paymentTask("create_order", () =>
-        store.createOrder(id, "cancelled-order-key", input, price, payment()),
+      paymentTask("reserve_order", () =>
+        store.reserveOrder(id, "cancelled-order-key", input, price),
       ),
       { signal: controller.signal },
     )
@@ -323,18 +345,16 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     }
     expect(await pending).toBe("cancelled");
     expect(cleanup).toHaveBeenCalledOnce();
-    expect(
-      await createPaymentStore(clients[1].database).findOrder(id, "cancelled-order-key"),
-    ).toBeNull();
+    expect(await findOrder(clients[1].database, "cancelled-order-key")).toBeNull();
     expect(await clients[0].database.execute(sql`SELECT id FROM merchant`)).toHaveLength(0);
   });
 
-  test("waiting for a quote holds no merchant lock and the locked insert refuses a merchant disabled meanwhile", async () => {
+  test("waiting for a quote holds no merchant lock and the locked reservation refuses a merchant disabled meanwhile", async () => {
     const id = await fixture();
     const { slug } = await createPaymentStore(clients[0].database).adminMerchant(id);
     const entered = deferred<void>(),
       quote = deferred<typeof price>();
-    // The invoice is requested before the locked insert; a merchant disabled meanwhile only wastes it.
+    // The reservation is taken under the merchant lock before invoicing, so no invoice is wasted.
     const wallet = vi.fn(async (orderId: string) => ({ ...payment(), orderId }));
     const service = createPaymentService(
       createPaymentStore(clients[0].database),
@@ -361,9 +381,8 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       quote.resolve(price);
     }
     expect(await pending).toMatchObject({ code: "MERCHANT_DISABLED" });
-    expect(
-      await createPaymentStore(clients[0].database).findOrder(id, "delayed-quote-key"),
-    ).toBeNull();
+    expect(wallet).not.toHaveBeenCalled();
+    expect(await findOrder(clients[0].database, "delayed-quote-key")).toBeNull();
   });
   test("concurrent disable requests preserve one enabled admin", async () => {
     const store = createPaymentStore(clients[0].database);

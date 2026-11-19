@@ -5,8 +5,25 @@
   "compatibility_date": "2026-11-17",
   "compatibility_flags": ["nodejs_compat"],
   "vars": { "APP_ENV": "production" },
-  // Stores the Coinbase BTC/USD quote that order creation reads (payments/quote-job.ts).
-  "triggers": { "crons": ["*/5 * * * *"] },
+  // Reached only through the frontends' service bindings: no public workers.dev or preview URL.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Every minute: credit wallet receipts, release abandoned reservations, and every fifth minute
+  // store the Coinbase BTC/USD quote that order creation reads (payments/jobs.ts).
+  "triggers": { "crons": ["* * * * *"] },
+  // Edge limits on the payer API (payments/handler.ts). Namespace ids are account-local numbers.
+  "ratelimits": [
+    {
+      "name": "ORDER_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 },
+    },
+    {
+      "name": "PUBLIC_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 60, "period": 60 },
+    },
+  ],
   "observability": { "enabled": true, "traces": { "enabled": true } },
   // Run request handlers next to the business database: one order makes about a dozen sequential
   // queries, so each must be a short round trip. Keep this equal to DATABASE_URL's Supabase region.

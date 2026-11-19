@@ -10,9 +10,12 @@ services:
       WALLET_PORT: "9741"
       WALLET_TOKEN: ${WALLET_TOKEN:?Set WALLET_TOKEN}
       BREEZ_API_KEY: ${BREEZ_API_KEY:?Set BREEZ_API_KEY}
-      BREEZ_MNEMONIC: ${BREEZ_MNEMONIC:?Set BREEZ_MNEMONIC}
+      # The mnemonic is read from a mounted secret file, never from the environment.
+      BREEZ_MNEMONIC_FILE: /run/secrets/breez_mnemonic
       BREEZ_IDENTITY_PUBKEY: ${BREEZ_IDENTITY_PUBKEY:?Set BREEZ_IDENTITY_PUBKEY}
       BREEZ_DATABASE_URL: ${BREEZ_DATABASE_URL:?Set dedicated SDK database URL}
+    secrets:
+      - breez_mnemonic
     expose:
       - "9741"
     healthcheck:
@@ -27,3 +30,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+secrets:
+  breez_mnemonic:
+    file: ${BREEZ_MNEMONIC_SECRET_FILE:?Set the path of a file holding only the mnemonic}

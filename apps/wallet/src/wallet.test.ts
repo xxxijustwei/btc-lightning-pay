@@ -2,7 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import type { InputType, Payment } from "@breeztech/breez-sdk-spark/nodejs";
 import { createSparkWallet, type SparkSdk } from "./spark.ts";
 import { walletWebHandler } from "./app.ts";
-import { parseConfig } from "./config.ts";
+import { parseConfig, readSecret } from "./config.ts";
 const id = "12345678-1234-4234-8234-123456789abc";
 const hash = "a".repeat(64);
 const bolt11 = "lnbc100u1test";
@@ -102,6 +102,13 @@ test.each([{ amount: 9999n }, { paymentType: "send" as const }, { status: "pendi
     });
   },
 );
+test("an overpaid invoice is paid and reports the full amount received", async () => {
+  const { wallet } = fixture([{ ...payment, amount: 12000n }]);
+  expect(await wallet.find(id, 10000, hash, bolt11)).toMatchObject({
+    amountSat: 10000,
+    receivedMsat: 12000000,
+  });
+});
 test("binds the invoice to the order, hash and amount", async () => {
   const { wallet } = fixture([payment]);
   await expect(wallet.find(crypto.randomUUID(), 10000, hash, bolt11)).rejects.toMatchObject({
@@ -112,24 +119,61 @@ test("binds the invoice to the order, hash and amount", async () => {
     reason: "mismatch",
   });
 });
-test("paginates SDK records and coalesces concurrent history reads", async () => {
+test("a lookup reads only the invoice's lifetime, page by page", async () => {
   const { sdk, wallet } = fixture();
   const unrelated = { ...payment, details: undefined };
   sdk.listPayments
     .mockResolvedValueOnce({ payments: Array.from({ length: 500 }, () => unrelated) })
     .mockResolvedValueOnce({ payments: [payment] });
-  const results = await Promise.all([
-    wallet.find(id, 10000, hash, bolt11),
-    wallet.find(id, 10000, hash, bolt11),
-  ]);
-  expect(results.every((r) => r.paidAt !== null)).toBe(true);
+  expect((await wallet.find(id, 10000, hash, bolt11)).paidAt).not.toBeNull();
   expect(sdk.listPayments).toHaveBeenCalledTimes(2);
+  expect(sdk.listPayments).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({
+      fromTimestamp: 1700000000 - 60,
+      toTimestamp: 1700003600 + 300,
+      offset: 500,
+    }),
+  );
+});
+test("a duplicated payment hash fails only its own order", async () => {
+  const { wallet } = fixture([payment, { ...payment, id: "copy" }]);
+  await expect(wallet.find(id, 10000, hash, bolt11)).rejects.toMatchObject({ reason: "mismatch" });
 });
 test("history failure is retryable and never becomes an unpaid verdict", async () => {
   const { sdk, wallet } = fixture([payment]);
   sdk.listPayments.mockRejectedValueOnce(new Error("offline"));
   await expect(wallet.find(id, 10000, hash, bolt11)).rejects.toThrow();
   expect((await wallet.find(id, 10000, hash, bolt11)).paidAt).not.toBeNull();
+});
+test("completed receipts list order payments since a time and skip foreign or bad receipts", async () => {
+  const foreign = { ...payment, id: "foreign", timestamp: 1700000200 };
+  const short = { ...payment, id: "short", amount: 9000n, timestamp: 1700000300 };
+  const { sdk, wallet } = fixture([payment, foreign, short]);
+  sdk.parse.mockImplementation(async () => parsed);
+  sdk.parse
+    .mockResolvedValueOnce(parsed)
+    .mockResolvedValueOnce(parsed)
+    .mockResolvedValueOnce({
+      ...parsed,
+      description: "tip jar",
+    });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const page = await wallet.completed(1700000000);
+    expect(page).toEqual({
+      payments: [expect.objectContaining({ orderId: id, receivedMsat: 10000000 })],
+      latest: 1700000300,
+      more: false,
+    });
+    expect(sdk.listPayments).toHaveBeenCalledWith(
+      expect.objectContaining({ fromTimestamp: 1700000000, offset: 0, limit: 500 }),
+    );
+    // The short receipt is an anomaly, logged without failing the page.
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("payment_anomaly"));
+  } finally {
+    error.mockRestore();
+  }
 });
 test("service HTTP endpoints require authentication and validate payloads", async () => {
   const { wallet } = fixture([payment]);
@@ -143,6 +187,9 @@ test("service HTTP endpoints require authentication and validate payloads", asyn
       }),
     );
   try {
+    const completed = await call("/v1/payments/completed", JSON.stringify({ since: 0 }), "bad");
+    expect(completed.status).toBe(401);
+    expect((await call("/v1/payments/completed", JSON.stringify({ since: 0 }))).status).toBe(200);
     for (const path of ["/v1/invoices", "/v1/payments/query"]) {
       const body = JSON.stringify({
         orderId: id,
@@ -162,6 +209,39 @@ test("service HTTP endpoints require authentication and validate payloads", asyn
 });
 test("configuration fails closed without printing secrets", () => {
   expect(() => parseConfig({ WALLET_TOKEN: "private" })).toThrow("Invalid WALLET_TOKEN");
+});
+test("the mnemonic can come from a mounted secret file, but not from both sources", () => {
+  const read = vi.fn(() => "file words\n");
+  expect(readSecret({ BREEZ_MNEMONIC_FILE: "/run/secrets/m" }, "BREEZ_MNEMONIC", read)).toBe(
+    "file words",
+  );
+  expect(() =>
+    readSecret({ BREEZ_MNEMONIC_FILE: "/x", BREEZ_MNEMONIC: "env" }, "BREEZ_MNEMONIC", read),
+  ).toThrow("Set only one");
+  expect(() =>
+    readSecret({ BREEZ_MNEMONIC_FILE: "/x" }, "BREEZ_MNEMONIC", () => {
+      throw new Error("ENOENT");
+    }),
+  ).toThrow("Unreadable BREEZ_MNEMONIC_FILE");
+});
+test("a mismatched receipt answers 409 PAYMENT_MISMATCH, not an outage", async () => {
+  const { wallet } = fixture([{ ...payment, amount: 1n }]);
+  const app = walletWebHandler(config, wallet);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = await app.handler(
+      new Request("http://localhost/v1/payments/query", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+        body: JSON.stringify({ orderId: id, amountSat: 10000, paymentHash: hash, invoice: bolt11 }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "PAYMENT_MISMATCH" });
+  } finally {
+    error.mockRestore();
+    await app.dispose();
+  }
 });
 
 test("readiness rejects stale wallet synchronization", async () => {

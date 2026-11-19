@@ -136,8 +136,11 @@ export function createAdministrationStore(transaction: TransactionRunner) {
         });
         return readMerchant(tx, row.id);
       }),
+    /** Admin accounts only: a merchant's account follows its merchant, changed via updateMerchant. */
     updateUser: (id: string, banned: boolean, actor: string) =>
       write(actor, async (tx) => {
+        if ((await readUser(tx, id)).role === "merchant")
+          throw new PaymentFailure({ code: "USER_IS_MERCHANT" });
         const result = await setBanned(tx, id, banned);
         await audit(tx, actor, id, banned ? "user.disabled" : "user.enabled", {});
         return result;
@@ -146,6 +149,7 @@ export function createAdministrationStore(transaction: TransactionRunner) {
       write(actor, async (tx) => {
         const old = await readMerchant(tx, id);
         if (input.enabled !== undefined) await setBanned(tx, old.userId, !input.enabled);
+        // The merchant and its one-to-one account share a display name.
         if (input.name !== undefined) {
           await tx.update(merchant).set({ name: input.name.trim() }).where(eq(merchant.id, id));
           await tx.update(user).set({ name: input.name.trim() }).where(eq(user.id, old.userId));

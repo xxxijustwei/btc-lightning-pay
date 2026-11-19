@@ -10,10 +10,13 @@ import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/tes
 import { createPaymentStore } from "./store";
 import { publicOrder } from "./projection";
 import { createPaymentService, type WalletClient } from "./service";
-import { createWalletClient } from "./wallet-client";
+import { createWalletClient, createWalletLister, parseWalletConfig } from "./wallet-client";
 import { paymentApp, PaymentRuntime } from "./app";
 import { refreshQuote } from "./quote-job";
-import { sql } from "drizzle-orm";
+import { runScheduled, syncPayments } from "./jobs";
+import { UpstreamFailure } from "./errors";
+import type { WalletLister } from "./wallet-client";
+import { and, eq, sql } from "drizzle-orm";
 import worker from "../index";
 
 const pg = new PGlite();
@@ -24,7 +27,15 @@ const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
 let onne: string, other: string;
 const key = "test-order-key-0001";
-const bindings = { DATABASE_URL: "postgres://local/test" };
+// Development: the wallet needs no Cloudflare Access token outside production.
+const bindings = { DATABASE_URL: "postgres://local/test", APP_ENV: "development" };
+const findOrder = async (merchantId: string, key: string) =>
+  (
+    await database
+      .select()
+      .from(schema.paymentOrder)
+      .where(and(eq(schema.paymentOrder.merchantId, merchantId), eq(schema.paymentOrder.key, key)))
+  )[0] ?? null;
 const wallet = vi.fn<WalletClient>(async () => null);
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, {
@@ -110,10 +121,10 @@ afterAll(async () => {
 });
 
 test("idempotency survives repeated requests, conflicts reject and disabled merchants preserve existing orders", async () => {
-  const rows = await Promise.all([
-    createOrder(onne, key, { amountUsdCents: 1000 }),
-    createOrder(onne, key, { amountUsdCents: 1000 }),
-  ]);
+  const rows = [
+    await createOrder(onne, key, { amountUsdCents: 1000 }),
+    await createOrder(onne, key, { amountUsdCents: 1000 }),
+  ];
   expect(rows[0].id).toBe(rows[1].id);
   expect(quote.mock.calls.length).toBeGreaterThan(0);
   const quoteCalls = quote.mock.calls.length;
@@ -415,7 +426,14 @@ test("Worker wallet client refuses redirects and mismatched order data", async (
     .mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { location: "https://elsewhere.example" } }),
     );
-  const client = createWalletClient("https://wallet.example", "g".repeat(32), fetcher);
+  const client = createWalletClient(
+    parseWalletConfig({
+      WALLET_URL: "https://wallet.example",
+      WALLET_TOKEN: "g".repeat(32),
+      APP_ENV: "development",
+    }),
+    fetcher,
+  );
   await expect(client(id, 10000)).rejects.toThrow();
   fetcher.mockResolvedValueOnce(Response.json(invoice(crypto.randomUUID())));
   await expect(client(id, 10000)).rejects.toMatchObject({ reason: "mismatch" });
@@ -490,14 +508,20 @@ test("public order queries record safe upstream context and keep the stored orde
   }
 });
 
-test("concurrent requests store one order and queries never recreate its invoice", async () => {
-  const [a, b] = await Promise.all([
+test("concurrent requests invoice a key once and queries never recreate its invoice", async () => {
+  const results = await Promise.allSettled([
     createOrder(onne, key, { amountUsdCents: 1000 }),
     createOrder(onne, key, { amountUsdCents: 1000 }),
   ]);
-  // Both may obtain an invoice; only the stored one is ever shown, the other simply expires.
-  expect(a.id).toBe(b.id);
-  expect(a.paymentHash).toBe(b.paymentHash);
+  // The key is reserved before the wallet is asked: one request invoices, the other is told to
+  // retry, and the wallet issues exactly one invoice.
+  const created = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  for (const r of results)
+    if (r.status === "rejected") expect(r.reason).toMatchObject({ code: "ORDER_IN_PROGRESS" });
+  expect(created.length).toBeGreaterThan(0);
+  expect(wallet.mock.calls.filter((c) => !c[3])).toHaveLength(1);
+  const a = await createOrder(onne, key, { amountUsdCents: 1000 });
+  expect(created.every((row) => row.id === a.id)).toBe(true);
   expect(await store.orders({ merchantId: onne }, 10, 0)).toHaveLength(1);
   wallet.mockImplementation(async (id) => paid(id));
   const response = await call(request(`/api/public/orders/${a.id}`));
@@ -546,7 +570,7 @@ test("a failed invoice creation stores nothing and the same key can retry", asyn
   await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
     code: "WALLET_UNAVAILABLE",
   });
-  expect(await store.findOrder(onne, key)).toBeNull();
+  expect(await findOrder(onne, key)).toBeNull();
   wallet.mockResolvedValueOnce(null);
   await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
     code: "WALLET_UNAVAILABLE",
@@ -617,11 +641,17 @@ test("merchant provisioning is atomic, keeps identity immutable and hides privat
   ).rejects.toThrow(/immutable/);
 });
 
-test("disable through either API stops new payments while preserving settlement", async () => {
+test("only the merchant API disables a merchant; it stops new payments and keeps settlement", async () => {
   const m = await store.adminMerchant(onne);
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  await store.updateUser(m.userId, true, "admin");
+  // The account endpoint manages admins only; it cannot silently toggle a merchant's checkout.
+  await expect(store.updateUser(m.userId, true, "admin")).rejects.toMatchObject({
+    code: "USER_IS_MERCHANT",
+  });
+  expect(await store.adminMerchant(onne)).toMatchObject({ enabled: true });
+  await store.updateMerchant(onne, { enabled: false }, "admin");
   expect(await store.adminMerchant(onne)).toMatchObject({ enabled: false });
+  expect(await store.managedUser(m.userId)).toMatchObject({ banned: true });
   expect((await pg.query("SELECT id FROM session WHERE user_id=$1", [m.userId])).rows).toHaveLength(
     0,
   );
@@ -677,4 +707,256 @@ test("admin lifecycle protects the last admin and rejects duplicate or forbidden
     (await pg.query("SELECT action FROM admin_audit WHERE action='admin.created'")).rows,
   ).toHaveLength(1);
   await pg.exec("COMMIT");
+});
+
+const price = { rateUsd: "100000", quotedAt: new Date(), amountSat: 10000 };
+const asAdmin = (statements: string) => pg.exec(`RESET ROLE; ${statements}; SET ROLE payment_app;`);
+const walletEnv = {
+  ...bindings,
+  WALLET_URL: "https://wallet.example",
+  WALLET_TOKEN: "g".repeat(32),
+};
+
+test("an overpaid order is paid; the excess is recorded but never owed to the merchant", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  await store.sync({ ...paid(row.id), receivedMsat: 12_000_000 });
+  const admin = await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json();
+  expect(admin).toMatchObject({ status: "paid", receivedMsat: 12_000_000, excessMsat: 2_000_000 });
+  expect(await store.summary(onne)).toMatchObject({ paidSat: 10000 });
+  const short = await createOrder(onne, `${key}-short`, { amountUsdCents: 1000 });
+  await expect(store.sync({ ...paid(short.id), receivedMsat: 9_999_000 })).rejects.toMatchObject({
+    code: "PAYMENT_MISMATCH",
+  });
+});
+
+test("a receipt that contradicts its order is logged as an anomaly and the order is kept", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  log.mockClear();
+  wallet.mockImplementation(async (id, amountSat, _signal, hash) =>
+    hash ? { ...paid(id), receivedMsat: 1 } : invoice(id, amountSat),
+  );
+  const response = await call(request(`/api/public/orders/${row.id}`));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ status: "pending" });
+  expect(log).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "payment_anomaly",
+      orderId: row.id,
+      code: "PAYMENT_MISMATCH",
+    }),
+  );
+  // The wallet's own 409 is an anomaly too, never an outage verdict.
+  wallet.mockRejectedValue(
+    new UpstreamFailure({ dependency: "wallet", reason: "mismatch", upstreamStatus: 409 }),
+  );
+  expect((await call(request(`/api/public/orders/${row.id}`))).status).toBe(200);
+  expect(log).toHaveBeenLastCalledWith(
+    expect.objectContaining({ event: "payment_anomaly", orderId: row.id, reason: "mismatch" }),
+  );
+  expect((await store.getOrder(row.id)).status).toBe("pending");
+});
+
+test("payer reads stop asking the wallet ten minutes after expiry; admin reads always ask", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  await store.sync({
+    ...invoice(row.id),
+    expiresAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+  });
+  wallet.mockClear();
+  expect(await (await call(request(`/api/public/orders/${row.id}`))).json()).toMatchObject({
+    status: "expired",
+  });
+  expect(wallet).not.toHaveBeenCalled();
+  wallet.mockImplementation(async (id) => ({
+    ...paid(id),
+    expiresAt: new Date(Date.now() - 11 * 60_000).toISOString(),
+  }));
+  expect(await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json()).toMatchObject({
+    status: "paid",
+  });
+  expect(wallet).toHaveBeenCalledOnce();
+});
+
+test("the payment sync credits receipts nobody polled, skips anomalies and keeps its cursor on failure", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  const contradicted = await createOrder(onne, `${key}-2`, { amountUsdCents: 1000 });
+  const latest = Math.floor(Date.now() / 1000);
+  const list = vi.fn<WalletLister>(async () => ({
+    payments: [
+      paid(row.id),
+      { ...paid(contradicted.id), receivedMsat: 1 },
+      paid(crypto.randomUUID()),
+    ],
+    latest,
+    more: false,
+  }));
+  log.mockClear();
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    await syncPayments(store, list, log);
+    expect(list).toHaveBeenCalledWith(0);
+    expect((await store.getOrder(row.id)).status).toBe("paid");
+    expect((await store.getOrder(contradicted.id)).status).toBe("pending");
+    expect(log.mock.calls.filter(([entry]) => entry.event === "payment_anomaly")).toHaveLength(2);
+    // Re-reading overlapping receipts is harmless: crediting is idempotent.
+    await syncPayments(store, list, log);
+    expect(list).toHaveBeenLastCalledWith(latest - 600);
+    list.mockRejectedValueOnce(new Error("wallet down"));
+    await expect(syncPayments(store, list, log)).rejects.toThrow();
+    expect(await store.walletCursor()).toEqual(new Date(latest * 1000));
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test("the scheduled job releases abandoned reservations, syncs every minute and quotes every fifth", async () => {
+  await store.reserveOrder(onne, `${key}-dead`, { amountUsdCents: 1000 }, price);
+  await asAdmin(
+    "UPDATE payment_order SET created_at = now() - interval '3 minutes' WHERE status = 'creating'",
+  );
+  const fetcher = vi.fn<typeof fetch>(async (url) =>
+    String(url).includes("coinbase")
+      ? Response.json({ data: { amount: "64000", currency: "USD" } })
+      : Response.json({ payments: [], latest: null, more: false }),
+  );
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 1), fetcher);
+    expect(await findOrder(onne, `${key}-dead`)).toBeNull();
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://wallet.example/v1/payments/completed",
+    ]);
+    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 5), fetcher);
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(
+      "https://api.coinbase.com/v2/prices/BTC-USD/spot",
+    );
+  } finally {
+    info.mockRestore();
+    error.mockRestore();
+  }
+});
+
+test("a reservation in progress answers ORDER_IN_PROGRESS until abandoned, then the key is retried", async () => {
+  await store.reserveOrder(onne, key, { amountUsdCents: 1000 }, price);
+  await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
+    code: "ORDER_IN_PROGRESS",
+  });
+  await expect(createOrder(onne, key, { amountUsdCents: 1500 })).rejects.toMatchObject({
+    code: "IDEMPOTENCY_CONFLICT",
+  });
+  const busy = await call(
+    request(
+      "/api/public/merchants/onne/orders",
+      { amountUsdCents: 1000 },
+      { "idempotency-key": key },
+    ),
+  );
+  expect(busy.status).toBe(409);
+  expect(busy.headers.get("retry-after")).toBe("1");
+  // Reservations never surface as orders.
+  expect(await store.orders({ merchantId: onne }, 10, 0)).toHaveLength(0);
+  await asAdmin("UPDATE payment_order SET created_at = now() - interval '31 seconds'");
+  expect(await createOrder(onne, key, { amountUsdCents: 1000 })).toMatchObject({
+    status: "pending",
+  });
+});
+
+test("admission caps invoices across the platform, not only per merchant", async () => {
+  await store.createMerchant({ slug: "third", name: "Third", email: "third@example.com" }, "admin");
+  for (let i = 0; i < 5; i++) {
+    await createOrder(onne, `${key}-a${i}`, { amountUsdCents: 1000 });
+    await createOrder(other, `${key}-b${i}`, { amountUsdCents: 1000 });
+  }
+  await expect(
+    Effect.runPromise(payments.createOrder("third", `${key}-c0`, { amountUsdCents: 1000 })),
+  ).rejects.toMatchObject({ code: "RATE_LIMITED" });
+  expect(wallet.mock.calls.filter((c) => !c[3])).toHaveLength(10);
+});
+
+test("the payer API refuses requests over the edge rate limits, keyed by IP and merchant", async () => {
+  const denied = { limit: vi.fn(async () => ({ success: false })) };
+  const allowed = { limit: vi.fn(async () => ({ success: true })) };
+  const ip = { "cf-connecting-ip": "203.0.113.7" };
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const read = await worker.fetch(request("/api/public/merchants/onne", undefined, ip), {
+      ...walletEnv,
+      PUBLIC_RATE_LIMITER: denied,
+      ORDER_RATE_LIMITER: allowed,
+    });
+    expect(read.status).toBe(429);
+    expect(denied.limit).toHaveBeenCalledWith({ key: "203.0.113.7" });
+    const create = await worker.fetch(
+      request(
+        "/api/public/merchants/onne/orders",
+        { amountUsdCents: 1000 },
+        { ...ip, "idempotency-key": key },
+      ),
+      { ...walletEnv, PUBLIC_RATE_LIMITER: allowed, ORDER_RATE_LIMITER: denied },
+    );
+    expect(create.status).toBe(429);
+    expect(denied.limit).toHaveBeenLastCalledWith({ key: "203.0.113.7:onne" });
+    expect(wallet).not.toHaveBeenCalled();
+  } finally {
+    error.mockRestore();
+  }
+});
+
+test("unconfirmed orders count only invoices that can still be paid", async () => {
+  await createOrder(onne, key, { amountUsdCents: 1000 });
+  const old = await createOrder(onne, `${key}-old`, { amountUsdCents: 1000 });
+  await store.sync({ ...invoice(old.id), expiresAt: new Date(Date.now() - 1000).toISOString() });
+  expect(await store.summary(onne)).toMatchObject({ unconfirmedOrderCount: 1 });
+});
+
+test("production wallet calls carry the Cloudflare Access service token", async () => {
+  const base = { WALLET_URL: "https://wallet.example", WALLET_TOKEN: "g".repeat(32) };
+  expect(() => parseWalletConfig(base)).toThrow();
+  expect(() => parseWalletConfig({ ...base, WALLET_ACCESS_CLIENT_ID: "id.access" })).toThrow();
+  const config = parseWalletConfig({
+    ...base,
+    WALLET_ACCESS_CLIENT_ID: "id.access",
+    WALLET_ACCESS_CLIENT_SECRET: "access-secret",
+  });
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ payments: [], latest: null, more: false }))
+    .mockResolvedValueOnce(Response.json({ code: "PAYMENT_MISMATCH" }, { status: 409 }));
+  await createWalletLister(config, fetcher)(5);
+  expect(fetcher.mock.calls[0][1]?.headers).toMatchObject({
+    authorization: `Bearer ${"g".repeat(32)}`,
+    "cf-access-client-id": "id.access",
+    "cf-access-client-secret": "access-secret",
+  });
+  expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ since: 5 });
+  await expect(createWalletClient(config, fetcher)(crypto.randomUUID(), 1)).rejects.toMatchObject({
+    reason: "mismatch",
+    upstreamStatus: 409,
+  });
+});
+
+test("admin write origins are compared with the normalized auth URL", async () => {
+  const env = {
+    ...bindings,
+    BETTER_AUTH_URL: "http://localhost:3000/",
+    BETTER_AUTH_SECRET: "test-only-42ef97c3a18b46d8a0921dc78359ba77",
+  };
+  const write = (origin: string) =>
+    worker.fetch(
+      request(
+        "/api/admin/merchants",
+        { name: "N", email: "n@example.com", slug: "nnn" },
+        { origin },
+      ),
+      env,
+    );
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    // Same origin: passes the origin check and stops at the missing session.
+    expect((await write("http://localhost:3000")).status).toBe(401);
+    expect((await write("https://evil.example")).status).toBe(403);
+  } finally {
+    error.mockRestore();
+  }
 });

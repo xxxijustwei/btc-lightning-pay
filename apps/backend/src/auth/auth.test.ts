@@ -67,7 +67,7 @@ afterAll(async () => {
 afterEach(() => vi.restoreAllMocks());
 beforeEach(async () => {
   await database.execute(
-    sql`TRUNCATE public."user", public.session, public.account, public.verification CASCADE`,
+    sql`TRUNCATE public."user", public.session, public.account, public.verification, public.rate_limit, public.otp_throttle CASCADE`,
   );
   send.mockReset();
   close.mockClear();
@@ -150,17 +150,51 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   expect((await auth.handler(request("/sign-out", {}, cookie))).status).toBe(200);
   expect((await handleAuth(meRequest, bindings)).status).toBe(401);
 });
-test("sending and signing in are not rate limited across auth instances", async () => {
+test("code requests are limited per IP across auth instances", async () => {
   await pg.exec(provision);
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++)
     expect((await makeAuth().handler(sendRequest())).status).toBe(200);
-    const otp = send.mock.calls[attempt][0].otp;
-    expect(
-      (await makeAuth().handler(request("/sign-in/email-otp", { email: "user@example.com", otp })))
-        .status,
-    ).toBe(200);
-  }
-  expect(send).toHaveBeenCalledTimes(6);
+  // The sixth request from the same IP within ten minutes is refused by a fresh instance too.
+  expect((await makeAuth().handler(sendRequest())).status).toBe(429);
+  expect(send).toHaveBeenCalledTimes(5);
+  // Another IP is counted separately.
+  expect(
+    (
+      await makeAuth().handler(
+        request(
+          "/email-otp/send-verification-otp",
+          { email: "user@example.com", type: "sign-in" },
+          undefined,
+          "203.0.113.9",
+        ),
+      )
+    ).status,
+  ).toBe(200);
+  const otp = send.mock.calls.at(-1)![0].otp;
+  expect(
+    (await makeAuth().handler(request("/sign-in/email-otp", { email: "user@example.com", otp })))
+      .status,
+  ).toBe(200);
+});
+test("code requests are limited per email whatever the IP", async () => {
+  await pg.exec(provision);
+  const from = (n: number) =>
+    makeAuth().handler(
+      request(
+        "/email-otp/send-verification-otp",
+        { email: "User@Example.com", type: "sign-in" },
+        undefined,
+        `198.51.100.${n}`,
+      ),
+    );
+  for (let n = 0; n < 10; n++) expect((await from(n)).status).toBe(200);
+  expect((await from(10)).status).toBe(429);
+  expect(send).toHaveBeenCalledTimes(10);
+  // A new window opens once the hour has passed.
+  await database.execute(
+    sql`UPDATE otp_throttle SET window_started_at = now() - interval '61 minutes'`,
+  );
+  expect((await from(11)).status).toBe(200);
 });
 test("expired codes fail", async () => {
   await pg.exec(provision);

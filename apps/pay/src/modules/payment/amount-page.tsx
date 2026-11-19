@@ -264,6 +264,8 @@ function describeSubmitError(error: Error) {
       return AMOUNT_RANGE_ERROR;
     case "IDEMPOTENCY_CONFLICT":
       return "Please try again.";
+    case "ORDER_IN_PROGRESS":
+      return "Your invoice is still being created. Try again in a moment.";
     default:
       return error.retryable
         ? "Can't reach the payment service. Try again — you won't get a duplicate invoice."

@@ -1,9 +1,11 @@
 # Copy to .dev.vars and fill locally. Health checks work without these values.
 # Local development without a Resend key prints OTPs in the backend console.
 APP_ENV="development"
-# Comma-separated existing user IDs explicitly authorized as platform administrators.
 WALLET_URL="http://127.0.0.1:9741"
 WALLET_TOKEN=""
+# Cloudflare Access service token in front of the wallet; required when APP_ENV is production.
+WALLET_ACCESS_CLIENT_ID=""
+WALLET_ACCESS_CLIENT_SECRET=""
 # Must match the frontend origin used in the browser.
 BETTER_AUTH_URL="http://127.0.0.1:3000"
 BETTER_AUTH_SECRET=""

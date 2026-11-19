@@ -114,12 +114,12 @@ test("codes can be resent immediately and after changing email", async () => {
   expect(send).toHaveBeenCalledTimes(3);
   expect(send).toHaveBeenLastCalledWith({ email: "other@example.com", type: "sign-in" });
 });
-test("upstream errors do not introduce a client cooldown", async () => {
+test("a rate-limited request says so and adds no client cooldown", async () => {
   send.mockResolvedValueOnce({ error: { status: 429 } }).mockResolvedValueOnce({ error: null });
   mount();
   const user = userEvent.setup();
   await requestCode(user);
-  expect(await screen.findByText("验证码发送失败，请稍后重试。")).toBeTruthy();
+  expect(await screen.findByText("请求过于频繁，请稍后再试。")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "发送验证码" }));
   expect(await screen.findByLabelText("六位验证码")).toBeTruthy();
   expect(send).toHaveBeenCalledTimes(2);

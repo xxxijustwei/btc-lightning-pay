@@ -9,10 +9,35 @@ import {
 } from "@btc-lightning-pay/api";
 import { Effect, Schema } from "effect";
 import { createAuth } from "./auth";
-import { parseAuthConfig, type AuthBindings } from "./config";
+import { parseAuthConfig, type AuthBindings, type AuthConfig } from "./config";
 import { createOTPSender } from "./email";
 
 const AuthSession = Schema.NullOr(Schema.Struct({ user: AuthUser }));
+type Database = ReturnType<typeof createDatabase>["database"];
+
+/**
+ * Reads the request's session on an existing connection and accepts it only for an enabled
+ * admin. `cookies` carries any refreshed session cookie; `body` is Better Auth's session JSON.
+ * Throws when the session lookup itself fails.
+ */
+export async function readAdminSession(config: AuthConfig, database: Database, headers: Headers) {
+  // Reading a session never sends mail.
+  const auth = createAuth(config, database, async () => {});
+  const response = await auth.api.getSession({ headers, asResponse: true });
+  if (!response.ok) throw new Error("Session lookup failed");
+  const body: unknown = await response.json();
+  const session = Schema.decodeUnknownSync(AuthSession)(body);
+  const responseHeaders = new Headers(response.headers);
+  responseHeaders.delete("content-length");
+  const [current] = session
+    ? await database.select().from(users).where(eq(users.id, session.user.id))
+    : [];
+  const user =
+    session && current?.role === "admin" && !current.banned
+      ? Schema.decodeUnknownSync(AuthUser)(session.user)
+      : null;
+  return { user, body, headers: responseHeaders };
+}
 
 const routes: Record<string, string> = {
   [GetCurrentUser.path]: GetCurrentUser.method,
@@ -63,29 +88,16 @@ export async function handleAuth(request: Request, env: AuthBindings): Promise<R
         }
       });
       if (path === GetCurrentUser.path || path === "/api/auth/get-session") {
-        const response = yield* Effect.tryPromise(() =>
-          auth.api.getSession({ headers: request.headers, asResponse: true }),
+        const session = yield* Effect.tryPromise(() =>
+          readAdminSession(config, resource.database, request.headers),
         );
-        if (!response.ok) return yield* Effect.fail(new Error("Session lookup failed"));
-        const value = yield* Effect.tryPromise(() => response.json());
-        const session = Schema.decodeUnknownSync(AuthSession)(value);
-        const headers = new Headers(response.headers);
-        headers.delete("content-length");
-        const [current] = session
-          ? yield* Effect.tryPromise(() =>
-              resource.database.select().from(users).where(eq(users.id, session.user.id)),
-            )
-          : [];
-        return session && current?.role === "admin" && !current.banned
-          ? Response.json(
-              path === GetCurrentUser.path
-                ? Schema.decodeUnknownSync(AuthUser)(session.user)
-                : value,
-              { headers },
-            )
+        return session.user
+          ? Response.json(path === GetCurrentUser.path ? session.user : session.body, {
+              headers: session.headers,
+            })
           : Response.json({ code: "UNAUTHORIZED" } satisfies typeof AuthUnauthorized.Type, {
               status: 401,
-              headers,
+              headers: session.headers,
             });
       }
       const response = yield* Effect.tryPromise(() => auth.handler(request));

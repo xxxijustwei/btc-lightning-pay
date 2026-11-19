@@ -57,22 +57,50 @@ export function getMerchant(slug: string, signal?: AbortSignal) {
   return request(`/api/public/merchants/${encodeURIComponent(slug)}`, { signal }, decodeMerchant);
 }
 
-export function createOrder(
+/** How long to keep retrying while the backend is still issuing this key's invoice. */
+const IN_PROGRESS_RETRY_MS = 1_000;
+const IN_PROGRESS_ATTEMPTS = 20;
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    });
+  });
+
+/**
+ * Creates the order for this idempotency key. While another request with the same key is still
+ * being invoiced, the backend answers ORDER_IN_PROGRESS; the same key is retried until it settles.
+ */
+export async function createOrder(
   slug: string,
   input: { amountUsdCents: number },
   idempotencyKey: string,
   signal?: AbortSignal,
 ) {
-  return request(
-    `/api/public/merchants/${encodeURIComponent(slug)}/orders`,
-    {
-      method: "POST",
-      signal,
-      headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
-      body: JSON.stringify(input),
-    },
-    decodeOrder,
-  );
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await request(
+        `/api/public/merchants/${encodeURIComponent(slug)}/orders`,
+        {
+          method: "POST",
+          signal,
+          headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+        decodeOrder,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof PublicApiError) ||
+        error.code !== "ORDER_IN_PROGRESS" ||
+        attempt >= IN_PROGRESS_ATTEMPTS
+      )
+        throw error;
+      await pause(IN_PROGRESS_RETRY_MS, signal);
+    }
+  }
 }
 
 /** Cache key shared by the invoice page and the amount page, which seeds it with the created order. */

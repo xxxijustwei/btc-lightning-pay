@@ -1,47 +1,39 @@
-import type { BreezSdk, Payment } from "@breeztech/breez-sdk-spark/nodejs";
+import type { BreezSdk, ListPaymentsRequest, Payment } from "@breeztech/breez-sdk-spark/nodejs";
 import { Schema } from "effect";
 import { WalletPayment } from "@btc-lightning-pay/api";
-import { WalletDependencyFailure } from "./errors.ts";
+import { WalletDependencyFailure, logWalletAnomaly } from "./errors.ts";
 
 export type SparkSdk = Pick<BreezSdk, "receivePayment" | "parse" | "listPayments" | "getInfo">;
 const mismatch = () => new WalletDependencyFailure({ dependency: "breez", reason: "mismatch" });
+const PAGE = 500;
+const orderDescription =
+  /^Order ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const completedReceipts = {
+  typeFilter: ["receive"],
+  statusFilter: ["completed"],
+  assetFilter: { type: "bitcoin" },
+  sortAscending: true,
+} satisfies ListPaymentsRequest;
+
+/** True when a completed SDK receipt can settle an invoice of `amountSat`; overpayment counts. */
+function settles(payment: Payment, bolt11: string, amountSat: number) {
+  return (
+    payment.paymentType === "receive" &&
+    payment.status === "completed" &&
+    payment.method === "lightning" &&
+    payment.details?.type === "lightning" &&
+    payment.details.invoice === bolt11 &&
+    payment.amount >= BigInt(amountSat) &&
+    !payment.conversionDetails &&
+    !payment.details.conversionInfo
+  );
+}
+const received = (payment: Payment) => ({
+  paidAt: new Date(payment.timestamp * 1000).toISOString(),
+  receivedMsat: Number(payment.amount * 1000n),
+});
+
 export function createSparkWallet(sdk: SparkSdk) {
-  let payments = new Map<string, Payment>();
-  let refreshedAt = 0;
-  let refreshing: Promise<void> | undefined;
-  async function refresh() {
-    if (Date.now() - refreshedAt < 10_000) return;
-    if (refreshing) return refreshing;
-    refreshing = (async () => {
-      const next = new Map<string, Payment>();
-      // shortcut: rebuild the local SDK index; use a durable incremental index above 100k receipts.
-      for (let offset = 0; ; offset += 500) {
-        const page = await sdk.listPayments({
-          typeFilter: ["receive"],
-          statusFilter: ["completed"],
-          assetFilter: { type: "bitcoin" },
-          sortAscending: true,
-          offset,
-          limit: 500,
-        });
-        for (const payment of page.payments) {
-          const details = payment.details;
-          if (details?.type !== "lightning") continue;
-          const hash = details.htlcDetails.paymentHash;
-          if (next.has(hash) && next.get(hash)!.id !== payment.id) throw mismatch();
-          next.set(hash, payment);
-        }
-        if (page.payments.length < 500) break;
-      }
-      payments = next;
-      refreshedAt = Date.now();
-    })();
-    try {
-      await refreshing;
-    } finally {
-      refreshing = undefined;
-    }
-  }
   async function invoice(orderId: string, amountSat: number, value: string, hash?: string) {
     const parsed = await sdk.parse(value);
     if (
@@ -53,14 +45,32 @@ export function createSparkWallet(sdk: SparkSdk) {
     )
       throw mismatch();
     return {
-      orderId,
-      amountSat,
-      invoice: value,
-      paymentHash: parsed.paymentHash,
-      expiresAt: new Date((parsed.timestamp + parsed.expiry) * 1000).toISOString(),
-      paidAt: null,
-      receivedMsat: null,
+      issuedAt: parsed.timestamp,
+      payment: {
+        orderId,
+        amountSat,
+        invoice: value,
+        paymentHash: parsed.paymentHash,
+        expiresAt: new Date((parsed.timestamp + parsed.expiry) * 1000).toISOString(),
+        paidAt: null,
+        receivedMsat: null,
+      },
     };
+  }
+  /** Receipts completed between two Unix times, read page by page; a window spans one invoice's life. */
+  async function receiptsBetween(from: number, to: number) {
+    const found: Payment[] = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await sdk.listPayments({
+        ...completedReceipts,
+        fromTimestamp: from,
+        toTimestamp: to,
+        offset,
+        limit: PAGE,
+      });
+      found.push(...page.payments);
+      if (page.payments.length < PAGE) return found;
+    }
   }
   return {
     async ready() {
@@ -80,31 +90,62 @@ export function createSparkWallet(sdk: SparkSdk) {
           expirySecs: 3600,
         },
       });
-      return Schema.decodeUnknownSync(WalletPayment)(
-        await invoice(orderId, amountSat, response.paymentRequest),
-      );
+      const { payment } = await invoice(orderId, amountSat, response.paymentRequest);
+      return Schema.decodeUnknownSync(WalletPayment)(payment);
     },
     async find(orderId: string, amountSat: number, paymentHash: string, bolt11: string) {
-      const pending = await invoice(orderId, amountSat, bolt11, paymentHash);
-      await refresh();
-      const payment = payments.get(paymentHash);
-      if (!payment) return Schema.decodeUnknownSync(WalletPayment)(pending);
-      if (
-        payment.paymentType !== "receive" ||
-        payment.status !== "completed" ||
-        payment.method !== "lightning" ||
-        payment.details?.type !== "lightning" ||
-        payment.details.invoice !== bolt11 ||
-        payment.amount !== BigInt(amountSat) ||
-        payment.conversionDetails ||
-        payment.details.conversionInfo
-      )
-        throw mismatch();
-      return Schema.decodeUnknownSync(WalletPayment)({
-        ...pending,
-        paidAt: new Date(payment.timestamp * 1000).toISOString(),
-        receivedMsat: Number(payment.amount * 1000n),
+      const { issuedAt, payment: pending } = await invoice(orderId, amountSat, bolt11, paymentHash);
+      // A payment completes while its invoice is valid; the margins cover clock skew and claiming.
+      const expiresAt = Date.parse(pending.expiresAt) / 1000;
+      const matches = (await receiptsBetween(issuedAt - 60, expiresAt + 300)).filter(
+        (payment) =>
+          payment.details?.type === "lightning" &&
+          payment.details.htlcDetails.paymentHash === paymentHash,
+      );
+      if (!matches.length) return Schema.decodeUnknownSync(WalletPayment)(pending);
+      if (matches.length > 1 || !settles(matches[0], bolt11, amountSat)) throw mismatch();
+      return Schema.decodeUnknownSync(WalletPayment)({ ...pending, ...received(matches[0]) });
+    },
+    /**
+     * One page of completed receipts at or after `since`, for the Worker's payment sync. Receipts
+     * that are not order invoices, or do not settle theirs, are skipped and logged, never fatal.
+     */
+    async completed(since: number) {
+      const page = await sdk.listPayments({
+        ...completedReceipts,
+        fromTimestamp: since,
+        offset: 0,
+        limit: PAGE,
       });
+      const payments = [];
+      let latest: number | null = null;
+      for (const payment of page.payments) {
+        latest = Math.max(latest ?? 0, payment.timestamp);
+        if (payment.details?.type !== "lightning") continue;
+        const bolt11 = payment.details.invoice;
+        const parsed = await sdk.parse(bolt11).catch(() => null);
+        const orderId =
+          parsed?.type === "bolt11Invoice"
+            ? orderDescription.exec(parsed.description ?? "")?.[1]
+            : undefined;
+        if (!parsed || parsed.type !== "bolt11Invoice" || !orderId) continue;
+        const amountSat = (parsed.amountMsat ?? 0) / 1000;
+        try {
+          if (!Number.isSafeInteger(amountSat) || amountSat < 1) throw mismatch();
+          const { payment: pending } = await invoice(orderId, amountSat, bolt11);
+          if (
+            pending.paymentHash !== payment.details.htlcDetails.paymentHash ||
+            !settles(payment, bolt11, amountSat)
+          )
+            throw mismatch();
+          payments.push(
+            Schema.decodeUnknownSync(WalletPayment)({ ...pending, ...received(payment) }),
+          );
+        } catch {
+          logWalletAnomaly({ operation: "list_completed", orderId });
+        }
+      }
+      return { payments, latest, more: page.payments.length === PAGE };
     },
   };
 }

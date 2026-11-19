@@ -8,6 +8,8 @@ const ignored = [
   "**/.tanstack/**",
   "**/worker-configuration.d.ts",
   "**/routeTree.gen.ts",
+  // drizzle-kit rewrites its migration snapshots on every generate.
+  "**/migrations/meta/**",
 ];
 
 export default defineConfig({

@@ -1,7 +1,16 @@
 import { sql } from "drizzle-orm";
-export { btcQuote, merchant, paymentOrder, settlement, settlementItem } from "./payments";
+export {
+  btcQuote,
+  merchant,
+  paymentOrder,
+  settlement,
+  settlementItem,
+  walletSyncCursor,
+} from "./payments";
 import {
+  bigint,
   boolean,
+  integer,
   check,
   index,
   pgTable,
@@ -114,4 +123,23 @@ export const adminAudit = pgTable(
       withCheck: sql`current_setting('app.payment_admin', true) = 'true'`,
     }),
   ],
+).enableRLS();
+
+/** Better Auth's per-IP request counters (`rateLimit.storage: "database"`). */
+export const rateLimit = pgTable("rate_limit", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  count: integer("count").notNull(),
+  lastRequest: bigint("last_request", { mode: "number" }).notNull(),
+}).enableRLS();
+
+/** Fixed one-hour window of sign-in codes requested per email address. */
+export const otpThrottle = pgTable(
+  "otp_throttle",
+  {
+    email: text("email").primaryKey(),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [index("otp_throttle_window_idx").on(t.windowStartedAt)],
 ).enableRLS();

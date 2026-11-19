@@ -6,7 +6,14 @@ import { paymentLogger } from "./logging";
 export const problem = (code: PaymentErrorCode) =>
   HttpServerResponse.jsonUnsafe(
     { code, message: code },
-    { status: paymentErrorStatus[code], headers: { "cache-control": "no-store" } },
+    {
+      status: paymentErrorStatus[code],
+      headers: {
+        "cache-control": "no-store",
+        // Another request is issuing this key's invoice; it finishes within seconds.
+        ...(code === "ORDER_IN_PROGRESS" ? { "retry-after": "1" } : {}),
+      },
+    },
   );
 export const errorBoundary = HttpRouter.middleware((effect) =>
   effect.pipe(

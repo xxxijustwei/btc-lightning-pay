@@ -1,39 +1,9 @@
+import { paymentErrorStatus, type PaymentErrorCode } from "@btc-lightning-pay/api";
 import { Schema } from "effect";
 
+/** A failure with a public code; the contract's status table is the single list of codes. */
 export class PaymentFailure extends Schema.TaggedError<PaymentFailure>()("PaymentFailure", {
-  code: Schema.Literals([
-    "ORDER_NOT_FOUND",
-    "NO_ELIGIBLE_ORDERS",
-    "SETTLEMENT_NOT_FOUND",
-    "SETTLEMENT_STATE_CONFLICT",
-    "SETTLEMENT_PROOF_CONFLICT",
-    "SETTLEMENT_REASON_CONFLICT",
-
-    "MERCHANT_NOT_FOUND",
-    "IDEMPOTENCY_CONFLICT",
-    "MERCHANT_DISABLED",
-    "RATE_LIMITED",
-    "QUOTE_UNAVAILABLE",
-    "PAYMENT_MISMATCH",
-    "MERCHANT_EXISTS",
-    "INVALID_DATE",
-    "AMOUNT_OVERFLOW",
-    "DUPLICATE_ORDER",
-    "SETTLEMENT_CONFLICT",
-    "ADMIN_REQUIRED",
-    "USER_NOT_FOUND",
-    "EMAIL_EXISTS",
-    "LAST_ADMIN",
-    "INVALID_PAGINATION",
-    "BODY_TOO_LARGE",
-    "SYNC_NOT_CONFIGURED",
-    "UNAUTHORIZED",
-    "ORIGIN_REJECTED",
-    "WALLET_NOT_CONFIGURED",
-    "PAYMENTS_NOT_CONFIGURED",
-    "INVALID_INPUT",
-    "WALLET_UNAVAILABLE",
-  ]),
+  code: Schema.Literals(Object.keys(paymentErrorStatus) as PaymentErrorCode[]),
 }) {}
 export class StorageFailure extends Schema.TaggedError<StorageFailure>()("StorageFailure", {
   operation: Schema.String,

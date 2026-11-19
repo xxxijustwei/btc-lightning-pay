@@ -38,7 +38,9 @@ export function createSettlementStore(transaction: TransactionRunner) {
         await tx
           .update(paymentOrder)
           .set({ settlementId: null })
-          .where(eq(paymentOrder.settlementId, id));
+          .where(
+            and(eq(paymentOrder.merchantId, row.merchantId), eq(paymentOrder.settlementId, id)),
+          );
       const [saved] = await tx
         .update(settlement)
         .set(
@@ -116,7 +118,7 @@ export function createSettlementStore(transaction: TransactionRunner) {
         if (assigned.length !== rows.length)
           throw new Error("Settlement reservation count mismatch");
         await tx.execute(
-          sql`INSERT INTO settlement_item(settlement_id,merchant_id,order_id,amount_sat) SELECT ${record.id}::uuid,merchant_id,id,amount_sat FROM payment_order WHERE settlement_id=${record.id}::uuid`,
+          sql`INSERT INTO settlement_item(settlement_id,merchant_id,order_id,amount_sat) SELECT ${record.id}::uuid,merchant_id,id,amount_sat FROM payment_order WHERE merchant_id=${input.merchantId} AND settlement_id=${record.id}::uuid`,
         );
         return { record, created: true };
       });
@@ -187,7 +189,8 @@ export function createSettlementStore(transaction: TransactionRunner) {
             paid: sql<string>`coalesce(sum(case when ${paymentOrder.status}='paid' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             settled: sql<string>`coalesce(sum(case when ${settlement.status}='settled' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             pending: sql<string>`coalesce(sum(case when ${settlement.status}='pending' then ${paymentOrder.amountSat} else 0 end),0)::text`,
-            unconfirmed: sql<number>`count(*) filter (where ${paymentOrder.status} = 'pending')::int`,
+            // Invoices that can still be paid; expired ones are not waiting on anything.
+            unconfirmed: sql<number>`count(*) filter (where ${paymentOrder.status} = 'pending' and ${paymentOrder.expiresAt} > now())::int`,
           })
           .from(paymentOrder)
           .leftJoin(settlement, eq(paymentOrder.settlementId, settlement.id))

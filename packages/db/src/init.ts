@@ -1,13 +1,15 @@
-import { readFileSync } from "node:fs";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 const url = process.env.DATABASE_ADMIN_URL;
 if (!url) throw new Error("Missing DATABASE_ADMIN_URL");
-const db = postgres(url, { max: 1 });
+const client = postgres(url, { max: 1 });
 try {
-  await db.begin(async (tx) => {
-    await tx.unsafe(readFileSync(new URL("../sql/schema.sql", import.meta.url), "utf8"));
+  // Applies only migrations not yet recorded in drizzle.__drizzle_migrations, each in a transaction.
+  await migrate(drizzle(client), {
+    migrationsFolder: new URL("../migrations", import.meta.url).pathname,
   });
-  console.info("Database initialized");
+  console.info("Database migrated");
 } finally {
-  await db.end();
+  await client.end();
 }

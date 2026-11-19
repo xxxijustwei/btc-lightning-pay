@@ -101,13 +101,13 @@ export const paymentOrder = pgTable(
     reference: text("reference").notNull().default(""),
     rateUsd: text("rate_usd").notNull(),
     quotedAt: timestamp("quoted_at", { withTimezone: true }).notNull(),
-    status: text("status").notNull().default("pending"),
-    invoice: text("invoice").notNull(),
-    paymentHash: text("payment_hash").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // `creating` reserves admission and the idempotency key while the wallet issues the invoice.
+    status: text("status").notNull().default("creating"),
+    invoice: text("invoice"),
+    paymentHash: text("payment_hash"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     receivedMsat: bigint("received_msat", { mode: "number" }),
-
     settlementId: uuid("settlement_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -121,6 +121,9 @@ export const paymentOrder = pgTable(
     index("order_merchant_created").on(t.merchantId, t.createdAt),
     index("order_created").on(t.createdAt),
     index("order_settlement").on(t.merchantId, t.settlementId),
+    index("order_reservations")
+      .on(t.createdAt)
+      .where(sql`${t.status} = 'creating'`),
     foreignKey({
       columns: [t.merchantId, t.settlementId],
       foreignColumns: [settlement.merchantId, settlement.id],
@@ -130,12 +133,16 @@ export const paymentOrder = pgTable(
     check("order_sats", sql`${t.amountSat} BETWEEN 1 AND 9007199254740`),
     check("order_reference", sql`length(${t.reference}) <= 128`),
     check("order_rate", sql`${t.rateUsd} ~ '^[0-9]+([.][0-9]+)?$' AND ${t.rateUsd}::numeric > 0`),
-    // Expiry is derived from expires_at, so only pending and paid are stored.
-    check("order_status", sql`${t.status} IN ('pending','paid')`),
+    // Expiry is derived from expires_at, so it is never stored.
+    check("order_status", sql`${t.status} IN ('creating','pending','paid')`),
+    check(
+      "order_invoice_state",
+      sql`(${t.status} = 'creating' AND ${t.invoice} IS NULL AND ${t.paymentHash} IS NULL AND ${t.expiresAt} IS NULL) OR (${t.status} <> 'creating' AND ${t.invoice} IS NOT NULL AND ${t.paymentHash} IS NOT NULL AND ${t.expiresAt} IS NOT NULL)`,
+    ),
     check("order_payment_hash_format", sql`${t.paymentHash} ~ '^[0-9a-f]{64}$'`),
     check(
       "order_paid_consistency",
-      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.receivedMsat} > 0 AND ${t.receivedMsat} = ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL)`,
+      sql`(${t.status} = 'paid' AND ${t.paidAt} IS NOT NULL AND ${t.receivedMsat} IS NOT NULL AND ${t.receivedMsat} >= ${t.amountSat} * 1000) OR (${t.status} <> 'paid' AND ${t.paidAt} IS NULL AND ${t.receivedMsat} IS NULL)`,
     ),
     check("order_settled_paid", sql`${t.settlementId} IS NULL OR ${t.status} = 'paid'`),
     pgPolicy("order_access", {
@@ -190,5 +197,19 @@ export const btcQuote = pgTable(
     // The spot price is public; only the admin-scoped cron writes it.
     pgPolicy("btc_quote_read", { for: "select", using: sql`true` }),
     pgPolicy("btc_quote_write", { for: "all", using: admin, withCheck: admin }),
+  ],
+).enableRLS();
+
+/** How far the payment sync job has read the wallet's completed receipts; a single row. */
+export const walletSyncCursor = pgTable(
+  "wallet_sync_cursor",
+  {
+    id: text("id").primaryKey(),
+    syncedUntil: timestamp("synced_until", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("wallet_sync_cursor_id", sql`${t.id} = 'breez'`),
+    pgPolicy("wallet_sync_cursor_access", { for: "all", using: admin, withCheck: admin }),
   ],
 ).enableRLS();

@@ -105,11 +105,13 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
           id: "actions",
           header: () => <span className="sr-only">操作</span>,
           meta: { headerClassName: "text-right", cellClassName: "text-right" },
-          cell: ({ row }) => (
-            <Button variant="outline" size="sm" onClick={() => setTarget(row.original)}>
-              {row.original.banned ? "恢复" : "禁用"}
-            </Button>
-          ),
+          // A merchant's account follows its merchant; it is enabled or disabled there.
+          cell: ({ row }) =>
+            row.original.role === "merchant" ? null : (
+              <Button variant="outline" size="sm" onClick={() => setTarget(row.original)}>
+                {row.original.banned ? "恢复" : "禁用"}
+              </Button>
+            ),
         }),
       ]),
     [currentUserId],

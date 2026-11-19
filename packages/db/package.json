@@ -10,7 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "generate": "node src/generate.ts",
-    "init": "node --env-file-if-exists=.env src/init.ts"
+    "migrate": "node --env-file-if-exists=.env src/init.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

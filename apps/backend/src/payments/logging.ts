@@ -1,6 +1,8 @@
 import { PaymentFailure, StorageFailure, UpstreamFailure } from "./errors";
 
 export type PaymentLog = (entry: {
+  /** `payment_anomaly` marks wallet facts that contradict an order; everything else is a failure. */
+  event?: "payment_failure" | "payment_anomaly";
   operation: string;
   code: string;
   durationMs?: number;

@@ -190,6 +190,7 @@ const messages: Record<string, string> = {
   EMAIL_EXISTS: "该邮箱已有账号，不能绑定已有账号。",
   MERCHANT_EXISTS: "该 slug 已被使用，slug 不会回收。",
   LAST_ADMIN: "不能禁用最后一位启用的管理员。",
+  USER_IS_MERCHANT: "商户账号请在商户页面启用或停用。",
   NO_ELIGIBLE_ORDERS: "当前没有可结算的订单。",
   SETTLEMENT_STATE_CONFLICT: "结算单状态已变化，请刷新后查看。",
   SETTLEMENT_PROOF_CONFLICT: "该结算单已用不同的凭证确认过。",
