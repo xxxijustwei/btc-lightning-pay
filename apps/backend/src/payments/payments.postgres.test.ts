@@ -4,32 +4,12 @@ import { createDatabase } from "@btc-lightning-pay/db/client";
 import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test";
-import { createPaymentStore } from "./store";
-import type { WalletPayment } from "@btc-lightning-pay/api";
+import { createPaymentStore, transactionRunner } from "./store";
 import { createCrediting } from "./crediting";
-import { createPaymentService } from "./service";
+import { createOrderIntake } from "./intake";
 import { Wallet } from "./wallet";
 import { memoryWallet } from "./wallet-memory";
-import { paymentTask } from "./runtime";
 
-type Store = ReturnType<typeof createPaymentStore>;
-/** Reserves a key and attaches the wallet's invoice, as order creation does around the wallet call. */
-async function storeOrder(
-  store: Store,
-  merchantId: string,
-  key: string,
-  input: { amountUsdCents: number },
-  price: { rateUsd: string; quotedAt: Date; amountSat: number },
-  issued: typeof WalletPayment.Type,
-) {
-  const reserved = await store.reserveOrder(merchantId, key, input, price);
-  if ("order" in reserved) return reserved.order;
-  return store.attachInvoice(reserved.reservation.id, {
-    invoice: issued.invoice,
-    paymentHash: issued.paymentHash,
-    expiresAt: new Date(issued.expiresAt),
-  });
-}
 const findOrder = async (database: ReturnType<typeof createDatabase>["database"], key: string) =>
   (await database.execute(sql`SELECT id FROM payment_order WHERE idempotency_key=${key}`))[0] ??
   null;
@@ -69,18 +49,42 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   const merchantIds: string[] = [];
   const price = { rateUsd: "100000", quotedAt: new Date(), amountSat: 10000 };
   const input = { amountUsdCents: 1000 };
-  // Every stored order carries its invoice; each create call gets a fresh one.
-  const payment = () => {
-    const orderId = crypto.randomUUID();
-    return {
-      orderId,
-      amountSat: 10000,
-      invoice: `lnbc100u1${orderId.replaceAll("-", "")}`,
-      paymentHash: orderId.replaceAll("-", "").repeat(2),
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-      paidAt: null,
-      receivedMsat: null,
+  const slugs = new Map<string, string>();
+  /** Order intake on one connection, with an in-memory wallet and a fixed live quote. */
+  const intakeOn = (
+    client: ReturnType<typeof createDatabase>,
+    options: {
+      signal?: AbortSignal;
+      wallet?: typeof Wallet.Service;
+      quote?: () => Promise<typeof price>;
+    } = {},
+  ) => {
+    const store = createPaymentStore(client.database, options.signal);
+    const intake = createOrderIntake({
+      transaction: transactionRunner(client.database, options.signal),
+      crediting: createCrediting(store, vi.fn()),
+      quote: options.quote ?? (async () => price),
+      log: vi.fn(),
+    });
+    const wallet = options.wallet ?? memoryWallet().wallet;
+    return (merchantId: string, key: string) =>
+      Effect.runPromise(
+        intake
+          .create(slugs.get(merchantId)!, key, input)
+          .pipe(Effect.provideService(Wallet, wallet)),
+        { signal: options.signal },
+      );
+  };
+  /** A wallet that holds every invoice back until `gate` resolves. */
+  const gated = () => {
+    const gate = deferred<void>();
+    const base = memoryWallet().wallet;
+    const wallet: typeof Wallet.Service = {
+      ...base,
+      issueInvoice: (request) =>
+        Effect.promise(() => gate.promise).pipe(Effect.flatMap(() => base.issueInvoice(request))),
     };
+    return { gate, wallet };
   };
   const fixture = async () => {
     const slug = `m${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
@@ -89,6 +93,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       actor,
     );
     merchantIds.push(id);
+    slugs.set(id, slug);
     return id;
   };
   async function hold(query: SQL) {
@@ -164,24 +169,31 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     }
   });
 
-  test("overlapping reservations claim a key once and RLS scope resets", async () => {
+  test("overlapping orders claim a key once and RLS scope resets", async () => {
     const id = await fixture();
+    const { gate, wallet } = gated();
     const release = await hold(sql`SELECT id FROM merchant WHERE id=${id} FOR UPDATE`);
     const pending = clients
       .slice(0, 2)
-      .map((client) =>
-        createPaymentStore(client.database).reserveOrder(id, "same-order-key-0001", input, price),
-      );
+      .map((client) => intakeOn(client, { wallet })(id, "same-order-key-0001"));
     try {
       await blocked(2);
     } finally {
       await release();
     }
+    // The second request is refused while the first one's invoice is still being issued.
+    const refused = await Promise.race(
+      pending.map((order) =>
+        order.then(
+          () => null,
+          (e) => e,
+        ),
+      ),
+    );
+    expect(refused).toMatchObject({ code: "ORDER_IN_PROGRESS" });
+    gate.resolve();
     const results = await Promise.allSettled(pending);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    expect(results.find((r) => r.status === "rejected")).toMatchObject({
-      reason: { code: "ORDER_IN_PROGRESS" },
-    });
     for (const client of clients.slice(0, 2)) {
       expect(await client.database.execute(sql`SELECT id FROM payment_order`)).toHaveLength(0);
     }
@@ -190,12 +202,14 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   test("overlapping settlements cannot both claim the same paid order", async () => {
     const id = await fixture();
     const store = createPaymentStore(clients[0].database);
-    const issued = payment();
-    const order = await storeOrder(store, id, "paid-order-key-0001", input, price, issued);
+    const order = await intakeOn(clients[0])(id, "paid-order-key-0001");
     await Effect.runPromise(
       createCrediting(store, vi.fn()).credit({
-        ...issued,
         orderId: order.id,
+        amountSat: order.amountSat,
+        invoice: order.invoice,
+        paymentHash: order.paymentHash,
+        expiresAt: order.expiresAt.toISOString(),
         paidAt: new Date().toISOString(),
         receivedMsat: 10000000,
       }),
@@ -328,15 +342,10 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
   test("cancellation drains the transaction rollback before connection cleanup", async () => {
     const id = await fixture();
     const controller = new AbortController();
-    const store = createPaymentStore(clients[0].database, controller.signal);
+    const create = intakeOn(clients[0], { signal: controller.signal });
     const release = await hold(sql`SELECT id FROM merchant WHERE id=${id} FOR UPDATE`);
     const cleanup = vi.fn();
-    const pending = Effect.runPromise(
-      paymentTask("reserve_order", () =>
-        store.reserveOrder(id, "cancelled-order-key", input, price),
-      ),
-      { signal: controller.signal },
-    )
+    const pending = create(id, "cancelled-order-key")
       .then(
         () => "completed",
         () => "cancelled",
@@ -358,26 +367,18 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
 
   test("waiting for a quote holds no merchant lock and the locked reservation refuses a merchant disabled meanwhile", async () => {
     const id = await fixture();
-    const { slug } = await createPaymentStore(clients[0].database).adminMerchant(id);
     const entered = deferred<void>(),
       quote = deferred<typeof price>();
     // The reservation is taken under the merchant lock before invoicing, so no invoice is wasted.
     const wallet = memoryWallet();
-    const serviceStore = createPaymentStore(clients[0].database);
-    const service = createPaymentService(
-      serviceStore,
-      createCrediting(serviceStore, vi.fn()),
-      async () => {
+    const create = intakeOn(clients[0], {
+      wallet: wallet.wallet,
+      quote: async () => {
         entered.resolve();
         return quote.promise;
       },
-      vi.fn(),
-    );
-    const pending = Effect.runPromise(
-      service
-        .createOrder(slug, "delayed-quote-key", input)
-        .pipe(Effect.provideService(Wallet, wallet.wallet)),
-    ).then(
+    });
+    const pending = create(id, "delayed-quote-key").then(
       () => null,
       (error) => error,
     );

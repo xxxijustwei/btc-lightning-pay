@@ -3,7 +3,9 @@ import { pruneOtpThrottle } from "../auth/throttle";
 import { createCrediting, type Crediting } from "./crediting";
 import { errorFields, paymentLogger, type PaymentLog } from "./logging";
 import { saveQuote } from "./quote-job";
-import { createPaymentStore } from "./store";
+import { createPaymentStore, transactionRunner } from "./store";
+import { createOrderIntake } from "./intake";
+import { createQuoteSource } from "./quote";
 import { Effect } from "effect";
 import { makeWallet, parseWalletConfig, type Wallet, type WalletConfig } from "./wallet";
 import type { PaymentsBindings } from "./handler";
@@ -63,6 +65,13 @@ export async function runScheduled(
   }
   const resource = createDatabase(url);
   const store = createPaymentStore(resource.database);
+  const crediting = createCrediting(store, log);
+  const intake = createOrderIntake({
+    transaction: transactionRunner(resource.database),
+    crediting,
+    quote: createQuoteSource(fetcher),
+    log,
+  });
   const task = async (operation: string, work: () => Promise<unknown>) => {
     try {
       await work();
@@ -79,11 +88,9 @@ export async function runScheduled(
       // The sync then fails alone, logged as `not_configured`.
     }
     const wallet = makeWallet(walletConfig, { requestId: runId, fetcher });
-    await task("sync_payments", () =>
-      syncPayments(store, createCrediting(store, log), wallet, log),
-    );
+    await task("sync_payments", () => syncPayments(store, crediting, wallet, log));
     await task("release_reservations", async () => {
-      const released = await store.releaseAbandonedReservations();
+      const released = await intake.sweep();
       if (released)
         log({
           operation: "release_reservations",

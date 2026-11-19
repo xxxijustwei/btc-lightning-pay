@@ -15,7 +15,8 @@ import { createCrediting } from "./crediting";
 import { createPaymentService } from "./service";
 import { errorFields, paymentLogger } from "./logging";
 import { PaymentFailure } from "./errors";
-import { createPaymentStore } from "./store";
+import { createPaymentStore, transactionRunner } from "./store";
+import { createOrderIntake } from "./intake";
 import { createQuoteSource } from "./quote";
 
 type RateLimiter = { limit(options: { key: string }): Promise<{ success: boolean }> };
@@ -132,11 +133,14 @@ async function handleRequest(
     const requestHeaders = new Headers(original.headers);
     requestHeaders.set("x-request-id", requestId);
     const request = await bounded(new Request(original, { headers: requestHeaders }));
+    const transaction = transactionRunner(resource.database, original.signal);
     const store = createPaymentStore(resource.database, original.signal);
-    const payments = createPaymentService(store, createCrediting(store, log), quote, log);
+    const crediting = createCrediting(store, log);
+    const payments = createPaymentService(store, crediting);
+    const intake = createOrderIntake({ transaction, crediting, quote, log });
     const response = await paymentApp.handler(
       request,
-      Context.make(PaymentRuntime, { store, actor, payments, log }).pipe(
+      Context.make(PaymentRuntime, { store, actor, payments, intake, log }).pipe(
         Context.add(Wallet, makeWallet(walletConfig, { requestId })),
       ),
     );

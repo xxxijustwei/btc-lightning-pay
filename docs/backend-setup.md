@@ -149,12 +149,12 @@ Content-Type: application/json
 
 单笔查询不维护全量索引：钱包从 invoice 解析出创建时间和有效期，只读取「创建前 60 秒到到期后 5 分钟」之间完成的收款，耗时与历史收款总量无关。同一 hash 出现多条记录时只让该订单返回 `PAYMENT_MISMATCH`，不影响其他订单。SDK 网络同步与这里的查询是两层不同的工作；同步故障或查询故障不会把订单标成支付失败。
 
-Worker 先在一个事务里读取商户、按幂等键查已有订单并读取入库报价；算出 sats 后，在商户行锁和全局准入锁下检查启用状态与准入，插入 `status='creating'` 的占位订单（无 invoice，不对外可见），再向钱包申请 invoice，成功后写入 invoice 变为 `pending`。开票失败时删除占位，同一幂等键可重试；请求中途死亡留下的占位，30 秒后可被同键请求接管，2 分钟后由定时任务删除。占位后才开票，所以并发请求既不能超过准入速率，也不会为同一幂等键开出第二张 invoice。每次创建成功输出一条 `order_created` 日志，含总耗时、报价来源 `quote`（`stored` 或 `live`）和 `openMs`、`quoteMs`（仅实时获取时）、`reserveMs`、`invoiceMs`、`storeMs` 分步耗时，不含备注等付款人信息。
+Worker 先在一个事务里读取商户、按幂等键查已有订单并读取入库报价；算出 sats 后，在商户行锁和全局准入锁下检查启用状态与准入，插入 `status='creating'` 的占位订单（无 invoice，不对外可见），再向钱包申请 invoice，成功后写入 invoice 变为 `pending`。开票失败时删除占位，同一幂等键可重试；请求中途死亡留下的占位超过 30 秒（大于钱包调用的 15 秒超时）即视为遗弃：同键请求可以接管，定时任务也会删除它；原请求若之后醒来，无法再挂上发票。下单流程全部在 `payments/intake.ts`（Order intake）中。占位后才开票，所以并发请求既不能超过准入速率，也不会为同一幂等键开出第二张 invoice。每次创建成功输出一条 `order_created` 日志，含总耗时、报价来源 `quote`（`stored` 或 `live`）和 `openMs`、`quoteMs`（仅实时获取时）、`reserveMs`、`invoiceMs`、`storeMs` 分步耗时，不含备注等付款人信息。
 
 Worker Cron 每分钟运行（`* * * * *`），各任务互不影响：
 
 - **到账同步**：按 `wallet_sync_cursor` 记录的时间点调用 `/v1/payments/completed`（回看 10 分钟以覆盖秒级时间戳的边界），按订单幂等入账，然后推进游标。开销只取决于新到账笔数，与未付订单数量无关；钱包或数据库失败时游标不动，下次重读。付款人关闭页面、无人查询的订单也由它入账，最多延迟约 1 分钟。输出 `payments_synced` 日志。
-- **清理**：删除超过 2 分钟的 `creating` 占位，以及已结束的按邮箱发码计数窗口。
+- **清理**：删除超过 30 秒的 `creating` 占位，以及已结束的按邮箱发码计数窗口。
 - **报价**（每 5 分钟一次）：获取 Coinbase 现货价写入 `btc_quote` 单行表，旧报价不会覆盖新报价，成功时输出 `quote_refreshed` 日志。下单使用不超过 10 分钟的入库报价；报价缺失、过旧或时间异常时实时获取（同一实例缓存 60 秒），都失败才返回 `QUOTE_UNAVAILABLE`。
 
 本地 `wrangler dev` 不会自动触发 Cron，需要时用 `pnpm --filter @btc-lightning-pay/backend exec wrangler dev --local --test-scheduled --port 8787` 启动，再请求 `http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*`。已展示的 invoice 永不替换。付款页查询（到期 10 分钟内）和管理端订单详情也会即时核对当前订单；查询失败保留订单，后续查询或同步可重试。过期不是不可逆支付终态，晚发现的完成记录仍能入账。生成结算单前不额外同步，最近约 1 分钟内到账的订单可能进入下一张结算单。

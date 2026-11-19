@@ -5,6 +5,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import type { createPaymentStore } from "./store";
 import { adminOrder, publicOrder, settlementView } from "./projection";
 import { PaymentFailure, type PaymentError } from "./errors";
+import type { OrderIntake } from "./intake";
 import { createPaymentService } from "./service";
 import { paymentTask } from "./runtime";
 import { errorFields, type PaymentLog } from "./logging";
@@ -17,6 +18,7 @@ export class PaymentRuntime extends Context.Service<
     store: ReturnType<typeof createPaymentStore>;
     actor?: string;
     payments: ReturnType<typeof createPaymentService>;
+    intake: OrderIntake;
     log: PaymentLog;
   }
 >()("backend/PaymentRuntime") {}
@@ -78,8 +80,8 @@ const PublicLive = HttpApiBuilder.group(PaymentsApi, "publicPayments", (handlers
       }),
     createOrder: ({ params, payload, headers }) =>
       run("create_order", (r) =>
-        r.payments
-          .createOrder(params.slug, headers["idempotency-key"], payload)
+        r.intake
+          .create(params.slug, headers["idempotency-key"], payload)
           .pipe(Effect.map(publicOrder)),
       ),
     order: ({ params }) =>

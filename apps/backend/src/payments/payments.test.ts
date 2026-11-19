@@ -7,7 +7,8 @@ import { PaymentProblem, PublicOrder } from "@btc-lightning-pay/api";
 import type { Database } from "@btc-lightning-pay/db/client";
 import * as schema from "@btc-lightning-pay/db/schema";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/test";
-import { createPaymentStore } from "./store";
+import { createPaymentStore, transactionRunner } from "./store";
+import { createOrderIntake } from "./intake";
 import { publicOrder } from "./projection";
 import { createPaymentService } from "./service";
 import { createCrediting } from "./crediting";
@@ -26,6 +27,16 @@ const close = vi.fn(async () => {});
 vi.mock("@btc-lightning-pay/db/client", () => ({ createDatabase: () => ({ database, close }) }));
 const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
+/** The stored BTC quote, read past row-level security. */
+async function storedRate() {
+  await pg.exec("RESET ROLE");
+  try {
+    const { rows } = await pg.query<{ rate_usd: string }>("SELECT rate_usd FROM btc_quote");
+    return rows[0]?.rate_usd;
+  } finally {
+    await pg.exec("SET ROLE payment_app");
+  }
+}
 let onne: string, other: string;
 const key = "test-order-key-0001";
 // Development: the wallet needs no Cloudflare Access token outside production.
@@ -46,7 +57,13 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
   });
 const log = vi.fn();
 const crediting = createCrediting(store, log);
-const payments = createPaymentService(store, crediting, quote, log);
+const payments = createPaymentService(store, crediting);
+const intake = createOrderIntake({
+  transaction: transactionRunner(database as unknown as Database),
+  crediting,
+  quote,
+  log,
+});
 /** Credits a receipt as the payment sync does; the result says whether it was an anomaly. */
 const credited = (payment: Parameters<typeof crediting.credit>[0]) =>
   Effect.runPromise(crediting.credit(payment));
@@ -63,14 +80,14 @@ const createOrder = (
 ) =>
   // The public API creates orders by slug; tests hold merchant ids.
   Effect.runPromise(
-    payments
-      .createOrder(merchant === onne ? "onne" : merchant === other ? "other" : merchant, key, input)
+    intake
+      .create(merchant === onne ? "onne" : merchant === other ? "other" : merchant, key, input)
       .pipe(Effect.provideService(Wallet, wallet.wallet)),
   );
 const call = (req: Request, actor?: string) =>
   paymentApp.handler(
     req,
-    Context.make(PaymentRuntime, { store, payments, log, actor }).pipe(
+    Context.make(PaymentRuntime, { store, payments, intake, log, actor }).pipe(
       Context.add(Wallet, wallet.wallet),
     ),
   );
@@ -162,7 +179,7 @@ test("order creation uses a stored quote and falls back to a live one once it is
 
   // An older quote never replaces a newer one.
   await store.saveQuote({ rateUsd: "1", quotedAt: new Date(fresh.getTime() - 60_000) });
-  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("50000");
+  expect(await storedRate()).toBe("50000");
 
   await pg.exec(
     "RESET ROLE; UPDATE btc_quote SET quoted_at = now() - interval '11 minutes'; SET ROLE payment_app;",
@@ -182,7 +199,7 @@ test("the quote cron stores the Coinbase price and only the admin scope may writ
     info.mockRestore();
   }
   expect(fetcher.mock.calls[0][0]).toBe("https://api.coinbase.com/v2/prices/BTC-USD/spot");
-  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("64000.12");
+  expect(await storedRate()).toBe("64000.12");
   await expect(
     database.transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('app.payment_admin', 'false', true)`);
@@ -203,7 +220,7 @@ test("the quote cron stores the Coinbase price and only the admin scope may writ
   } finally {
     errors.mockRestore();
   }
-  expect((await store.openOrder("onne", "unused-key-000001")).quote?.rateUsd).toBe("64000.12");
+  expect(await storedRate()).toBe("64000.12");
 });
 test("order creation logs per-step timing without payer data", async () => {
   const info = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -609,8 +626,8 @@ test("a failed invoice creation stores nothing and the same key can retry", asyn
 test("an invoice that contradicts its reservation is an anomaly and stores nothing", async () => {
   const create = (issuer: typeof Wallet.Service) =>
     Effect.runPromise(
-      payments
-        .createOrder("onne", key, { amountUsdCents: 1000 })
+      intake
+        .create("onne", key, { amountUsdCents: 1000 })
         .pipe(Effect.provideService(Wallet, issuer)),
     );
   const overcharging = {
@@ -767,8 +784,46 @@ test("admin lifecycle protects the last admin and rejects duplicate or forbidden
   await pg.exec("COMMIT");
 });
 
-const price = { rateUsd: "100000", quotedAt: new Date(), amountSat: 10000 };
 const asAdmin = (statements: string) => pg.exec(`RESET ROLE; ${statements}; SET ROLE payment_app;`);
+/** A reservation's status, read past row-level security; null once it is gone. */
+async function statusOf(key: string) {
+  await pg.exec("RESET ROLE");
+  try {
+    const { rows } = await pg.query<{ status: string }>(
+      "SELECT status FROM payment_order WHERE idempotency_key = $1",
+      [key],
+    );
+    return rows[0]?.status ?? null;
+  } finally {
+    await pg.exec("SET ROLE payment_app");
+  }
+}
+/**
+ * Starts an order whose invoice the wallet holds back, as a request stuck mid-invoice. `finish`
+ * lets the wallet answer and settles the request.
+ */
+async function stuckOrder(key: string) {
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const held: typeof Wallet.Service = {
+    ...wallet.wallet,
+    issueInvoice: (request) =>
+      Effect.promise(() => gate).pipe(Effect.flatMap(() => wallet.wallet.issueInvoice(request))),
+  };
+  const settled = Effect.runPromise(
+    intake.create("onne", key, { amountUsdCents: 1000 }).pipe(Effect.provideService(Wallet, held)),
+  ).then(
+    (order) => ({ order }),
+    (error: unknown) => ({ error }),
+  );
+  await vi.waitFor(async () => expect(await statusOf(key)).toBe("creating"));
+  return {
+    finish: () => {
+      open();
+      return settled;
+    },
+  };
+}
 const walletEnv = {
   ...bindings,
   WALLET_URL: "https://wallet.example",
@@ -879,9 +934,10 @@ test("the payment sync credits receipts nobody polled, skips anomalies and keeps
 });
 
 test("the scheduled job releases abandoned reservations, syncs every minute and quotes every fifth", async () => {
-  await store.reserveOrder(onne, `${key}-dead`, { amountUsdCents: 1000 }, price);
+  const stuck = await stuckOrder(`${key}-dead`);
+  // One threshold: a reservation the same key could take over is also swept.
   await asAdmin(
-    "UPDATE payment_order SET created_at = now() - interval '3 minutes' WHERE status = 'creating'",
+    "UPDATE payment_order SET created_at = now() - interval '31 seconds' WHERE status = 'creating'",
   );
   const fetcher = vi.fn<typeof fetch>(async (url) =>
     String(url).includes("coinbase")
@@ -892,7 +948,9 @@ test("the scheduled job releases abandoned reservations, syncs every minute and 
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 1), fetcher);
-    expect(await findOrder(onne, `${key}-dead`)).toBeNull();
+    expect(await statusOf(`${key}-dead`)).toBeNull();
+    // The request that died is refused if it wakes up: its invoice was never shown.
+    expect(await stuck.finish()).toMatchObject({ error: { operation: "attach_invoice" } });
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
       "https://wallet.example/v1/payments/completed",
     ]);
@@ -907,7 +965,7 @@ test("the scheduled job releases abandoned reservations, syncs every minute and 
 });
 
 test("a reservation in progress answers ORDER_IN_PROGRESS until abandoned, then the key is retried", async () => {
-  await store.reserveOrder(onne, key, { amountUsdCents: 1000 }, price);
+  const stuck = await stuckOrder(key);
   await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
     code: "ORDER_IN_PROGRESS",
   });
@@ -925,10 +983,14 @@ test("a reservation in progress answers ORDER_IN_PROGRESS until abandoned, then 
   expect(busy.headers.get("retry-after")).toBe("1");
   // Reservations never surface as orders.
   expect(await store.orders({ merchantId: onne }, 10, 0)).toHaveLength(0);
+  // A young reservation survives the sweep.
+  expect(await intake.sweep()).toBe(0);
   await asAdmin("UPDATE payment_order SET created_at = now() - interval '31 seconds'");
-  expect(await createOrder(onne, key, { amountUsdCents: 1000 })).toMatchObject({
-    status: "pending",
-  });
+  const retried = await createOrder(onne, key, { amountUsdCents: 1000 });
+  expect(retried).toMatchObject({ status: "pending" });
+  // The request that was taken over cannot attach its invoice to the new order.
+  expect(await stuck.finish()).toMatchObject({ error: { operation: "attach_invoice" } });
+  expect((await store.getOrder(retried.id)).invoice).toBe(retried.invoice);
 });
 
 test("admission caps invoices across the platform, not only per merchant", async () => {
