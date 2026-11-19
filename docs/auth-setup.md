@@ -89,7 +89,7 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "实际的 Hyperdrive ID" }]
 ```
 
-运行时优先使用 `HYPERDRIVE.connectionString`，没有绑定才使用 `DATABASE_URL`。连接按请求创建并由 Effect scope 关闭，不在模块全局共享数据库 socket。`prepare: false` 保持池化连接兼容；`fetch_types: false` 避免启动时额外的类型查询。
+运行时优先使用 `HYPERDRIVE.connectionString`，没有绑定才使用 `DATABASE_URL`（去掉首尾空白，协议必须是 `postgres:` 或 `postgresql:`，否则视为未配置）。这条规则和数据库生命周期只在 `apps/backend/src/runtime.ts` 一处：payments、auth 和定时任务每次调用各自构建一次 Effect Layer，连接在调用结束时关闭，不在模块全局共享数据库 socket。测试通过 `makeWorker(connect)` 换成 PGlite 连接，走同一套入口。`prepare: false` 保持池化连接兼容；`fetch_types: false` 避免启动时额外的类型查询。
 
 前端已通过 `BACKEND` 服务绑定转发 `/api/auth/*` 和 `/api/me`，保留 Origin、客户端 IP 和多条 Set-Cookie。SSR 会话读取只在存在 Better Auth 会话 cookie 时请求后端，并由后端验证；401 表示未登录，服务故障显示错误页并允许重试。登录、退出成功后清除 Query 和路由缓存，身份相关页面及响应禁用缓存。
 

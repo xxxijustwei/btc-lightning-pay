@@ -6,7 +6,7 @@ import type { Crediting } from "./crediting";
 import { PaymentFailure, StorageFailure, type PaymentError } from "./errors";
 import { errorFields, type PaymentLog } from "./logging";
 import { quoteSats } from "./quote";
-import { paymentTask } from "./runtime";
+import { paymentTask } from "./task";
 import {
   issued,
   type OrderRow,

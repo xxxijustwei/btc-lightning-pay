@@ -1,14 +1,11 @@
-import { createDatabase } from "@btc-lightning-pay/db/client";
+import { Cause, Effect, Exit } from "effect";
 import { pruneOtpThrottle } from "../auth/throttle";
-import { createCrediting, type Crediting } from "./crediting";
+import { Database, Payments, runtimeLayer, type Connect, type RuntimeBindings } from "../runtime";
+import type { Crediting } from "./crediting";
 import { errorFields, paymentLogger, type PaymentLog } from "./logging";
 import { saveQuote } from "./quote-job";
-import { createPaymentStore, transactionRunner } from "./store";
-import { createOrderIntake } from "./intake";
-import { createQuoteSource } from "./quote";
-import { Effect } from "effect";
-import { makeWallet, parseWalletConfig, type Wallet, type WalletConfig } from "./wallet";
-import type { PaymentsBindings } from "./handler";
+import type { createPaymentStore } from "./store";
+import { Wallet } from "./wallet";
 
 /** Re-read receipts this far before the cursor: receipt times have one-second resolution. */
 export const SYNC_OVERLAP_SECONDS = 600;
@@ -52,26 +49,13 @@ export async function syncPayments(
  * expired sign-in throttles; every fifth minute also store a BTC quote. Each task fails alone.
  */
 export async function runScheduled(
-  env: PaymentsBindings,
+  env: RuntimeBindings,
   scheduledTime: number,
-  fetcher: typeof fetch = fetch,
+  options: { fetcher?: typeof fetch; connect?: Connect } = {},
 ) {
   const runId = crypto.randomUUID();
   const log = paymentLogger(runId);
-  const url = env.HYPERDRIVE?.connectionString || env.DATABASE_URL;
-  if (!url) {
-    log({ operation: "scheduled", code: "PAYMENTS_NOT_CONFIGURED" });
-    return;
-  }
-  const resource = createDatabase(url);
-  const store = createPaymentStore(resource.database);
-  const crediting = createCrediting(store, log);
-  const intake = createOrderIntake({
-    transaction: transactionRunner(resource.database),
-    crediting,
-    quote: createQuoteSource(fetcher),
-    log,
-  });
+  const fetcher = options.fetcher ?? fetch;
   const task = async (operation: string, work: () => Promise<unknown>) => {
     try {
       await work();
@@ -79,27 +63,29 @@ export async function runScheduled(
       log({ operation, ...errorFields(error) });
     }
   };
-  try {
-    if (new Date(scheduledTime).getUTCMinutes() % 5 === 0) await saveQuote(store, fetcher, log);
-    let walletConfig: WalletConfig | undefined;
-    try {
-      walletConfig = parseWalletConfig(env);
-    } catch {
-      // The sync then fails alone, logged as `not_configured`.
-    }
-    const wallet = makeWallet(walletConfig, { requestId: runId, fetcher });
-    await task("sync_payments", () => syncPayments(store, crediting, wallet, log));
-    await task("release_reservations", async () => {
-      const released = await intake.sweep();
-      if (released)
-        log({
-          operation: "release_reservations",
-          code: "RESERVATION_ABANDONED",
-          reason: `${released} released`,
-        });
+  const run = Effect.gen(function* () {
+    const { database } = yield* Database;
+    const { store, crediting, intake } = yield* Payments;
+    const wallet = yield* Wallet;
+    yield* Effect.promise(async () => {
+      if (new Date(scheduledTime).getUTCMinutes() % 5 === 0) await saveQuote(store, fetcher, log);
+      // Without wallet settings the sync fails alone, logged as `not_configured`.
+      await task("sync_payments", () => syncPayments(store, crediting, wallet, log));
+      await task("release_reservations", async () => {
+        const released = await intake.sweep();
+        if (released)
+          log({
+            operation: "release_reservations",
+            code: "RESERVATION_ABANDONED",
+            reason: `${released} released`,
+          });
+      });
+      await task("prune_otp_throttle", () => pruneOtpThrottle(database));
     });
-    await task("prune_otp_throttle", () => pruneOtpThrottle(resource.database));
-  } finally {
-    await resource.close();
-  }
+  });
+  const exit = await Effect.runPromiseExit(
+    run.pipe(Effect.provide(runtimeLayer(env, { requestId: runId, fetcher }, options.connect))),
+  );
+  if (Exit.isFailure(exit))
+    log({ operation: "scheduled", ...errorFields(Cause.squash(exit.cause)) });
 }

@@ -2,7 +2,7 @@ import type { NewSettlement } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import type { Crediting } from "./crediting";
 import type { createPaymentStore, OrderRow } from "./store";
-import { paymentTask } from "./runtime";
+import { paymentTask } from "./task";
 
 /**
  * How long after expiry a payer's poll still asks the wallet. Later receipts are found by the

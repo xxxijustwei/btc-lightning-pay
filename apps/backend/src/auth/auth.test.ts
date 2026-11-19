@@ -7,17 +7,20 @@ import * as schema from "@btc-lightning-pay/db/schema";
 import { beforeAll, afterAll, beforeEach, afterEach, test, expect, vi } from "vite-plus/test";
 import { createAuth } from "./auth";
 import { handleAuth } from "./handler";
-import worker from "../index";
+import { makeWorker } from "../index";
+import type { Connect } from "../runtime";
 import { dispose } from "../app";
 
 const pg = new PGlite();
 const database = drizzle(pg, { schema });
 const close = vi.fn(async () => {});
-const connect = vi.fn(() => ({ database, close }));
-const send = vi.fn(async (_message: { email: string; otp: string }) => {});
-vi.mock("@btc-lightning-pay/db/client", () => ({
-  createDatabase: () => connect(),
+// The Worker runs on its real entry points; only the database connection is PGlite.
+const connect = vi.fn<Connect>(() => ({
+  database: database as unknown as ReturnType<Connect>["database"],
+  close,
 }));
+const worker = makeWorker(connect);
+const send = vi.fn(async (_message: { email: string; otp: string }) => {});
 vi.mock("./email", () => ({ OTP_EXPIRATION_SECONDS: 300, createOTPSender: () => send }));
 const config = {
   url: "http://localhost:3000",
@@ -148,7 +151,7 @@ test("pre-opened user can login, read a protected API, then logout with no reusa
   );
   expect(replay.status).toBe(400);
   expect((await auth.handler(request("/sign-out", {}, cookie))).status).toBe(200);
-  expect((await handleAuth(meRequest, bindings)).status).toBe(401);
+  expect((await handleAuth(meRequest, bindings, connect)).status).toBe(401);
 });
 test("code requests are limited per IP across auth instances", async () => {
   await pg.exec(provision);
@@ -210,7 +213,7 @@ test("failed delivery is not reported as success", async () => {
   const log = vi.spyOn(console, "error").mockImplementation(() => {});
   await pg.exec(provision);
   send.mockRejectedValueOnce(new Error("provider failure"));
-  expect((await handleAuth(sendRequest(), bindings)).status).toBe(503);
+  expect((await handleAuth(sendRequest(), bindings, connect)).status).toBe(503);
   expect(log).toHaveBeenCalledWith(
     JSON.stringify({
       event: "auth_request_failed",
@@ -220,11 +223,11 @@ test("failed delivery is not reported as success", async () => {
   expect(close).toHaveBeenCalled();
 });
 test("unsupported flows and missing configuration fail closed", async () => {
-  expect((await handleAuth(request("/sign-up/email", {}), bindings)).status).toBe(404);
-  expect((await handleAuth(sendRequest(), {})).status).toBe(503);
-  expect((await handleAuth(request("/get-session"), bindings)).headers.get("cache-control")).toBe(
-    "no-store",
-  );
+  expect((await handleAuth(request("/sign-up/email", {}), bindings, connect)).status).toBe(404);
+  expect((await handleAuth(sendRequest(), {}, connect)).status).toBe(503);
+  expect(
+    (await handleAuth(request("/get-session"), bindings, connect)).headers.get("cache-control"),
+  ).toBe("no-store");
   expect(
     (
       await makeAuth().handler(
@@ -344,7 +347,7 @@ test("request cookies isolate users and deletion revokes sessions", async () => 
   }
   const results = await Promise.all(
     cookies.map((cookie) =>
-      handleAuth(new Request(`${config.url}/api/me`, { headers: { cookie } }), bindings),
+      handleAuth(new Request(`${config.url}/api/me`, { headers: { cookie } }), bindings, connect),
     ),
   );
   expect(await results[0].json()).toMatchObject({ email: "user@example.com" });
@@ -355,6 +358,7 @@ test("request cookies isolate users and deletion revokes sessions", async () => 
       await handleAuth(
         new Request(`${config.url}/api/me`, { headers: { cookie: cookies[0] } }),
         bindings,
+        connect,
       )
     ).status,
   ).toBe(401);
@@ -363,6 +367,7 @@ test("request cookies isolate users and deletion revokes sessions", async () => 
       await handleAuth(
         new Request(`${config.url}/api/me`, { headers: { cookie: cookies[1] } }),
         bindings,
+        connect,
       )
     ).status,
   ).toBe(200);
@@ -469,6 +474,6 @@ test("disabled admins lose access and native admin capabilities stay private", a
     "/admin/impersonate-user",
     "/email-otp/create-verification-otp",
   ]) {
-    expect((await handleAuth(request(path, {}, cookie), bindings)).status).toBe(404);
+    expect((await handleAuth(request(path, {}, cookie), bindings, connect)).status).toBe(404);
   }
 });

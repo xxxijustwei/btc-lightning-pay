@@ -2,7 +2,7 @@ import type { WalletPayment } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import type { PaymentError } from "./errors";
 import { errorFields, type PaymentLog } from "./logging";
-import { paymentTask } from "./runtime";
+import { paymentTask } from "./task";
 import type { createPaymentStore, OrderRow, OrderUpdate } from "./store";
 import { Wallet } from "./wallet";
 

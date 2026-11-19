@@ -15,16 +15,21 @@ import { createCrediting } from "./crediting";
 import { UpstreamFailure } from "./errors";
 import { makeWallet, parseWalletConfig, Wallet } from "./wallet";
 import { memoryWallet, type MemoryWallet } from "./wallet-memory";
-import { paymentApp, PaymentRuntime } from "./app";
-import { refreshQuote } from "./quote-job";
+import { paymentApp, PaymentRequest } from "./app";
 import { runScheduled, syncPayments } from "./jobs";
 import { and, eq, sql } from "drizzle-orm";
-import worker from "../index";
+import { makeWorker } from "../index";
+import { Payments, RequestLog, type Connect } from "../runtime";
 
 const pg = new PGlite();
 const database = drizzle(pg, { schema });
 const close = vi.fn(async () => {});
-vi.mock("@btc-lightning-pay/db/client", () => ({ createDatabase: () => ({ database, close }) }));
+// The Worker runs on its real entry points; only the database connection is PGlite.
+const connect: Connect = () => ({
+  database: database as unknown as ReturnType<Connect>["database"],
+  close,
+});
+const worker = makeWorker(connect);
 const store = createPaymentStore(database as unknown as Database);
 const quote = vi.fn(async () => ({ rateUsd: "100000", quotedAt: new Date() }));
 /** The stored BTC quote, read past row-level security. */
@@ -87,7 +92,9 @@ const createOrder = (
 const call = (req: Request, actor?: string) =>
   paymentApp.handler(
     req,
-    Context.make(PaymentRuntime, { store, payments, intake, log, actor }).pipe(
+    Context.make(Payments, { store, crediting, payments, intake }).pipe(
+      Context.add(RequestLog, { log }),
+      Context.add(PaymentRequest, { actor }),
       Context.add(Wallet, wallet.wallet),
     ),
   );
@@ -192,9 +199,13 @@ test("the quote cron stores the Coinbase price and only the admin scope may writ
   const fetcher = vi
     .fn<typeof fetch>()
     .mockResolvedValue(Response.json({ data: { amount: "64000.12", currency: "USD" } }));
+  // The fifth minute's scheduled run stores a quote; without wallet settings its sync fails alone.
+  const quoteRun = () =>
+    runScheduled(bindings, Date.UTC(2026, 10, 19, 12, 5), { fetcher, connect });
   const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    await refreshQuote(bindings, fetcher);
+    await quoteRun();
   } finally {
     info.mockRestore();
   }
@@ -209,10 +220,10 @@ test("the quote cron stores the Coinbase price and only the admin scope may writ
       );
     }),
   ).rejects.toThrow();
-  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  errors.mockClear();
   try {
     fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
-    await refreshQuote(bindings, fetcher);
+    await quoteRun();
     expect(JSON.parse(String(errors.mock.calls[0][0]))).toMatchObject({
       operation: "refresh_quote",
       dependency: "coinbase",
@@ -947,14 +958,14 @@ test("the scheduled job releases abandoned reservations, syncs every minute and 
   const info = vi.spyOn(console, "info").mockImplementation(() => {});
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 1), fetcher);
+    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 1), { fetcher, connect });
     expect(await statusOf(`${key}-dead`)).toBeNull();
     // The request that died is refused if it wakes up: its invoice was never shown.
     expect(await stuck.finish()).toMatchObject({ error: { operation: "attach_invoice" } });
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
       "https://wallet.example/v1/payments/completed",
     ]);
-    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 5), fetcher);
+    await runScheduled(walletEnv, Date.UTC(2026, 10, 19, 12, 5), { fetcher, connect });
     expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(
       "https://api.coinbase.com/v2/prices/BTC-USD/spot",
     );

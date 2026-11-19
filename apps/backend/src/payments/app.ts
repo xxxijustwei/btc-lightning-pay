@@ -2,34 +2,31 @@ import { PaymentsApi } from "@btc-lightning-pay/api";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import type { createPaymentStore } from "./store";
 import { adminOrder, publicOrder, settlementView } from "./projection";
 import { PaymentFailure, type PaymentError } from "./errors";
-import type { OrderIntake } from "./intake";
-import { createPaymentService } from "./service";
-import { paymentTask } from "./runtime";
+import { paymentTask } from "./task";
 import { errorFields, type PaymentLog } from "./logging";
 import { errorBoundary, problem } from "./http";
 import type { Wallet } from "./wallet";
+import { Payments, RequestLog } from "../runtime";
 
-export class PaymentRuntime extends Context.Service<
-  PaymentRuntime,
-  {
-    store: ReturnType<typeof createPaymentStore>;
-    actor?: string;
-    payments: ReturnType<typeof createPaymentService>;
-    intake: OrderIntake;
-    log: PaymentLog;
-  }
->()("backend/PaymentRuntime") {}
+/** Request identity: the admin's user id once the session check has passed. */
+export class PaymentRequest extends Context.Service<PaymentRequest, { actor?: string }>()(
+  "backend/PaymentRequest",
+) {}
+type Runtime = typeof Payments.Service & { log: PaymentLog; actor?: string };
 
 const run = <A>(
   operation: string,
-  work: (runtime: typeof PaymentRuntime.Service) => Effect.Effect<A, PaymentError, Wallet>,
+  work: (runtime: Runtime) => Effect.Effect<A, PaymentError, Wallet>,
   admin = false,
 ) =>
   Effect.gen(function* () {
-    const runtime = yield* PaymentRuntime;
+    const runtime: Runtime = {
+      ...(yield* Payments),
+      log: (yield* RequestLog).log,
+      actor: (yield* PaymentRequest).actor,
+    };
     if (admin && !runtime.actor) return problem("ADMIN_REQUIRED");
     const started = Date.now();
     return yield* work(runtime).pipe(
@@ -41,11 +38,8 @@ const run = <A>(
       }),
     );
   });
-const read = <A>(
-  operation: string,
-  work: (runtime: typeof PaymentRuntime.Service) => Promise<A>,
-  admin = false,
-) => run(operation, (runtime) => paymentTask(operation, () => work(runtime)), admin);
+const read = <A>(operation: string, work: (runtime: Runtime) => Promise<A>, admin = false) =>
+  run(operation, (runtime) => paymentTask(operation, () => work(runtime)), admin);
 const dated = <A extends { createdAt: Date }>(row: A) => ({
   ...row,
   createdAt: row.createdAt.toISOString(),
