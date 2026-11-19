@@ -19,7 +19,7 @@
 
 第一阶段只有启用的管理员能通过邮箱 OTP 登录。商户和禁用账号请求验证码仍收到通用成功响应，但不会发邮件；即使取得有效验证码，会话创建也会被拒绝。`/api/me` 返回 `id/email/name/image/role`，管理 API 检查数据库身份，不再使用 `PAYMENTS_ADMIN_IDS`。
 
-禁用商户是一项操作：账号 `banned=true`、商户 `enabled=false`、撤销全部会话，在一个事务内完成。两个管理入口调用相同逻辑。恢复时同时恢复账号和收款状态，但商户仍受第一阶段禁止登录的规则约束，不会恢复旧会话。数据库在插入会话时锁定并检查账号，防止并发登录留下禁用后可复用的会话。
+禁用商户是一项操作：账号 `banned=true`、商户 `enabled=false`、撤销全部会话，在一个事务内完成，只能通过 `PATCH /api/admin/merchants/:merchantId` 执行；账号接口对商户账号返回 409 `USER_IS_MERCHANT`，管理端账号列表不为商户显示禁用按钮。修改商户名称会同时修改其一对一账号的名称。恢复时同时恢复账号和收款状态，但商户仍受第一阶段禁止登录的规则约束，不会恢复旧会话。数据库在插入会话时锁定并检查账号，防止并发登录留下禁用后可复用的会话。
 
 禁用后公开商户接口仍返回 `enabled=false`，付款前端据此显示“暂不可用”；创建新订单返回 `409 MERCHANT_DISABLED`。已经创建的订单可按原幂等键重取；已发出的 invoice 不能撤销，继续查询、入账和结算。禁用不删除历史记录。
 
@@ -34,7 +34,7 @@
 | `POST /api/admin/users`                  | `{name,email}`，只创建管理员                      | 用户对象                           |
 | `GET /api/admin/users`                   | `role? limit? offset?`，role 为 admin 或 merchant | 用户数组                           |
 | `GET /api/admin/users/:userId`           | —                                                 | 用户对象                           |
-| `PATCH /api/admin/users/:userId`         | `{banned:true}` 禁用，false 恢复                  | 用户对象；商户账号同时改变收款状态 |
+| `PATCH /api/admin/users/:userId`         | `{banned:true}` 禁用，false 恢复；仅限管理员账号  | 用户对象；商户账号返回 409         |
 | `POST /api/admin/merchants`              | `{name,email,slug}`                               | 商户对象和已创建的 userId          |
 | `GET /api/admin/merchants`               | `limit? offset?`                                  | 商户数组                           |
 | `GET /api/admin/merchants/:merchantId`   | —                                                 | 商户对象                           |
@@ -58,14 +58,14 @@
 
 ## 开发库初始化与验证
 
-本次是 greenfield 基线变更，不维护旧数据库迁移。已有业务开发库需另行重置为空库后，执行以下顺序；初始化脚本遇到已有表会拒绝执行，不自动删库。**不要重置 Breez SDK 钱包库。**
+表结构由 `packages/db/migrations/` 管理。`0000_baseline` 之前建过的业务开发库需另行重置为空库后，执行以下顺序；之后的结构变更只需再次执行 `migrate`。**不要重置 Breez SDK 钱包库。**
 
 1. 设置 `packages/db/.env` 中的业务库所有者连接 `DATABASE_ADMIN_URL`。
-2. 执行 `pnpm --filter @btc-lightning-pay/db run init`，应用 `sql/schema.sql`。
+2. 执行 `pnpm --filter @btc-lightning-pay/db run migrate`，应用全部迁移。
 3. 以数据库所有者执行 `packages/db/sql/provision-backend-role.sql`，配置 btc_backend 密码，并将该账号用于 Worker `DATABASE_URL` / Hyperdrive。
 4. 修改 `packages/db/sql/provision-user.sql` 中示例姓名、邮箱，以所有者执行，开通第一位管理员。重复执行不会转换已有账号角色。
 5. 删除环境中的旧 `PAYMENTS_ADMIN_IDS` 配置，管理员登录后通过 API 创建其他账号。
 
-Schema 源文件更新后执行 `pnpm --filter @btc-lightning-pay/db generate`；生成器将 Drizzle 表结构与 `sql/invariants.sql` 中的触发器合成单一 `schema.sql`。
+Schema 源文件更新后执行 `pnpm --filter @btc-lightning-pay/db generate --name <变更名>` 生成下一个迁移；`sql/schema.sql` 由全部迁移拼接而成，仅供测试和审阅。
 
 `pnpm test --project backend` 覆盖真实 Better Auth + PGlite 的权限、账号开户、重复冲突、禁用会话、公开字段隔离及已有收款/结算回归。设置 `PAYMENT_TEST_DATABASE_URL` 指向空的本地 `payments_test` 库，可额外验证真实 PostgreSQL 多连接并发、最后管理员保护、RLS 和大批量结算。测试拒绝非本地地址及其他库名。测试不会发真实邮件、创建真实 invoice 或执行打款。

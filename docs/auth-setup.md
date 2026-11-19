@@ -32,21 +32,23 @@
 确认连接的是本项目数据库，在仓库根目录执行：
 
 ```sh
-pnpm --filter @btc-lightning-pay/db run init
+pnpm --filter @btc-lightning-pay/db run migrate
 ```
 
-初始化只在手动执行时发生，Worker 启动不建表。命令从 `packages/db/.env` 读取所有者连接，在一个事务中执行 `packages/db/sql/schema.sql`。仅支持空数据库，已存在表时失败并回滚。greenfield 阶段重置开发业务数据库后重新初始化和开户，不维护迁移历史。不要重置 SDK 钱包数据库。
+建表只在手动执行时发生，Worker 启动不建表。命令从 `packages/db/.env` 读取所有者连接，按顺序应用 `packages/db/migrations/` 中尚未执行的迁移（每个迁移一个事务），可重复执行。`0000_baseline` 之前建过的开发库需删除重建后再执行。不要重置 SDK 钱包数据库。
+
+执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql) 时，脚本会撤销 Supabase `anon` / `authenticated` 角色对 public schema 的全部权限及默认权限。另外在 Supabase 控制台 **Project Settings → Data API** 关闭 Data API（或从 Exposed schemas 中移除 `public`）：本项目不使用它，行级安全只是防止后端自身写错代码的保护层，不应作为对外的安全边界。
 
 在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换首位管理员的邮箱和姓名后执行。SQL 固定创建 `admin` 角色；后续通过管理 API 开通管理员和商户，见 [用户管理](user-management.md)。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
 
-表全部在 `public`：`user`、`session`、`account`、`verification`。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
+认证相关表全部在 `public`：`user`、`session`、`account`、`verification`，以及限流用的 `rate_limit` 与 `otp_throttle`。`account` 是 Better Auth 标准模型，目前不启用密码或第三方登录。认证表启用 RLS，不给 `anon` / `authenticated` 配置访问策略；客户端只通过后端认证 API 访问。Better Auth cookie 也不是 Supabase JWT。
 
-用户只支持禁用和恢复，不提供删除或角色转换。禁用撤销会话，商户同时停止创建新订单；已有 invoice 继续核验入账，历史订单继续结算。最后一位启用管理员不能禁用。角色存于数据库，已移除 `PAYMENTS_ADMIN_IDS` 白名单。
+用户只支持禁用和恢复，不提供删除或角色转换。账号接口只能禁用或恢复管理员；商户账号随商户一起在商户接口中停用或恢复，停用撤销会话并停止创建新订单，已有 invoice 继续核验入账，历史订单继续结算。最后一位启用管理员不能禁用。角色存于数据库，已移除 `PAYMENTS_ADMIN_IDS` 白名单。
 
-修改 schema 后先生成并审查 SQL，再验证和执行：
+修改 schema 后先生成迁移并审查 SQL，再验证和执行：
 
 ```sh
-pnpm --filter @btc-lightning-pay/db generate
+pnpm --filter @btc-lightning-pay/db generate --name <变更名>
 pnpm test --project backend
 ```
 
@@ -64,7 +66,12 @@ Better Auth 的协议由官方库实现，路由层只开放以下能力。自�
 
 第一阶段只允许已开通且未禁用的管理员登录。商户账号、禁用账号和未开户邮箱的发送请求都返回相同成功响应，但不发送邮件、不创建账号；后端也在会话创建处拒绝商户和禁用账号，不能绕过前端直接登录。邮件服务明确报错时返回 503；请求被 Resend 接受不代表已投递到收件箱。
 
-验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。应用层请求限流已关闭，发送和验证接口不限制请求频率；邮件供应商和平台自身的配额仍适用。当前 schema 不包含 `rate_limit` 表。
+验证码为 6 位数字，5 分钟有效，哈希存储，最多 3 次错误尝试，登录成功后失效。重新发码会作废旧码并重置尝试次数，所以发码本身必须限流：
+
+- Better Auth 限流开启，计数存在数据库 `rate_limit` 表（所有 Worker 实例共享）：发码每 IP 每 10 分钟 5 次，验证码登录每 IP 每 10 分钟 10 次；`get-session` 不限流。IP 取 `cf-connecting-ip`。
+- 每个邮箱每小时最多发码 10 次（`otp_throttle`），挡住轮换 IP 的猜码；即每个邮箱每小时最多 30 次猜测。代价是被攻击期间，该管理员最多 1 小时收不到验证码。
+
+超限返回 429，登录页提示「请求过于频繁，请稍后再试」。
 
 会话 cookie 使用项目独立前缀 `btc-lightning-pay`，避免与其他 localhost 应用的默认 `better-auth` cookie 冲突。更改前缀后旧会话需重新登录，不清除其他项目的 cookie。
 
