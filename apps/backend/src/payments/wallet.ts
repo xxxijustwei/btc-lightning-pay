@@ -127,10 +127,9 @@ function httpWallet(config: WalletConfig, requestId: string | undefined, fetcher
       ),
     );
   return {
-    issueInvoice: (payload) => call((wallet) => wallet.create({ payload, headers: {} })),
-    lookup: (payload) => call((wallet) => wallet.lookup({ payload, headers: {} })),
-    completedSince: (since) =>
-      call((wallet) => wallet.completed({ payload: { since }, headers: {} })),
+    issueInvoice: (payload) => call((wallet) => wallet.create({ payload })),
+    lookup: (payload) => call((wallet) => wallet.lookup({ payload })),
+    completedSince: (since) => call((wallet) => wallet.completed({ payload: { since } })),
   } satisfies typeof Wallet.Service;
 }
 const isTransportError = (error: unknown) =>

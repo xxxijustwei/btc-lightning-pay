@@ -186,9 +186,18 @@ test("service HTTP endpoints require authentication and validate payloads", asyn
         body,
       }),
     );
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     const completed = await call("/v1/payments/completed", JSON.stringify({ since: 0 }), "bad");
     expect(completed.status).toBe(401);
+    // A rejected token is its own event, never a wallet outage.
+    const logged = error.mock.calls.map(([entry]) => JSON.parse(String(entry)));
+    expect(logged).toEqual([
+      expect.objectContaining({ event: "wallet_unauthorized", path: "/v1/payments/completed" }),
+    ]);
+    expect(JSON.stringify(logged)).not.toContain("bad");
+    // Health checks stay open.
+    expect((await app.handler(new Request("http://localhost/health"))).status).toBe(200);
     expect((await call("/v1/payments/completed", JSON.stringify({ since: 0 }))).status).toBe(200);
     for (const path of ["/v1/invoices", "/v1/payments/query"]) {
       const body = JSON.stringify({
@@ -203,7 +212,11 @@ test("service HTTP endpoints require authentication and validate payloads", asyn
       expect(response.status).toBe(200);
       expect(await response.json()).not.toHaveProperty("feeMsat");
     }
+    const events = error.mock.calls.map(([entry]) => JSON.parse(String(entry)));
+    expect(events.filter((entry) => entry.event === "wallet_unauthorized")).toHaveLength(3);
+    expect(events).not.toContainEqual(expect.objectContaining({ code: "UNAUTHORIZED" }));
   } finally {
+    error.mockRestore();
     await app.dispose();
   }
 });

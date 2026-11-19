@@ -1,7 +1,4 @@
 import { Schema } from "effect";
-export class WalletFailure extends Schema.TaggedError<WalletFailure>()("WalletFailure", {
-  code: Schema.Literals(["UNAUTHORIZED"]),
-}) {}
 export class WalletDependencyFailure extends Schema.TaggedError<WalletDependencyFailure>()(
   "WalletDependencyFailure",
   {
@@ -11,7 +8,6 @@ export class WalletDependencyFailure extends Schema.TaggedError<WalletDependency
   },
 ) {}
 export function walletErrorFields(error: unknown) {
-  if (error instanceof WalletFailure) return { code: error.code };
   if (error instanceof WalletDependencyFailure)
     return {
       code: "UPSTREAM_FAILURE",
@@ -42,4 +38,8 @@ export function logWalletAnomaly(entry: {
   requestId?: string;
 }) {
   console.error(JSON.stringify({ event: "payment_anomaly", ...entry }));
+}
+/** A request without the shared token: a misconfiguration or a probe, never a wallet outage. */
+export function logWalletUnauthorized(entry: { path: string; requestId?: string }) {
+  console.error(JSON.stringify({ event: "wallet_unauthorized", ...entry }));
 }

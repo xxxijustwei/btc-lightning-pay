@@ -1,5 +1,11 @@
 import { Context, Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware } from "effect/http-api";
+import {
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiMiddleware,
+  HttpApiSecurity,
+} from "effect/http-api";
 
 export const MerchantSlug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{2,31}$/));
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -360,6 +366,10 @@ export const WalletCompletedPage = Schema.Struct({
   /** True when the page was full and more receipts may follow `latest`. */
   more: Schema.Boolean,
 });
+/** Wallet endpoints that touch funds require the shared bearer token; health checks do not. */
+export class WalletAuth extends HttpApiMiddleware.Service<WalletAuth>()("api/WalletAuth", {
+  security: { bearer: HttpApiSecurity.bearer },
+}) {}
 export const WalletApi = HttpApi.make("LightningWalletApi").add(
   HttpApiGroup.make("wallet").add(
     HttpApiEndpoint.get("health", "/health", {
@@ -370,22 +380,19 @@ export const WalletApi = HttpApi.make("LightningWalletApi").add(
       error: errors,
     }),
     HttpApiEndpoint.post("create", "/v1/invoices", {
-      headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletRequest,
       success: WalletPayment,
       error: errors,
-    }),
+    }).middleware(WalletAuth),
     HttpApiEndpoint.post("lookup", "/v1/payments/query", {
-      headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletLookup,
       success: WalletPayment,
       error: errors,
-    }),
+    }).middleware(WalletAuth),
     HttpApiEndpoint.post("completed", "/v1/payments/completed", {
-      headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletCompletedRequest,
       success: WalletCompletedPage,
       error: errors,
-    }),
+    }).middleware(WalletAuth),
   ),
 );

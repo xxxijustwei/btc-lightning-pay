@@ -1,14 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
-import { WalletApi } from "@btc-lightning-pay/api/payments";
-import { Effect, Layer } from "effect";
+import { WalletApi, WalletAuth } from "@btc-lightning-pay/api/payments";
+import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import { HttpRouter, HttpServer } from "effect/http";
+import { HttpRouter, HttpServer, HttpServerRequest } from "effect/http";
 import { Wallet } from "./wallet.ts";
 import {
   WalletDependencyFailure,
-  WalletFailure,
   logWalletAnomaly,
   logWalletFailure,
+  logWalletUnauthorized,
   walletErrorFields,
 } from "./errors.ts";
 import { walletTask } from "./runtime.ts";
@@ -20,19 +20,45 @@ function equal(actual: string, expected: string) {
     b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-const failure = (error: unknown, requestId: string, operation: string, orderId?: string) => {
-  // A receipt that contradicts its order is answered as such, so the Worker never mistakes it for an outage.
-  if (error instanceof WalletDependencyFailure && error.reason === "mismatch") {
-    logWalletAnomaly({ requestId, operation, orderId });
-    return problem("PAYMENT_MISMATCH");
-  }
-  logWalletFailure({ requestId, operation, orderId, ...walletErrorFields(error) });
-  return problem(error instanceof WalletFailure ? error.code : "WALLET_UNAVAILABLE");
-};
-const authorize = (authorization: string | undefined, token: string) => {
-  if (!equal(authorization ?? "", `Bearer ${token}`))
-    throw new WalletFailure({ code: "UNAUTHORIZED" });
-};
+/** Checks the bearer token once for every endpoint that declares `WalletAuth`. */
+const walletAuth = (token: string) =>
+  Layer.succeed(WalletAuth, {
+    bearer: (endpoint, { credential }) =>
+      Effect.gen(function* () {
+        if (equal(Redacted.value(credential), token)) return yield* endpoint;
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        // RequestTrace is provided by the error boundary around every route.
+        const trace = yield* Effect.serviceOption(RequestTrace);
+        logWalletUnauthorized({
+          path: new URL(request.url, "http://wallet").pathname,
+          requestId: Option.getOrUndefined(trace)?.requestId,
+        });
+        return problem("UNAUTHORIZED");
+      }),
+  });
+/**
+ * Runs one wallet call: a receipt that contradicts its order answers 409, so the Worker never
+ * mistakes it for an outage; any other failure is logged and answers 503.
+ */
+const walletCall = <A>(
+  operation: string,
+  orderId: string | undefined,
+  work: (wallet: typeof Wallet.Service) => Promise<A>,
+) =>
+  Effect.gen(function* () {
+    const wallet = yield* Wallet;
+    const { requestId } = yield* RequestTrace;
+    return yield* walletTask(() => work(wallet)).pipe(
+      Effect.catch((error) => {
+        if (error instanceof WalletDependencyFailure && error.reason === "mismatch") {
+          logWalletAnomaly({ requestId, operation, orderId });
+          return Effect.succeed(problem("PAYMENT_MISMATCH"));
+        }
+        logWalletFailure({ requestId, operation, orderId, ...walletErrorFields(error) });
+        return Effect.succeed(problem("WALLET_UNAVAILABLE"));
+      }),
+    );
+  });
 export function walletRoutes(config: WalletConfig) {
   const live = HttpApiBuilder.group(WalletApi, "wallet", (handlers) =>
     handlers
@@ -45,53 +71,25 @@ export function walletRoutes(config: WalletConfig) {
           ).pipe(Effect.catch(() => Effect.succeed(problem("WALLET_UNAVAILABLE"))));
         }),
       )
-      .handle("create", ({ payload, headers }) =>
-        Effect.gen(function* () {
-          const wallet = yield* Wallet;
-          const { requestId } = yield* RequestTrace;
-          return yield* walletTask(async () => {
-            authorize(headers.authorization, config.token);
-            return await wallet.create(payload.orderId, payload.amountSat);
-          }).pipe(
-            Effect.catch((error) =>
-              Effect.succeed(failure(error, requestId, "create_invoice", payload.orderId)),
-            ),
-          );
-        }),
+      .handle("create", ({ payload }) =>
+        walletCall("create_invoice", payload.orderId, (wallet) =>
+          wallet.create(payload.orderId, payload.amountSat),
+        ),
       )
-      .handle("lookup", ({ payload, headers }) =>
-        Effect.gen(function* () {
-          const wallet = yield* Wallet;
-          const { requestId } = yield* RequestTrace;
-          return yield* walletTask(async () => {
-            authorize(headers.authorization, config.token);
-            return await wallet.find(
-              payload.orderId,
-              payload.amountSat,
-              payload.paymentHash,
-              payload.invoice,
-            );
-          }).pipe(
-            Effect.catch((error) =>
-              Effect.succeed(failure(error, requestId, "query_payment", payload.orderId)),
-            ),
-          );
-        }),
+      .handle("lookup", ({ payload }) =>
+        walletCall("query_payment", payload.orderId, (wallet) =>
+          wallet.find(payload.orderId, payload.amountSat, payload.paymentHash, payload.invoice),
+        ),
       )
-      .handle("completed", ({ payload, headers }) =>
-        Effect.gen(function* () {
-          const wallet = yield* Wallet;
-          const { requestId } = yield* RequestTrace;
-          return yield* walletTask(async () => {
-            authorize(headers.authorization, config.token);
-            return await wallet.completed(payload.since);
-          }).pipe(
-            Effect.catch((error) => Effect.succeed(failure(error, requestId, "list_completed"))),
-          );
-        }),
+      .handle("completed", ({ payload }) =>
+        walletCall("list_completed", undefined, (wallet) => wallet.completed(payload.since)),
       ),
   );
-  return HttpApiBuilder.layer(WalletApi).pipe(Layer.provide(live), Layer.provide(errorBoundary));
+  return HttpApiBuilder.layer(WalletApi).pipe(
+    Layer.provide(live),
+    Layer.provide(walletAuth(config.token)),
+    Layer.provide(errorBoundary),
+  );
 }
 export function walletWebHandler(config: WalletConfig, service: typeof Wallet.Service) {
   return HttpRouter.toWebHandler(

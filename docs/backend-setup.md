@@ -139,7 +139,7 @@ Content-Type: application/json
 
 调用方向为 Worker → wallet-service → SDK。钱包服务不回调 Worker，不写业务库，不开放发送资金接口。SDK 使用 Treasury 配置：一个长期实例、后台同步开启、60 秒同步周期、关闭跨设备同步、关闭 Spark 直接支付偏好，保持默认退出恢复数据采集。
 
-三个业务接口均要求 `Authorization: Bearer <WALLET_TOKEN>`：
+三个业务接口均要求 `Authorization: Bearer <WALLET_TOKEN>`（契约中的 `WalletAuth` middleware，`/health` 与 `/ready` 不需要）。token 不符返回 401，并记一条不含 token 的 `wallet_unauthorized` 日志，不计入 `wallet_failure`：
 
 - `POST /v1/invoices`：`{orderId, amountSat}`，生成有效期 3600 秒的 BOLT11。
 - `POST /v1/payments/query`：`{orderId, amountSat, paymentHash, invoice}`，核对 invoice 的订单说明、网络、金额、hash；只接纳 SDK 已完成的 Lightning 收款记录。
