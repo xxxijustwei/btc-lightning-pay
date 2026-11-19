@@ -62,7 +62,7 @@
 }
 ```
 
-HTTP 200 时订单和 invoice 都已保存，状态为 `pending`（同一幂等键重试可能返回已 `paid` 或 `expired` 的原订单），前端可直接展示二维码，无需再查一次。同一幂等键的另一个请求仍在开票时返回 409 `ORDER_IN_PROGRESS`（`Retry-After: 1`），付款页用同一幂等键每秒重试，最多 20 次。钱包开票失败返回 503 `WALLET_UNAVAILABLE`，不保存订单；前端停留在金额页提示重试，并复用同一幂等键。前端路由建议 `/pay/invoice/:id`，每 3 秒调用 `GET /api/public/orders/:id`，页面不可见时放缓；失败退避，不把网络失败画成未支付或已过期。`expired` 后每 15 秒查询，到期 10 分钟后停止（之后后端也不再为付款人向钱包查询，由定时同步兜底）。用 `serverTime` 校正倒计时，只有后端 `paid` 才显示成功。`expired` 后仅由用户主动新建订单，使用新幂等键。订单状态只有 `pending`、`paid`、`expired`。
+HTTP 200 时订单和 invoice 都已保存，状态为 `pending`（同一幂等键重试可能返回已 `paid` 或 `expired` 的原订单），前端可直接展示二维码，无需再查一次。同一幂等键的另一个请求仍在开票时返回 409 `ORDER_IN_PROGRESS`（`Retry-After: 1`），付款页用同一幂等键每秒重试，最多 20 次。钱包开票失败返回 503 `WALLET_UNAVAILABLE`，不保存订单；前端停留在金额页提示重试，并复用同一幂等键。付款页 `/invoice/:orderId` 每 3 秒调用 `GET /api/public/orders/:orderId`，页面不可见时放缓；失败退避，不把网络失败画成未支付或已过期。`expired` 后每 15 秒查询，到期 10 分钟后停止（之后后端也不再为付款人向钱包查询，由定时同步兜底）。用 `serverTime` 校正倒计时，只有后端 `paid` 才显示成功。`expired` 后仅由用户主动新建订单，使用新幂等键。订单状态只有 `pending`、`paid`、`expired`。
 
 公开响应不包含备注、payment hash、费用或结算信息；链接持有者可以查看本笔付款信息，不可列出商户历史。支付状态说明见 [方案](backend-phase-one.md)。Cash App 入口按参考页使用 `https://cash.app/launch/lightning/{invoice}`；这一跳转仍待真机验证。
 

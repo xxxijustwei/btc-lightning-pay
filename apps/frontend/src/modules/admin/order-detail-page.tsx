@@ -56,7 +56,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
   }
   const data = order.data;
   const merchant = names.get(data.merchantId);
-  const payLink = `${payOrigin ? payOrigin.replace(/\/$/, "") : ""}/pay/invoice/${data.id}`;
+  const payLink = `${payOrigin ? payOrigin.replace(/\/$/, "") : ""}/invoice/${data.id}`;
 
   return (
     <AdminPage

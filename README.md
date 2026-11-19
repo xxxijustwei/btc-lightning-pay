@@ -35,7 +35,7 @@ npx --yes pnpm@12.21.0 dev
 ```text
 apps/
   frontend/       平台管理端：React + TanStack Start + Tailwind CSS，管理员登录
-  pay/            付款页：/:slug 选金额、/pay/invoice/:id 付款，无需登录
+  pay/            付款页：/:slug 选金额、/invoice/:orderId 付款，无需登录
   backend/        Workers + Effect HttpApi
   wallet/        Bun + Effect HttpApi，Breez Spark SDK 平台钱包
 packages/
@@ -72,6 +72,8 @@ packages/
 两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin，例如 `https://pay.example.com`），用于显示和打开商户收款链接；未设置时只显示路径。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
 付款页的浏览器标题统一为 `Lightning Payment`。页面中的品牌标志和 favicon 共用 `apps/pay/public/payment-logo.png`。
+
+付款链接使用 `/invoice/:orderId`。从商户金额页创建订单时会附带 `?m=<slug>`。
 
 ## 技术栈与版本选择
 

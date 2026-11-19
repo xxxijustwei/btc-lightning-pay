@@ -16,7 +16,7 @@ function MerchantPayment() {
     <AmountPage
       slug={slug}
       onOrderCreated={(orderId) =>
-        void navigate({ to: "/pay/invoice/$orderId", params: { orderId }, search: { m: slug } })
+        void navigate({ to: "/invoice/$orderId", params: { orderId }, search: { m: slug } })
       }
     />
   );
