@@ -1,4 +1,4 @@
-import { ShieldCheck, Zap } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 
 /** Mobile-first frame shared by every payer screen: secure badge on top, wallet note at the bottom. */
@@ -16,7 +16,7 @@ export function PayShell({ children, footer }: { children: ReactNode; footer?: R
         <div className="mt-auto flex flex-col gap-3">
           {footer}
           <p className="flex items-center justify-center gap-1.5 text-[13px] font-bold text-pay-muted">
-            <Zap aria-hidden="true" className="size-3.5" />
+            <img src="/payment-logo.png" alt="" className="size-3.5" />
             Works with Cash App
           </p>
         </div>

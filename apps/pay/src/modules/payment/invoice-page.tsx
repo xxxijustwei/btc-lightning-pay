@@ -232,12 +232,11 @@ function InvoiceQr({ invoice }: { invoice: string }) {
       ) : (
         <Skeleton className="size-56" />
       )}
-      <span
-        aria-hidden="true"
-        className="absolute top-1/2 left-1/2 flex size-10 -translate-1/2 items-center justify-center rounded-[10px] border-4 border-white bg-pay-brand text-white"
-      >
-        <Zap className="size-[18px] fill-current" strokeWidth={1.5} />
-      </span>
+      <img
+        src="/payment-logo.png"
+        alt=""
+        className="absolute top-1/2 left-1/2 size-10 -translate-1/2 rounded-[10px] border-4 border-white"
+      />
     </div>
   );
 }

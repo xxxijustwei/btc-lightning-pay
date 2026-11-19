@@ -106,6 +106,21 @@ describe("AmountPage", () => {
     expect(screen.getByRole("button", { name: "Pay $50.00 →" })).toHaveProperty("disabled", false);
   });
 
+  it("collapses the extra amounts out of the keyboard order", async () => {
+    stubFetch({ "GET /api/public/merchants/onne": () => json(merchant()) });
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole("button", { name: "Show fewer amounts" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "$300" }).closest("[inert]")).toBeNull();
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toBe("Show more amounts");
+    expect(screen.getByRole("button", { name: "$300" }).closest("[inert]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "$75" }).closest("[inert]")).toBeNull();
+  });
+
   it("validates a custom amount before allowing payment", async () => {
     stubFetch({ "GET /api/public/merchants/onne": () => json(merchant()) });
     const user = userEvent.setup();

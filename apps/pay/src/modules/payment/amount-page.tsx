@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDollarSign, Lock, Zap } from "lucide-react";
+import { ChevronDown, CircleDollarSign, Lock } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
@@ -61,6 +61,7 @@ function AmountForm({
   // One payer submission keeps one idempotency key, so a retry never opens a second order.
   const attempt = useRef<{ cents: number; key: string } | null>(null);
   const customId = useId();
+  const moreId = useId();
   const errorId = useId();
 
   const parsed = custom.trim() === "" ? null : parseUsdAmount(custom);
@@ -88,9 +89,14 @@ function AmountForm({
     },
   });
 
+  const pick = (usd: number) => {
+    setPreset(usd);
+    setCustom("");
+    submit.reset();
+  };
+
   if (disabled) return <UnavailableScreen variant="disabled" />;
 
-  const amounts = expanded ? PRESET_AMOUNTS_USD : PRESET_AMOUNTS_USD.slice(0, COLLAPSED_COUNT);
   const submitError = submit.isError ? describeSubmitError(submit.error) : "";
   const busy = submit.isPending;
 
@@ -141,38 +147,66 @@ function AmountForm({
           <CircleDollarSign aria-hidden="true" className="size-4" />
           Select amount
         </h1>
-        <div role="group" aria-labelledby="amount-title" className="grid grid-cols-3 gap-2.5">
-          {amounts.map((usd) => {
-            const selected = custom.trim() === "" && preset === usd;
-            return (
-              <button
+        <div role="group" aria-labelledby="amount-title" className="pb-1">
+          <div className="grid grid-cols-3 gap-2.5">
+            {PRESET_AMOUNTS_USD.slice(0, COLLAPSED_COUNT).map((usd) => (
+              <PresetButton
                 key={usd}
-                type="button"
-                aria-pressed={selected}
+                usd={usd}
+                selected={custom.trim() === "" && preset === usd}
                 disabled={busy}
-                onClick={() => {
-                  setPreset(usd);
-                  setCustom("");
-                  submit.reset();
-                }}
-                className={
-                  selected
-                    ? "h-11 rounded-full border-2 border-pay-focus bg-[#f0fdf2] text-[15px] font-black text-[#157a31]"
-                    : "h-11 rounded-full border border-pay-edge bg-white text-[15px] font-black text-[#1a2232] shadow-[0_1px_0_rgba(45,177,75,0.04)] hover:border-pay-focus"
-                }
-              >
-                ${usd}
-              </button>
-            );
-          })}
+                onPick={pick}
+              />
+            ))}
+          </div>
+          {/* The extra rows open by animating their track from 0fr to 1fr. The overflow clip is
+              widened by 4px so focus rings and the selected border are not cut off. */}
+          <div
+            id={moreId}
+            className={`grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none ${
+              expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+            }`}
+          >
+            <div className="-mx-1 -mb-1 min-h-0 overflow-hidden px-1" inert={!expanded}>
+              <div className="grid grid-cols-3 gap-2.5 pt-2.5 pb-1">
+                {PRESET_AMOUNTS_USD.slice(COLLAPSED_COUNT).map((usd, index) => (
+                  <div
+                    key={usd}
+                    // Opening staggers items 30ms apart; closing is quicker and all at once.
+                    style={{ transitionDelay: expanded ? `${60 + index * 30}ms` : "0ms" }}
+                    className={`transition-[opacity,transform] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none ${
+                      expanded
+                        ? "translate-y-0 scale-100 opacity-100 duration-240"
+                        : "-translate-y-1.5 scale-[0.98] opacity-0 duration-140"
+                    }`}
+                  >
+                    <PresetButton
+                      usd={usd}
+                      selected={custom.trim() === "" && preset === usd}
+                      disabled={busy}
+                      onPick={pick}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
         <button
           type="button"
           aria-expanded={expanded}
+          aria-controls={moreId}
           onClick={() => setExpanded((value) => !value)}
-          className="h-9 rounded-full bg-pay-toggle text-[13px] font-black text-pay-text-strong"
+          className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-pay-toggle text-[13px] font-black text-pay-text-strong ${pressClass}`}
         >
-          {expanded ? "Show fewer amounts ▲" : "Show more amounts ▼"}
+          {expanded ? "Show fewer amounts" : "Show more amounts"}
+          <ChevronDown
+            aria-hidden="true"
+            strokeWidth={2.6}
+            className={`size-3.5 transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none ${
+              expanded ? "rotate-180" : ""
+            }`}
+          />
         </button>
         <div className="flex flex-col gap-1.5">
           <label htmlFor={customId} className="sr-only">
@@ -237,14 +271,43 @@ function describeSubmitError(error: Error) {
   }
 }
 
+/** Light press feedback; reduced-motion users get none. */
+const pressClass =
+  "transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100";
+
+function PresetButton({
+  usd,
+  selected,
+  disabled,
+  onPick,
+}: {
+  usd: number;
+  selected: boolean;
+  disabled: boolean;
+  onPick: (usd: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      disabled={disabled}
+      onClick={() => onPick(usd)}
+      className={`h-11 w-full rounded-full text-[15px] font-black ${pressClass} ${
+        selected
+          ? "border-2 border-pay-focus bg-[#f0fdf2] text-[#157a31]"
+          : "border border-pay-edge bg-white text-[#1a2232] shadow-[0_1px_0_rgba(45,177,75,0.04)] hover:border-pay-focus"
+      }`}
+    >
+      ${usd}
+    </button>
+  );
+}
+
 /** Static payment-method card; it needs no merchant data, so it also shows while loading. */
 function WalletCard() {
   return (
     <div className="flex flex-col items-center gap-0.5 rounded-[18px] border border-pay-line p-[22px]">
-      {/* Replace the tile with the official Cash App mark once usage is cleared. */}
-      <span className="mb-2.5 flex size-10 items-center justify-center rounded-lg bg-pay-brand text-white">
-        <Zap aria-hidden="true" className="size-6 fill-current" strokeWidth={1.5} />
-      </span>
+      <img src="/payment-logo.png" alt="" className="mb-2.5 size-10" />
       <p className="text-base font-black">Cash App</p>
       <p className="text-[13.5px] font-bold text-pay-muted">Instant</p>
     </div>

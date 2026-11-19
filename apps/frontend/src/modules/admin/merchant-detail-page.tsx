@@ -121,7 +121,7 @@ export function MerchantDetailPage({ merchantId }: { merchantId: string }) {
             <Detail label="收款链接">
               <span className="font-mono">{link}</span>
             </Detail>
-            <Detail label="登录邮箱">{data.email}</Detail>
+            <Detail label="商户邮箱">{data.email}</Detail>
             <Detail label="账号">
               <Link to="/accounts" className="underline-offset-4 hover:underline">
                 商户账号 · {data.enabled ? "正常" : "已禁用"}

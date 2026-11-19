@@ -71,6 +71,8 @@ packages/
 
 两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin，例如 `https://pay.example.com`），用于显示和打开商户收款链接；未设置时只显示路径。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
+付款页的浏览器标题统一为 `Lightning Payment`。页面中的品牌标志和 favicon 共用 `apps/pay/public/payment-logo.png`。
+
 ## 技术栈与版本选择
 
 参考 sirens 的 workspace 组织、前端 SSR 技术栈、Workers 运行时和 Effect API 架构，不复制其业务模块、云资源 ID、兼容性补丁或全局依赖覆盖。

@@ -26,7 +26,7 @@ export function validateName({ value }: { value: string }) {
 
 export function validateEmail({ value }: { value: string }) {
   const email = normalizeEmail(value);
-  if (!email) return "请填写登录邮箱。";
+  if (!email) return "请填写邮箱。";
   return isEmail(email) ? undefined : "邮箱格式不正确。";
 }
 

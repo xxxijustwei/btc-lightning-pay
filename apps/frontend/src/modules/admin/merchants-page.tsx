@@ -77,7 +77,7 @@ export function MerchantsPage() {
           cell: ({ getValue }) => `/${getValue()}`,
         }),
         helper.accessor("email", {
-          header: "登录邮箱",
+          header: "商户邮箱",
           meta: { cellClassName: "text-muted-foreground" },
         }),
         helper.accessor("enabled", {
@@ -256,7 +256,7 @@ function CreateMerchantDialog({
             ];
             return (
               <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="merchant-email">登录邮箱</FieldLabel>
+                <FieldLabel htmlFor="merchant-email">商户邮箱</FieldLabel>
                 <Input
                   id="merchant-email"
                   type="email"
