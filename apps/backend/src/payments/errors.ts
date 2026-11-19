@@ -10,7 +10,15 @@ export class StorageFailure extends Schema.TaggedError<StorageFailure>()("Storag
 }) {}
 export class UpstreamFailure extends Schema.TaggedError<UpstreamFailure>()("UpstreamFailure", {
   dependency: Schema.Literals(["coinbase", "wallet"]),
-  reason: Schema.Literals(["timeout", "network", "http", "invalid_response", "mismatch"]),
+  reason: Schema.Literals([
+    "timeout",
+    "network",
+    "http",
+    "invalid_response",
+    "mismatch",
+    /** The Worker's wallet settings are missing or unusable; no call was made. */
+    "not_configured",
+  ]),
   upstreamStatus: Schema.optional(Schema.Int),
 }) {}
 export type PaymentError = PaymentFailure | StorageFailure | UpstreamFailure;

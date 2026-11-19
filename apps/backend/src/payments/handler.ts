@@ -4,7 +4,13 @@ import { Context } from "effect";
 import { parseAuthConfig, type AuthBindings } from "../auth/config";
 import { readAdminSession } from "../auth/handler";
 import { paymentApp, PaymentRuntime } from "./app";
-import { createWalletClient, parseWalletConfig, type WalletBindings } from "./wallet-client";
+import {
+  makeWallet,
+  parseWalletConfig,
+  Wallet,
+  type WalletBindings,
+  type WalletConfig,
+} from "./wallet";
 import { createPaymentService } from "./service";
 import { errorFields, paymentLogger } from "./logging";
 import { PaymentFailure } from "./errors";
@@ -82,6 +88,7 @@ async function handleRequest(
     const path = new URL(original.url).pathname;
     const admin = path.startsWith("/api/admin/");
     let authConfig: ReturnType<typeof parseAuthConfig> | undefined;
+    let creating = false;
     if (admin) {
       try {
         authConfig = parseAuthConfig(env);
@@ -94,9 +101,14 @@ async function handleRequest(
         original.headers.get("origin") !== authConfig.url
       )
         throw new PaymentFailure({ code: "ORIGIN_REJECTED" });
-    } else if (await admitPublic(original, path, env)) {
-      // Fail fast before touching the database when invoices cannot be issued at all.
-      parseWalletConfig(env);
+    } else creating = await admitPublic(original, path, env);
+    // Reads tolerate a missing wallet setting: the Wallet fails them `not_configured`, they keep
+    // the stored state and log it. Creation fails fast, before touching the database.
+    let walletConfig: WalletConfig | undefined;
+    try {
+      walletConfig = parseWalletConfig(env);
+    } catch (error) {
+      if (creating) throw error;
     }
     const databaseUrl = env.HYPERDRIVE?.connectionString || env.DATABASE_URL;
     if (!databaseUrl) throw new PaymentFailure({ code: "PAYMENTS_NOT_CONFIGURED" });
@@ -120,23 +132,12 @@ async function handleRequest(
     requestHeaders.set("x-request-id", requestId);
     const request = await bounded(new Request(original, { headers: requestHeaders }));
     const store = createPaymentStore(resource.database, original.signal);
-    const payments = createPaymentService(
-      store,
-      quote,
-      // Reads tolerate a missing wallet setting: they keep the stored state and log it.
-      (id, amount, signal, paymentHash, invoice) =>
-        createWalletClient(parseWalletConfig(env), fetch, requestId)(
-          id,
-          amount,
-          signal,
-          paymentHash,
-          invoice,
-        ),
-      log,
-    );
+    const payments = createPaymentService(store, quote, log);
     const response = await paymentApp.handler(
       request,
-      Context.make(PaymentRuntime, { store, actor, payments, log }),
+      Context.make(PaymentRuntime, { store, actor, payments, log }).pipe(
+        Context.add(Wallet, makeWallet(walletConfig, { requestId })),
+      ),
     );
     const headers = new Headers(response.headers);
     headers.set("cache-control", "no-store");

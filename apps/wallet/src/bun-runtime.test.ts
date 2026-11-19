@@ -26,7 +26,14 @@ test("Bun loads the real SDK and serves authenticated wallet HTTP with scoped cl
     const token = "test-token-".repeat(4);
     let released = false;
     const service = Layer.effect(Wallet, Effect.acquireRelease(
-      Effect.succeed({ ready: async () => true, create: async () => null, find: async () => null }),
+      Effect.succeed({
+        ready: async () => true,
+        create: async (orderId, amountSat) => ({
+          orderId, amountSat, invoice: "lnbc100u1test", paymentHash: "a".repeat(64),
+          expiresAt: new Date().toISOString(), paidAt: null, receivedMsat: null,
+        }),
+        find: async () => { throw new Error("unused"); },
+      }),
       () => Effect.sync(() => { released = true; }),
     ));
     const app = walletRoutes({ token }).pipe(
@@ -44,7 +51,7 @@ test("Bun loads the real SDK and serves authenticated wallet HTTP with scoped cl
           body: JSON.stringify({ orderId: "12345678-1234-4234-8234-123456789abc", amountSat: 10000 }),
         });
         assert.equal((await request("Bearer invalid")).status, 401);
-        assert.equal((await request("Bearer " + token)).status, 202);
+        assert.equal((await request("Bearer " + token)).status, 200);
       });
     })));
     assert.equal(released, true);

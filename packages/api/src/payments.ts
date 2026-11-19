@@ -358,13 +358,13 @@ export const WalletApi = HttpApi.make("LightningWalletApi").add(
     HttpApiEndpoint.post("create", "/v1/invoices", {
       headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletRequest,
-      success: [WalletPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
+      success: WalletPayment,
       error: errors,
     }),
     HttpApiEndpoint.post("lookup", "/v1/payments/query", {
       headers: { authorization: Schema.optional(Schema.String) },
       payload: WalletLookup,
-      success: [WalletPayment, Schema.Null.annotate({ httpApiStatus: 202 })],
+      success: WalletPayment,
       error: errors,
     }),
     HttpApiEndpoint.post("completed", "/v1/payments/completed", {

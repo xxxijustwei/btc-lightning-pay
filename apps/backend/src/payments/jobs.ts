@@ -4,7 +4,8 @@ import { PaymentFailure } from "./errors";
 import { errorFields, paymentLogger, type PaymentLog } from "./logging";
 import { saveQuote } from "./quote-job";
 import { createPaymentStore } from "./store";
-import { createWalletLister, parseWalletConfig, type WalletLister } from "./wallet-client";
+import { Effect } from "effect";
+import { makeWallet, parseWalletConfig, type Wallet, type WalletConfig } from "./wallet";
 import type { PaymentsBindings } from "./handler";
 
 /** Re-read receipts this far before the cursor: receipt times have one-second resolution. */
@@ -17,14 +18,14 @@ export const SYNC_OVERLAP_SECONDS = 600;
  */
 export async function syncPayments(
   store: ReturnType<typeof createPaymentStore>,
-  list: WalletLister,
+  wallet: typeof Wallet.Service,
   log: PaymentLog,
 ) {
   const cursor = await store.walletCursor();
   const since = cursor
     ? Math.max(0, Math.floor(cursor.getTime() / 1000) - SYNC_OVERLAP_SECONDS)
     : 0;
-  const page = await list(since);
+  const page = await Effect.runPromise(wallet.completedSince(since));
   let paid = 0;
   for (const payment of page.payments) {
     try {
@@ -67,7 +68,8 @@ export async function runScheduled(
   scheduledTime: number,
   fetcher: typeof fetch = fetch,
 ) {
-  const log = paymentLogger(crypto.randomUUID());
+  const runId = crypto.randomUUID();
+  const log = paymentLogger(runId);
   const url = env.HYPERDRIVE?.connectionString || env.DATABASE_URL;
   if (!url) {
     log({ operation: "scheduled", code: "PAYMENTS_NOT_CONFIGURED" });
@@ -84,9 +86,14 @@ export async function runScheduled(
   };
   try {
     if (new Date(scheduledTime).getUTCMinutes() % 5 === 0) await saveQuote(store, fetcher, log);
-    await task("sync_payments", async () =>
-      syncPayments(store, createWalletLister(parseWalletConfig(env), fetcher), log),
-    );
+    let walletConfig: WalletConfig | undefined;
+    try {
+      walletConfig = parseWalletConfig(env);
+    } catch {
+      // The sync then fails alone, logged as `not_configured`.
+    }
+    const wallet = makeWallet(walletConfig, { requestId: runId, fetcher });
+    await task("sync_payments", () => syncPayments(store, wallet, log));
     await task("release_reservations", async () => {
       const released = await store.releaseAbandonedReservations();
       if (released)

@@ -9,6 +9,7 @@ import { createPaymentService } from "./service";
 import { paymentTask } from "./runtime";
 import { errorFields, type PaymentLog } from "./logging";
 import { errorBoundary, problem } from "./http";
+import type { Wallet } from "./wallet";
 
 export class PaymentRuntime extends Context.Service<
   PaymentRuntime,
@@ -22,7 +23,7 @@ export class PaymentRuntime extends Context.Service<
 
 const run = <A>(
   operation: string,
-  work: (runtime: typeof PaymentRuntime.Service) => Effect.Effect<A, PaymentError>,
+  work: (runtime: typeof PaymentRuntime.Service) => Effect.Effect<A, PaymentError, Wallet>,
   admin = false,
 ) =>
   Effect.gen(function* () {

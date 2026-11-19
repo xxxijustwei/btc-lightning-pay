@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { WalletApi } from "@btc-lightning-pay/api/payments";
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { Wallet } from "./wallet.ts";
 import {
   WalletDependencyFailure,
@@ -51,8 +51,7 @@ export function walletRoutes(config: WalletConfig) {
           const { requestId } = yield* RequestTrace;
           return yield* walletTask(async () => {
             authorize(headers.authorization, config.token);
-            const result = await wallet.create(payload.orderId, payload.amountSat);
-            return result ?? HttpServerResponse.jsonUnsafe(null, { status: 202 });
+            return await wallet.create(payload.orderId, payload.amountSat);
           }).pipe(
             Effect.catch((error) =>
               Effect.succeed(failure(error, requestId, "create_invoice", payload.orderId)),
@@ -66,13 +65,11 @@ export function walletRoutes(config: WalletConfig) {
           const { requestId } = yield* RequestTrace;
           return yield* walletTask(async () => {
             authorize(headers.authorization, config.token);
-            return (
-              (await wallet.find(
-                payload.orderId,
-                payload.amountSat,
-                payload.paymentHash,
-                payload.invoice,
-              )) ?? HttpServerResponse.jsonUnsafe(null, { status: 202 })
+            return await wallet.find(
+              payload.orderId,
+              payload.amountSat,
+              payload.paymentHash,
+              payload.invoice,
             );
           }).pipe(
             Effect.catch((error) =>

@@ -6,6 +6,8 @@ import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test";
 import { createPaymentStore } from "./store";
 import { createPaymentService } from "./service";
+import { Wallet } from "./wallet";
+import { memoryWallet } from "./wallet-memory";
 import { paymentTask } from "./runtime";
 
 type Store = ReturnType<typeof createPaymentStore>;
@@ -355,17 +357,20 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     const entered = deferred<void>(),
       quote = deferred<typeof price>();
     // The reservation is taken under the merchant lock before invoicing, so no invoice is wasted.
-    const wallet = vi.fn(async (orderId: string) => ({ ...payment(), orderId }));
+    const wallet = memoryWallet();
     const service = createPaymentService(
       createPaymentStore(clients[0].database),
       async () => {
         entered.resolve();
         return quote.promise;
       },
-      wallet,
       vi.fn(),
     );
-    const pending = Effect.runPromise(service.createOrder(slug, "delayed-quote-key", input)).then(
+    const pending = Effect.runPromise(
+      service
+        .createOrder(slug, "delayed-quote-key", input)
+        .pipe(Effect.provideService(Wallet, wallet.wallet)),
+    ).then(
       () => null,
       (error) => error,
     );
@@ -381,7 +386,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       quote.resolve(price);
     }
     expect(await pending).toMatchObject({ code: "MERCHANT_DISABLED" });
-    expect(wallet).not.toHaveBeenCalled();
+    expect(wallet.asked.issueInvoice).toBe(0);
     expect(await findOrder(clients[0].database, "delayed-quote-key")).toBeNull();
   });
   test("concurrent disable requests preserve one enabled admin", async () => {

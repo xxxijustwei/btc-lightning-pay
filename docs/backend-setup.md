@@ -145,7 +145,7 @@ Content-Type: application/json
 - `POST /v1/payments/query`：`{orderId, amountSat, paymentHash, invoice}`，核对 invoice 的订单说明、网络、金额、hash；只接纳 SDK 已完成的 Lightning 收款记录。
 - `POST /v1/payments/completed`：`{since}`（Unix 秒），返回该时刻起已完成收款的一页（最多 500 条，按时间升序）：`{payments, latest, more}`。非订单 invoice 的收款跳过；与订单不符的收款记 `payment_anomaly` 后跳过。
 
-响应为 `{orderId, amountSat, paymentHash, invoice, expiresAt, paidAt, receivedMsat}`。未到账时最后两个字段为 null。SDK 的 payment ID 与 payment hash 不混用。SDK 内部记录的 preimage、费用和钱包密钥不出现在接口或日志中。
+响应为 `{orderId, amountSat, paymentHash, invoice, expiresAt, paidAt, receivedMsat}`。未到账时最后两个字段为 null；开票和查询都直接返回 200 和这份事实，没有 202 中间态。Worker 核对返回的订单号、金额和 hash，不一致记为 `mismatch`。Worker 未配置钱包时，下单返回 `WALLET_NOT_CONFIGURED`，查询保留已存订单并在日志里记录 `reason: "not_configured"`，到账同步单独失败。SDK 的 payment ID 与 payment hash 不混用。SDK 内部记录的 preimage、费用和钱包密钥不出现在接口或日志中。
 
 单笔查询不维护全量索引：钱包从 invoice 解析出创建时间和有效期，只读取「创建前 60 秒到到期后 5 分钟」之间完成的收款，耗时与历史收款总量无关。同一 hash 出现多条记录时只让该订单返回 `PAYMENT_MISMATCH`，不影响其他订单。SDK 网络同步与这里的查询是两层不同的工作；同步故障或查询故障不会把订单标成支付失败。
 

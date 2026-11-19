@@ -1,6 +1,7 @@
-import type { WalletPayment, NewOrder, NewSettlement } from "@btc-lightning-pay/api";
+import type { NewOrder, NewSettlement } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import { PaymentFailure, UpstreamFailure, type PaymentError } from "./errors";
+import { Wallet } from "./wallet";
 import type { createPaymentStore, OrderRow } from "./store";
 import { quoteSats } from "./quote";
 import { assertSameOrder } from "./rules";
@@ -20,32 +21,22 @@ function isUsable(quote: Quote, now: number) {
   // A quote from the future means clock trouble; do not trust it either.
   return age >= -60_000 && age <= STORED_QUOTE_MAX_AGE_MS;
 }
-export type WalletClient = (
-  id: string,
-  amountSat: number,
-  signal?: AbortSignal,
-  paymentHash?: string,
-  invoice?: string,
-) => Promise<typeof WalletPayment.Type | null>;
 export function createPaymentService(
   store: ReturnType<typeof createPaymentStore>,
   quote: (signal?: AbortSignal) => Promise<Quote>,
-  wallet: WalletClient,
   log: PaymentLog,
 ) {
-  const walletFailure = (error: unknown) =>
-    error instanceof UpstreamFailure
-      ? error
-      : new UpstreamFailure({ dependency: "wallet", reason: "network" });
   /** Ask the wallet whether the invoice was paid; paid orders are final. */
   const refresh = <R extends OrderRow>(row: R) =>
     Effect.gen(function* () {
       if (row.paidAt) return row;
-      const result = yield* Effect.tryPromise({
-        try: (signal) => wallet(row.id, row.amountSat, signal, row.paymentHash, row.invoice),
-        catch: walletFailure,
+      const wallet = yield* Wallet;
+      const result = yield* wallet.lookup({
+        orderId: row.id,
+        amountSat: row.amountSat,
+        paymentHash: row.paymentHash,
+        invoice: row.invoice,
       });
-      if (!result) return row;
       const synced = yield* paymentTask("confirm_payment", () => store.sync(result));
       // Keep any joined fields (such as settlement status) the stored row does not carry.
       return { ...row, ...synced };
@@ -149,17 +140,10 @@ export function createPaymentService(
           );
           return yield* new PaymentFailure({ code: "WALLET_UNAVAILABLE" });
         });
+      const wallet = yield* Wallet;
       const payment = yield* timed(
         "invoiceMs",
-        Effect.tryPromise({
-          try: async (signal) => {
-            const result = await wallet(id, amountSat, signal);
-            if (!result)
-              throw new UpstreamFailure({ dependency: "wallet", reason: "invalid_response" });
-            return result;
-          },
-          catch: walletFailure,
-        }),
+        wallet.issueInvoice({ orderId: id, amountSat }),
       ).pipe(Effect.catch((error) => release("create_invoice", error)));
       const row = yield* timed(
         "storeMs",

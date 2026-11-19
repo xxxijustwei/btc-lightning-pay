@@ -9,13 +9,13 @@ import * as schema from "@btc-lightning-pay/db/schema";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/test";
 import { createPaymentStore } from "./store";
 import { publicOrder } from "./projection";
-import { createPaymentService, type WalletClient } from "./service";
-import { createWalletClient, createWalletLister, parseWalletConfig } from "./wallet-client";
+import { createPaymentService } from "./service";
+import { UpstreamFailure } from "./errors";
+import { makeWallet, parseWalletConfig, Wallet } from "./wallet";
+import { memoryWallet, type MemoryWallet } from "./wallet-memory";
 import { paymentApp, PaymentRuntime } from "./app";
 import { refreshQuote } from "./quote-job";
 import { runScheduled, syncPayments } from "./jobs";
-import { UpstreamFailure } from "./errors";
-import type { WalletLister } from "./wallet-client";
 import { and, eq, sql } from "drizzle-orm";
 import worker from "../index";
 
@@ -36,7 +36,7 @@ const findOrder = async (merchantId: string, key: string) =>
       .from(schema.paymentOrder)
       .where(and(eq(schema.paymentOrder.merchantId, merchantId), eq(schema.paymentOrder.key, key)))
   )[0] ?? null;
-const wallet = vi.fn<WalletClient>(async () => null);
+let wallet: MemoryWallet;
 const request = (path: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request(`http://localhost${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -44,7 +44,7 @@ const request = (path: string, body?: unknown, headers: Record<string, string> =
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const log = vi.fn();
-const payments = createPaymentService(store, quote, wallet, log);
+const payments = createPaymentService(store, quote, log);
 const createOrder = (
   merchant: string,
   key: string,
@@ -52,14 +52,17 @@ const createOrder = (
 ) =>
   // The public API creates orders by slug; tests hold merchant ids.
   Effect.runPromise(
-    payments.createOrder(
-      merchant === onne ? "onne" : merchant === other ? "other" : merchant,
-      key,
-      input,
-    ),
+    payments
+      .createOrder(merchant === onne ? "onne" : merchant === other ? "other" : merchant, key, input)
+      .pipe(Effect.provideService(Wallet, wallet.wallet)),
   );
 const call = (req: Request, actor?: string) =>
-  paymentApp.handler(req, Context.make(PaymentRuntime, { store, payments, log, actor }));
+  paymentApp.handler(
+    req,
+    Context.make(PaymentRuntime, { store, payments, log, actor }).pipe(
+      Context.add(Wallet, wallet.wallet),
+    ),
+  );
 const invoice = (id: string, amountSat = 10000) => ({
   orderId: id,
   amountSat,
@@ -108,11 +111,8 @@ beforeEach(async () => {
     )
   ).id;
   quote.mockClear();
-  wallet.mockReset();
   // Creation issues an invoice; a status query finds it still unpaid.
-  wallet.mockImplementation(async (id, amountSat, _signal, paymentHash) =>
-    paymentHash ? null : invoice(id, amountSat),
-  );
+  wallet = memoryWallet();
   close.mockClear();
 });
 afterAll(async () => {
@@ -377,14 +377,13 @@ test("public HTTP contracts validate amounts and keep internal data out of respo
   const body = Schema.decodeUnknownSync(PublicOrder)(raw);
   expect(body).toMatchObject({ status: "pending", amountSat: 10000, invoice: "lnbc100u1test" });
   expect(raw).toEqual(body);
-  wallet.mockRejectedValueOnce(new Error("secret upstream detail"));
+  wallet.failNext("issueInvoice", "network");
   const failed = await call(
     request(path, { amountUsdCents: 1000 }, { "idempotency-key": "wallet-down-key-0001" }),
   );
   expect(failed.status).toBe(503);
   expect(await failed.json()).toMatchObject({ code: "WALLET_UNAVAILABLE" });
-  expect(JSON.stringify(log.mock.calls)).not.toContain("secret upstream detail");
-  wallet.mockRejectedValueOnce(new Error("secret upstream detail"));
+  wallet.failNext("lookup", "network");
   expect(
     (
       await call(
@@ -413,32 +412,55 @@ test("admission bounds per-merchant invoice creation without charging duplicate 
       code: "RATE_LIMITED",
     });
     // A refused request never asks the wallet for an invoice.
-    expect(wallet).toHaveBeenCalledTimes(5);
+    expect(wallet.asked.issueInvoice).toBe(5);
     expect((await createOrder(onne, `${key}-0`, { amountUsdCents: 1000 })).amountSat).toBe(10000);
   } finally {
     vi.restoreAllMocks();
   }
 });
-test("Worker wallet client refuses redirects and mismatched order data", async () => {
+test("the HTTP wallet refuses redirects, mismatched order data and bodies it cannot read", async () => {
   const id = crypto.randomUUID();
   const fetcher = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { location: "https://elsewhere.example" } }),
     );
-  const client = createWalletClient(
-    parseWalletConfig({
-      WALLET_URL: "https://wallet.example",
-      WALLET_TOKEN: "g".repeat(32),
-      APP_ENV: "development",
-    }),
-    fetcher,
-  );
-  await expect(client(id, 10000)).rejects.toThrow();
+  const issue = (amountSat = 10000) =>
+    Effect.runPromise(
+      makeWallet(
+        parseWalletConfig({
+          WALLET_URL: "https://wallet.example",
+          WALLET_TOKEN: "g".repeat(32),
+          APP_ENV: "development",
+        }),
+        { fetcher },
+      ).issueInvoice({ orderId: id, amountSat }),
+    );
+  await expect(issue()).rejects.toMatchObject({ reason: "http", upstreamStatus: 302 });
+  expect(fetcher.mock.calls[0][1]?.redirect).toBe("manual");
   fetcher.mockResolvedValueOnce(Response.json(invoice(crypto.randomUUID())));
-  await expect(client(id, 10000)).rejects.toMatchObject({ reason: "mismatch" });
+  await expect(issue()).rejects.toMatchObject({ reason: "mismatch" });
   fetcher.mockResolvedValueOnce(Response.json(null, { status: 202 }));
-  expect(await client(id, 10000)).toBeNull();
+  await expect(issue()).rejects.toMatchObject({ reason: "invalid_response" });
+  fetcher.mockRejectedValueOnce(new TypeError("connection reset"));
+  await expect(issue()).rejects.toMatchObject({ reason: "network" });
+  fetcher.mockResolvedValueOnce(Response.json(invoice(id)));
+  expect(await issue()).toMatchObject({ orderId: id, amountSat: 10000 });
+});
+test("reads keep the stored order when the Worker has no wallet setting", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = await worker.fetch(request(`/api/public/orders/${row.id}`), bindings);
+    expect(await response.json()).toMatchObject({ id: row.id, status: "pending" });
+    expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+      operation: "refresh_order",
+      dependency: "wallet",
+      reason: "not_configured",
+    });
+  } finally {
+    errorLog.mockRestore();
+  }
 });
 
 test.each(["{", JSON.stringify({ amountUsdCents: -1 })])(
@@ -501,7 +523,7 @@ test("public order queries record safe upstream context and keep the stored orde
     expect((await store.getOrder(row.id)).status).toBe("pending");
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(close).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls[0][1]?.body).toBe(fetcher.mock.calls[1][1]?.body);
+    expect(fetcher.mock.calls[0][1]?.body).toEqual(fetcher.mock.calls[1][1]?.body);
   } finally {
     vi.unstubAllGlobals();
     errorLog.mockRestore();
@@ -519,23 +541,17 @@ test("concurrent requests invoice a key once and queries never recreate its invo
   for (const r of results)
     if (r.status === "rejected") expect(r.reason).toMatchObject({ code: "ORDER_IN_PROGRESS" });
   expect(created.length).toBeGreaterThan(0);
-  expect(wallet.mock.calls.filter((c) => !c[3])).toHaveLength(1);
+  expect(wallet.asked.issueInvoice).toBe(1);
   const a = await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(created.every((row) => row.id === a.id)).toBe(true);
   expect(await store.orders({ merchantId: onne }, 10, 0)).toHaveLength(1);
-  wallet.mockImplementation(async (id) => paid(id));
+  wallet.pay(a.id);
+  // The memory wallet refuses a lookup for any invoice but the one it issued.
   const response = await call(request(`/api/public/orders/${a.id}`));
   expect(await response.json()).toMatchObject({ status: "paid", invoice: a.invoice });
-  expect(wallet).toHaveBeenLastCalledWith(
-    a.id,
-    a.amountSat,
-    expect.any(AbortSignal),
-    a.paymentHash,
-    a.invoice,
-  );
-  wallet.mockClear();
+  const lookups = wallet.asked.lookup;
   await call(request(`/api/public/orders/${a.id}`));
-  expect(wallet).not.toHaveBeenCalled();
+  expect(wallet.asked.lookup).toBe(lookups);
 });
 
 test.each(["pending", "expired"])(
@@ -558,7 +574,7 @@ test.each(["pending", "expired"])(
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ status: "paid" });
       expect((await store.getOrder(row.id)).status).toBe("paid");
-      expect(fetcher.mock.calls[0][0]).toBe("https://wallet.example/v1/payments/query");
+      expect(String(fetcher.mock.calls[0][0])).toBe("https://wallet.example/v1/payments/query");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -566,18 +582,18 @@ test.each(["pending", "expired"])(
 );
 
 test("a failed invoice creation stores nothing and the same key can retry", async () => {
-  wallet.mockRejectedValueOnce(new Error("creation response lost"));
+  wallet.failNext("issueInvoice", "timeout");
   await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
     code: "WALLET_UNAVAILABLE",
   });
   expect(await findOrder(onne, key)).toBeNull();
-  wallet.mockResolvedValueOnce(null);
+  wallet.failNext("issueInvoice", "invalid_response");
   await expect(createOrder(onne, key, { amountUsdCents: 1000 })).rejects.toMatchObject({
     code: "WALLET_UNAVAILABLE",
   });
   const retry = await createOrder(onne, key, { amountUsdCents: 1000 });
   expect(retry).toMatchObject({ status: "pending", invoice: "lnbc100u1test" });
-  expect(wallet.mock.calls.filter((call) => !call[3])).toHaveLength(3);
+  expect(wallet.asked.issueInvoice).toBe(3);
 });
 
 test("merchant provisioning is atomic, keeps identity immutable and hides private fields", async () => {
@@ -732,9 +748,7 @@ test("an overpaid order is paid; the excess is recorded but never owed to the me
 test("a receipt that contradicts its order is logged as an anomaly and the order is kept", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   log.mockClear();
-  wallet.mockImplementation(async (id, amountSat, _signal, hash) =>
-    hash ? { ...paid(id), receivedMsat: 1 } : invoice(id, amountSat),
-  );
+  wallet.contradict(row.id);
   const response = await call(request(`/api/public/orders/${row.id}`));
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ status: "pending" });
@@ -746,9 +760,7 @@ test("a receipt that contradicts its order is logged as an anomaly and the order
     }),
   );
   // The wallet's own 409 is an anomaly too, never an outage verdict.
-  wallet.mockRejectedValue(
-    new UpstreamFailure({ dependency: "wallet", reason: "mismatch", upstreamStatus: 409 }),
-  );
+  wallet.failNext("lookup", "mismatch");
   expect((await call(request(`/api/public/orders/${row.id}`))).status).toBe(200);
   expect(log).toHaveBeenLastCalledWith(
     expect.objectContaining({ event: "payment_anomaly", orderId: row.id, reason: "mismatch" }),
@@ -762,46 +774,48 @@ test("payer reads stop asking the wallet ten minutes after expiry; admin reads a
     ...invoice(row.id),
     expiresAt: new Date(Date.now() - 11 * 60_000).toISOString(),
   });
-  wallet.mockClear();
   expect(await (await call(request(`/api/public/orders/${row.id}`))).json()).toMatchObject({
     status: "expired",
   });
-  expect(wallet).not.toHaveBeenCalled();
-  wallet.mockImplementation(async (id) => ({
-    ...paid(id),
-    expiresAt: new Date(Date.now() - 11 * 60_000).toISOString(),
-  }));
+  expect(wallet.asked.lookup).toBe(0);
+  wallet.pay(row.id);
   expect(await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json()).toMatchObject({
     status: "paid",
   });
-  expect(wallet).toHaveBeenCalledOnce();
+  expect(wallet.asked.lookup).toBe(1);
 });
 
 test("the payment sync credits receipts nobody polled, skips anomalies and keeps its cursor on failure", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
   const contradicted = await createOrder(onne, `${key}-2`, { amountUsdCents: 1000 });
   const latest = Math.floor(Date.now() / 1000);
-  const list = vi.fn<WalletLister>(async () => ({
-    payments: [
-      paid(row.id),
-      { ...paid(contradicted.id), receivedMsat: 1 },
-      paid(crypto.randomUUID()),
-    ],
-    latest,
-    more: false,
-  }));
+  // Receipts for an unknown order cannot come from the memory wallet, so this page is fixed.
+  const completedSince = vi.fn<(typeof Wallet.Service)["completedSince"]>(() =>
+    Effect.succeed({
+      payments: [
+        paid(row.id),
+        { ...paid(contradicted.id), receivedMsat: 1 },
+        paid(crypto.randomUUID()),
+      ],
+      latest,
+      more: false,
+    }),
+  );
+  const list = { ...wallet.wallet, completedSince };
   log.mockClear();
   const info = vi.spyOn(console, "info").mockImplementation(() => {});
   try {
     await syncPayments(store, list, log);
-    expect(list).toHaveBeenCalledWith(0);
+    expect(completedSince).toHaveBeenCalledWith(0);
     expect((await store.getOrder(row.id)).status).toBe("paid");
     expect((await store.getOrder(contradicted.id)).status).toBe("pending");
     expect(log.mock.calls.filter(([entry]) => entry.event === "payment_anomaly")).toHaveLength(2);
     // Re-reading overlapping receipts is harmless: crediting is idempotent.
     await syncPayments(store, list, log);
-    expect(list).toHaveBeenLastCalledWith(latest - 600);
-    list.mockRejectedValueOnce(new Error("wallet down"));
+    expect(completedSince).toHaveBeenLastCalledWith(latest - 600);
+    completedSince.mockReturnValueOnce(
+      Effect.fail(new UpstreamFailure({ dependency: "wallet", reason: "network" })),
+    );
     await expect(syncPayments(store, list, log)).rejects.toThrow();
     expect(await store.walletCursor()).toEqual(new Date(latest * 1000));
   } finally {
@@ -868,10 +882,10 @@ test("admission caps invoices across the platform, not only per merchant", async
     await createOrder(onne, `${key}-a${i}`, { amountUsdCents: 1000 });
     await createOrder(other, `${key}-b${i}`, { amountUsdCents: 1000 });
   }
-  await expect(
-    Effect.runPromise(payments.createOrder("third", `${key}-c0`, { amountUsdCents: 1000 })),
-  ).rejects.toMatchObject({ code: "RATE_LIMITED" });
-  expect(wallet.mock.calls.filter((c) => !c[3])).toHaveLength(10);
+  await expect(createOrder("third", `${key}-c0`, { amountUsdCents: 1000 })).rejects.toMatchObject({
+    code: "RATE_LIMITED",
+  });
+  expect(wallet.asked.issueInvoice).toBe(10);
 });
 
 test("the payer API refuses requests over the edge rate limits, keyed by IP and merchant", async () => {
@@ -879,6 +893,8 @@ test("the payer API refuses requests over the edge rate limits, keyed by IP and 
   const allowed = { limit: vi.fn(async () => ({ success: true })) };
   const ip = { "cf-connecting-ip": "203.0.113.7" };
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const fetcher = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetcher);
   try {
     const read = await worker.fetch(request("/api/public/merchants/onne", undefined, ip), {
       ...walletEnv,
@@ -897,8 +913,10 @@ test("the payer API refuses requests over the edge rate limits, keyed by IP and 
     );
     expect(create.status).toBe(429);
     expect(denied.limit).toHaveBeenLastCalledWith({ key: "203.0.113.7:onne" });
-    expect(wallet).not.toHaveBeenCalled();
+    // A refused request never reaches the wallet.
+    expect(fetcher).not.toHaveBeenCalled();
   } finally {
+    vi.unstubAllGlobals();
     error.mockRestore();
   }
 });
@@ -923,14 +941,18 @@ test("production wallet calls carry the Cloudflare Access service token", async 
     .fn<typeof fetch>()
     .mockResolvedValueOnce(Response.json({ payments: [], latest: null, more: false }))
     .mockResolvedValueOnce(Response.json({ code: "PAYMENT_MISMATCH" }, { status: 409 }));
-  await createWalletLister(config, fetcher)(5);
+  const wallet = makeWallet(config, { fetcher });
+  await Effect.runPromise(wallet.completedSince(5));
   expect(fetcher.mock.calls[0][1]?.headers).toMatchObject({
     authorization: `Bearer ${"g".repeat(32)}`,
     "cf-access-client-id": "id.access",
     "cf-access-client-secret": "access-secret",
   });
-  expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ since: 5 });
-  await expect(createWalletClient(config, fetcher)(crypto.randomUUID(), 1)).rejects.toMatchObject({
+  const body = fetcher.mock.calls[0][1]?.body as Uint8Array;
+  expect(JSON.parse(new TextDecoder().decode(body))).toEqual({ since: 5 });
+  await expect(
+    Effect.runPromise(wallet.issueInvoice({ orderId: crypto.randomUUID(), amountSat: 1 })),
+  ).rejects.toMatchObject({
     reason: "mismatch",
     upstreamStatus: 409,
   });
