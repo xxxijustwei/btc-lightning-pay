@@ -267,6 +267,38 @@ test("RLS blocks public API roles even if Supabase grants table access", async (
   }
 });
 
+test("wallet provisioning isolates wallet and business tables", async () => {
+  await pg.exec(
+    readFileSync(
+      new NodeURL("../../../../packages/db/sql/provision-backend-role.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  const provisionWallet = readFileSync(
+    new NodeURL("../../../../packages/db/sql/provision-wallet-role.sql", import.meta.url),
+    "utf8",
+  );
+  await pg.exec(provisionWallet);
+  await pg.exec(provisionWallet);
+  // SET ROLE alone does not apply login-time settings.
+  await pg.exec("SET ROLE btc_wallet; SET search_path TO breez_wallet");
+  try {
+    await pg.exec("CREATE TABLE brz_test (id integer); INSERT INTO brz_test VALUES (1)");
+    await expect(pg.exec('SELECT * FROM public."user"')).rejects.toThrow(/permission denied/);
+  } finally {
+    await pg.exec("RESET search_path; RESET ROLE");
+  }
+  await pg.exec("SET ROLE btc_backend");
+  try {
+    await pg.exec('SELECT * FROM public."user"');
+    await expect(pg.exec("SELECT * FROM breez_wallet.brz_test")).rejects.toThrow(
+      /permission denied/,
+    );
+  } finally {
+    await pg.exec("RESET ROLE");
+  }
+});
+
 test("a code is invalidated after three wrong attempts", async () => {
   await pg.exec(provision);
   const auth = makeAuth();

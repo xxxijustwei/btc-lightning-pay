@@ -30,10 +30,14 @@
 ```mermaid
 flowchart LR
   U[用户和管理前端] --> W[Cloudflare Worker]
-  W --> D[(业务 PostgreSQL)]
   W --> Q[Coinbase 报价]
   W -->|HTTPS Bearer| S[wallet-service / Breez SDK]
-  S --> P[(SDK 独立 PostgreSQL)]
+  subgraph D[Supabase PostgreSQL]
+    A[(public)]
+    P[(breez_wallet)]
+  end
+  W -->|btc_backend| A
+  S -->|btc_wallet| P
   S --> B[Breez / Spark]
 ```
 
@@ -45,6 +49,6 @@ Worker 负责商户、订单、幂等、报价、到账入账和人工结算。�
 
 ## 3. 实施与验收
 
-项目为 greenfield，仅维护全新建库 SQL，不保留历史兼容迁移。SDK 数据库由 SDK 管理，业务初始化和重置不得操作它。Breez key、seed 只放钱包服务，Worker 持有有限 HTTP 接口凭证。
+项目为 greenfield，仅维护全新建库 SQL，不保留历史兼容迁移。SDK 管理 `breez_wallet` 中的表，业务迁移管理 `public` 中的表。Breez key、seed 只放钱包服务，Worker 持有有限 HTTP 接口凭证。
 
 API、环境变量、Dokploy 和人工验收见 [后端接入与部署](backend-setup.md)。结算详见 [结算批次](settlement-batches-review.md)。前端由 Claude 负责，公开订单接口仍返回 invoice、金额、到期时间和支付状态。

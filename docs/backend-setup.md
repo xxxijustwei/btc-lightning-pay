@@ -5,24 +5,24 @@
 ## 本地初始化
 
 1. 安装 Bun 1.4.2（`bun --version` 核对），再执行 `pnpm install --frozen-lockfile`。SDK 的可选 SQLite 构建被禁用，实际使用 PostgreSQL。
-2. 准备两个独立 PostgreSQL 数据库和账号：业务数据库，以及 SDK 专用数据库。不要让 SDK 使用业务数据库；业务账号配置见 [认证配置](auth-setup.md)。
-3. 在 `packages/db/.env` 配置所有者连接 `DATABASE_ADMIN_URL`，执行 `pnpm --filter @btc-lightning-pay/db run migrate`，然后由所有者执行 `packages/db/sql/provision-backend-role.sql` 并安全设置账号密码。Worker 使用受限 `btc_backend` 账号。
-4. 表结构以 `packages/db/migrations/` 为准：`migrate` 只应用尚未记录在 `drizzle.__drizzle_migrations` 的迁移，每个迁移一个事务，可在已有数据库上重复执行。修改 `packages/db/src/schema.ts` 后执行 `pnpm --filter @btc-lightning-pay/db generate --name <变更名>` 生成下一个迁移并重建 `sql/schema.sql`（全部迁移的拼接，仅供测试和审阅）；新表需在其迁移中补 `FORCE ROW LEVEL SECURITY`，手写 SQL 用 `generate --custom --name <变更名>`。`0000_baseline` 之前建过的开发库与基线不兼容，删除并重建后再 `migrate`；不要重置 SDK 钱包库。
-5. 安全生成并备份一套新的 BIP39 助记词，将 `apps/wallet/.env.example` 复制为 `.env` 后填写。助记词不应来自文档示例、聊天或代码仓库。执行 `pnpm --filter @btc-lightning-pay/wallet identity` 离线导出公钥，将输出填入 `BREEZ_IDENTITY_PUBKEY`；服务启动会校验该身份，配置错误时拒绝启动。
+2. 准备一个项目专用的 Supabase PostgreSQL。Worker 用 `btc_backend` 访问 `public` 中的业务表，钱包用 `btc_wallet` 访问 `breez_wallet` 中的 SDK 表。关闭 Supabase Data API，详见 [认证配置](auth-setup.md)。
+3. 在 `packages/db/.env` 配置所有者连接 `DATABASE_ADMIN_URL`，执行 `pnpm --filter @btc-lightning-pay/db run migrate`。在同一个数据库中用所有者依次执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql) 和 [provision-wallet-role.sql](../packages/db/sql/provision-wallet-role.sql)，再为两个运行账号分别设置密码。钱包脚本将 `btc_wallet` 的 `search_path` 设为 `breez_wallet`，SDK 首次启动时自行建表。
+4. 业务表结构以 `packages/db/migrations/` 为准。`migrate` 只应用尚未记录在 `drizzle.__drizzle_migrations` 的迁移，每个迁移一个事务，可在已有数据库上重复执行。修改 `packages/db/src/schema.ts` 后执行 `pnpm --filter @btc-lightning-pay/db generate --name <变更名>` 生成下一个迁移并重建 `sql/schema.sql`（全部迁移的拼接，仅供测试和审阅）。新表需在其迁移中补 `FORCE ROW LEVEL SECURITY`，手写 SQL 用 `generate --custom --name <变更名>`。`0000_baseline` 之前建过的开发库与基线不兼容，在新的开发数据库中初始化业务表，保留原库及钱包数据。
+5. 首次创建钱包时，安全生成并备份 BIP39 助记词。如果已有钱包，先按 [钱包部署](#dokploy--orbstack) 中的说明迁移数据，沿用原助记词。将 `apps/wallet/.env.example` 复制为 `.env` 后填写。助记词不应来自文档示例、聊天或代码仓库。执行 `pnpm --filter @btc-lightning-pay/wallet identity` 离线导出公钥，将输出填入 `BREEZ_IDENTITY_PUBKEY`。服务启动会校验该身份，配置错误时拒绝启动。
 6. 在 Worker `.dev.vars` 中合并下表配置；不要覆盖已有认证配置。分别执行 `pnpm dev:wallet` 和 `pnpm dev:backend`。默认钱包入口为 `127.0.0.1:9741`。Wallet 的 dev/start/identity 脚本均使用 Bun，显式读取 `apps/wallet/.env`；不自动加载其他 `.env.*`。
 
-| 变量                          | 位置     | 用途                                            |
-| ----------------------------- | -------- | ----------------------------------------------- |
-| `WALLET_URL`                  | Worker   | 本地 HTTP loopback 或生产 HTTPS 钱包服务 origin |
-| `WALLET_TOKEN`                | 两端     | 至少 32 字符的随机服务间 Bearer token           |
-| `WALLET_ACCESS_CLIENT_ID`     | Worker   | Cloudflare Access service token ID；生产必填    |
-| `WALLET_ACCESS_CLIENT_SECRET` | Worker   | 同上的 secret；本地开发可留空                   |
-| `BREEZ_API_KEY`               | 钱包服务 | Breez 接入凭证                                  |
-| `BREEZ_MNEMONIC`              | 钱包服务 | 平台钱包助记词，仅本地开发使用                  |
-| `BREEZ_MNEMONIC_FILE`         | 钱包服务 | 只含助记词的文件路径（部署用，二者只能设一个）  |
-| `BREEZ_IDENTITY_PUBKEY`       | 钱包服务 | 预期的钱包身份公钥                              |
-| `BREEZ_DATABASE_URL`          | 钱包服务 | SDK 专用 PostgreSQL；远端连接配置验证证书的 TLS |
-| `WALLET_HOST` / `WALLET_PORT` | 钱包服务 | 默认 127.0.0.1 / 9741                           |
+| 变量                          | 位置     | 用途                                                                  |
+| ----------------------------- | -------- | --------------------------------------------------------------------- |
+| `WALLET_URL`                  | Worker   | 本地 HTTP loopback 或生产 HTTPS 钱包服务 origin                       |
+| `WALLET_TOKEN`                | 两端     | 至少 32 字符的随机服务间 Bearer token                                 |
+| `WALLET_ACCESS_CLIENT_ID`     | Worker   | Cloudflare Access service token ID；生产必填                          |
+| `WALLET_ACCESS_CLIENT_SECRET` | Worker   | 同上的 secret；本地开发可留空                                         |
+| `BREEZ_API_KEY`               | 钱包服务 | Breez 接入凭证                                                        |
+| `BREEZ_MNEMONIC`              | 钱包服务 | 平台钱包助记词，仅本地开发使用                                        |
+| `BREEZ_MNEMONIC_FILE`         | 钱包服务 | 只含助记词的文件路径（部署用，二者只能设一个）                        |
+| `BREEZ_IDENTITY_PUBKEY`       | 钱包服务 | 预期的钱包身份公钥                                                    |
+| `BREEZ_DATABASE_URL`          | 钱包服务 | 同一个 PostgreSQL 数据库的 `btc_wallet` 连接串，远端连接验证 TLS 证书 |
+| `WALLET_HOST` / `WALLET_PORT` | 钱包服务 | 默认 127.0.0.1 / 9741                                                 |
 
 平台不向商户扣收款手续费，订单 API 和数据库均没有费用字段。商户应收为固定 `amountSat`；`receivedMsat` 直接来自 SDK 收款金额乘 1000。完成且到账金额不少于 invoice 金额的支付即为已付；多付部分记为 `excessMsat`，归平台人工处理，不计入商户应收。到账少于 invoice 金额、或 invoice 与订单不符的记录是异常：钱包返回 409 `PAYMENT_MISMATCH`，Worker 记 `payment_anomaly` 日志，订单保持原状，付款页照常显示。Spark 收款不扣费（`fees` 为 0）；上线前在真实环境确认一次 `receivePayment` 返回的 `fee` 为 0。
 
@@ -173,7 +173,9 @@ pnpm --filter @btc-lightning-pay/backend exec wrangler hyperdrive create btc-lig
 
 ## Dokploy / OrbStack
 
-使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件；保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。只有 wallet-service 容器；SDK 数据库可使用 Dokploy 管理的 PostgreSQL 中的独立库。通过内部网络连接数据库，数据库不需要公网入口。
+使用 [Compose](../apps/wallet/deploy/compose.yaml)，构建上下文为仓库根目录，Dockerfile 为 `apps/wallet/Dockerfile`。镜像在 Node 构建阶段用 pnpm 冻结安装生产依赖，运行阶段使用固定 `oven/bun:1.4.2-debian` 镜像和非 root 用户。容器仅读取注入的环境变量，不加载 env 文件。保留 Effect Node HTTP 适配器，通过 Bun 的 Node 兼容层运行。
+
+在 Supabase 的 **Connect** 取连接串，将用户名改为 `btc_wallet`，密码使用该账号的 URL 编码密码，保留 `sslmode=require`。优先用 Direct connection，只有 IPv4 时用 Session pooler（5432），用户名为 `btc_wallet.<项目 ref>`。钱包和 Worker 的连接串指向同一个数据库。首次启动前，用钱包连接串执行 `SELECT current_user, current_schema();`，结果应为 `btc_wallet` 和 `breez_wallet`。参考 [Supabase 连接方式](https://supabase.com/docs/guides/database/connecting-to-postgres)。
 
 助记词以文件方式注入：在宿主机上创建只含助记词的文件（权限 0400，属主为容器内 `bun` 用户 uid 1000），把路径填入 `BREEZ_MNEMONIC_SECRET_FILE`，Compose 将其挂载为 `/run/secrets/breez_mnemonic` 并设置 `BREEZ_MNEMONIC_FILE`，`docker inspect` 中看不到助记词。
 
@@ -185,7 +187,9 @@ pnpm --filter @btc-lightning-pay/backend exec wrangler hyperdrive create btc-lig
 
 Bearer token 保留为第二层校验，Worker 配置相同的 `WALLET_TOKEN`。保持单副本，更新时先停止旧实例再启动新实例，不采用两个钱包实例重叠运行的滚动发布。SDK 初始化、同步和身份验证完成后才开始监听 HTTP。
 
-`GET /health` 为存活检查，`GET /ready` 检查 SDK 最近三分钟内成功同步且没有同步错误；二者都不保证外部 Lightning 路由一定可用。SDK 数据库与钱包恢复材料均需独立备份并演练恢复。删除容器不会清空 PostgreSQL，但误改助记词、数据库或删除钱包库可能破坏钱包恢复能力。业务数据库可重置不意味着钱包数据库可随意重置。
+`GET /health` 为存活检查，`GET /ready` 检查 SDK 最近三分钟内成功同步且没有同步错误；二者都不保证外部 Lightning 路由一定可用。如果已有钱包数据，切换连接串前先停止钱包实例，备份原库，并在隔离环境验证全部 SDK 表及迁移记录能恢复到 `breez_wallet`，且沿用相同的助记词和钱包身份。确认恢复后再切换，保留原库作为回退。
+
+单独备份 `breez_wallet` 和钱包恢复材料并演练恢复。Supabase 控制台恢复整个数据库会同时回滚 `public` 和 `breez_wallet`。参考 [Supabase 备份与恢复](https://supabase.com/docs/guides/platform/backups)。
 
 ## 验证与人工验收
 

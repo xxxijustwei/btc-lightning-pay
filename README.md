@@ -67,7 +67,7 @@ packages/
 
 ## 环境配置
 
-健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，全部表放在 `public`；第一阶段仅限已开通且启用的管理员登录，商户账号已建模但不开放登录。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
+健康检查无需环境变量即可启动。后端认证使用 Supabase PostgreSQL、Better Auth 和 Resend，认证表放在 `public`；第一阶段仅限已开通且启用的管理员登录，商户账号已建模但不开放登录。配置、初始化和开户步骤见 [数据库与认证接入](docs/auth-setup.md)。前端已包含两步登录页、同源代理、SSR 首页守卫和退出入口。两端各有 `.dev.vars.example`，需要本地密钥时复制为同目录的 `.dev.vars`。真实 `.env` / `.dev.vars` 已被忽略，不要把密钥放进浏览器可见的 `VITE_` 变量。
 
 两个前端的 `wrangler.jsonc` 都用 `BACKEND` 绑定后端 Worker 的 `name`；重命名时需同步修改。管理端可选设置公开变量 `VITE_PAY_ORIGIN`（付款页的 origin，例如 `https://pay.example.com`），用于显示和打开商户收款链接；未设置时只显示路径。兼容日期固定为 `2026-11-17`。未来部署需要另行配置账户与域名，本骨架没有执行远程部署。
 
@@ -141,7 +141,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页（`apps/pay`）与平台管理端页面（`apps/frontend`）已接入这些 API，尚未与真实后端和钱包联调。不包含商户独立钱包、退款或自动提现。业务库按 greenfield 全新初始化；钱包密钥和 SDK 数据库需独立备份。
+已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页（`apps/pay`）与平台管理端页面（`apps/frontend`）已接入这些 API，尚未与真实后端和钱包联调。不包含商户独立钱包、退款或自动提现。业务和钱包共用一个 Supabase PostgreSQL，分别使用 `public` 和 `breez_wallet`。单独备份钱包密钥和 `breez_wallet`，部署步骤见 [后端接入与部署](docs/backend-setup.md)。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

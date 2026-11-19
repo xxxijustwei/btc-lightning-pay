@@ -4,7 +4,7 @@
 
 ## 准备与配置顺序
 
-1. 新建本项目专用的 Supabase 数据库，保存数据库连接串。不要使用 sirens 或其他业务已经使用的数据库：本项目会在 `public` 创建通用名称的认证表。
+1. 准备本项目专用的 Supabase 数据库，保存数据库连接串。认证和业务表在 `public`，钱包 SDK 表在 `breez_wallet`。本项目会在 `public` 创建通用名称的认证表，请为其他应用使用各自的数据库。
 2. 本地开发可以不填 Resend key：`APP_ENV=development` 且登录 origin 为本机 HTTP 地址时，验证码输出到后端控制台。需要真实投递或准备生产环境时，在 Resend 添加并验证发信域名（按控制台配置 DNS），创建仅发送邮件的 API key，确定发件地址，例如 `BTC Lightning Pay <login@example.com>`。Resend 测试域名只能发往自己的邮箱，正式登录要使用已验证域名。
 3. 从仓库根目录复制示例；真实文件均已被 Git 忽略：
 
@@ -35,9 +35,9 @@
 pnpm --filter @btc-lightning-pay/db run migrate
 ```
 
-建表只在手动执行时发生，Worker 启动不建表。命令从 `packages/db/.env` 读取所有者连接，按顺序应用 `packages/db/migrations/` 中尚未执行的迁移（每个迁移一个事务），可重复执行。`0000_baseline` 之前建过的开发库需删除重建后再执行。不要重置 SDK 钱包数据库。
+业务表由上面的命令手动创建。命令从 `packages/db/.env` 读取所有者连接，按顺序应用 `packages/db/migrations/` 中尚未执行的迁移（每个迁移一个事务），可重复执行。`0000_baseline` 之前建过的开发库需在新的开发数据库中初始化，保留原库及钱包数据。
 
-执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql) 时，脚本会撤销 Supabase `anon` / `authenticated` 角色对 public schema 的全部权限及默认权限。另外在 Supabase 控制台 **Project Settings → Data API** 关闭 Data API（或从 Exposed schemas 中移除 `public`）：本项目不使用它，行级安全只是防止后端自身写错代码的保护层，不应作为对外的安全边界。
+执行 [provision-backend-role.sql](../packages/db/sql/provision-backend-role.sql) 时，脚本会撤销 Supabase `anon` / `authenticated` 角色在 `public` 中对表、序列和函数的权限及相关默认权限。在 Supabase 控制台 **Project Settings → Data API** 关闭 Data API。钱包账号和 `breez_wallet` 的配置见 [后端部署说明](backend-setup.md#本地初始化)。
 
 在 Supabase SQL Editor 打开 [provision-user.sql](../packages/db/sql/provision-user.sql)，替换首位管理员的邮箱和姓名后执行。SQL 固定创建 `admin` 角色；后续通过管理 API 开通管理员和商户，见 [用户管理](user-management.md)。SQL 会小写并去除邮箱首尾空格，重复执行不修改已有用户。`email_verified` 初始为 false，由首次正确输入验证码后更新。不要在 Supabase Authentication 页面建用户：那会写到 Supabase 自己的 `auth.users`，本项目使用的是 `public."user"`。
 

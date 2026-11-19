@@ -13,7 +13,7 @@ services:
       # The mnemonic is read from a mounted secret file, never from the environment.
       BREEZ_MNEMONIC_FILE: /run/secrets/breez_mnemonic
       BREEZ_IDENTITY_PUBKEY: ${BREEZ_IDENTITY_PUBKEY:?Set BREEZ_IDENTITY_PUBKEY}
-      BREEZ_DATABASE_URL: ${BREEZ_DATABASE_URL:?Set dedicated SDK database URL}
+      BREEZ_DATABASE_URL: ${BREEZ_DATABASE_URL:?Set the PostgreSQL URL for btc_wallet}
     secrets:
       - breez_mnemonic
     expose:
