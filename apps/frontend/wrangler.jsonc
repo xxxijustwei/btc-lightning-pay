@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "btc-lightning-pay-frontend",
+  "name": "btc-lightning-pay-admin",
   "main": "@tanstack/react-start/server-entry",
   "compatibility_date": "2026-11-17",
   // shortcut: Vite plugin 1.69.1 misroutes node:process with the new registry; recheck after upgrading.
