@@ -1,6 +1,5 @@
 import { Button } from "@btc-lightning-pay/ui/components/button";
 import { FieldGroup } from "@btc-lightning-pay/ui/components/field";
-import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
@@ -10,9 +9,10 @@ import { DataTable, DataTablePagination } from "../../components/data-table/data
 import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
 import { adminApi, type MerchantData } from "../../lib/api/admin";
 import { formatBeijing } from "../../lib/format";
-import { merchantsSearch, paginationState, paginationUpdate } from "../../lib/list-search";
+import { merchantsSearch, paginationUpdate } from "../../lib/list-search";
 import { normalizeEmail, validateEmail, validateName, validateSlug } from "../../lib/validation";
 import { EnabledBadge, ErrorState } from "./common";
+import { FilterToggle } from "./filter-toggle";
 import { FormDialog } from "./form-dialog";
 import { allMerchantsQuery } from "./queries";
 import { AdminPage } from "./shell";
@@ -20,13 +20,17 @@ import { useWriteDialog } from "./write-dialog";
 
 const helper = createAppColumnHelper<MerchantData>();
 const noRows: MerchantData[] = [];
+const statusOptions = [
+  { value: "enabled", label: "启用" },
+  { value: "disabled", label: "已停用" },
+] as const;
 
 export function MerchantsPage() {
   const merchants = useQuery(allMerchantsQuery());
   const [search, setSearch] = useQueryStates(merchantsSearch);
   const [creating, setCreating] = useState(false);
   const [toggling, setToggling] = useState<MerchantData | null>(null);
-  const pagination = paginationState(search);
+  const pagination = { pageIndex: search.page, pageSize: search.size };
 
   // The platform has at most 100 merchants: fetch once, filter and paginate in the table.
   const rows = useMemo(
@@ -121,21 +125,12 @@ export function MerchantsPage() {
     >
       <table.AppTable>
         <section aria-label="全部商户" className="flex flex-col gap-3">
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            spacing={0}
-            aria-label="状态筛选"
-            value={[search.status ?? "all"]}
-            onValueChange={(values) => {
-              const next = values[0] as "all" | "enabled" | "disabled" | undefined;
-              if (next) void setSearch({ status: next === "all" ? null : next, page: null });
-            }}
-          >
-            <ToggleGroupItem value="all">全部</ToggleGroupItem>
-            <ToggleGroupItem value="enabled">启用</ToggleGroupItem>
-            <ToggleGroupItem value="disabled">已停用</ToggleGroupItem>
-          </ToggleGroup>
+          <FilterToggle
+            label="状态筛选"
+            options={statusOptions}
+            value={search.status}
+            onChange={(status) => void setSearch({ status, page: null })}
+          />
           {merchants.isError ? (
             <ErrorState error={merchants.error} onRetry={() => void merchants.refetch()} />
           ) : (

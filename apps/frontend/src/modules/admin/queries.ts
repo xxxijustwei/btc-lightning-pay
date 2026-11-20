@@ -1,4 +1,4 @@
-import { keepPreviousData, queryOptions } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import { adminApi } from "../../lib/api/admin";
 
 /** The platform has at most 100 merchants, so one request returns them all (also used for name lookups). */
@@ -37,18 +37,6 @@ export const settlementQuery = (settlementId: string) =>
   queryOptions({
     queryKey: ["admin", "settlement", settlementId],
     queryFn: ({ signal }) => adminApi.settlement({ params: { settlementId } }, { signal }),
-  });
-
-/** One page of a settlement batch's orders; the previous page stays visible while the next loads. */
-export const settlementOrdersQuery = (
-  settlementId: string,
-  page: { limit: number; offset: number },
-) =>
-  queryOptions({
-    queryKey: ["admin", "settlement-orders", settlementId, page],
-    queryFn: ({ signal }) =>
-      adminApi.settlementOrders({ params: { settlementId }, query: page }, { signal }),
-    placeholderData: keepPreviousData,
   });
 
 /** Whether the merchant has a settlement batch awaiting payment: `total` counts them. */

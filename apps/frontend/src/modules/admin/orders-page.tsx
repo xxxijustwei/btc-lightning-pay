@@ -1,20 +1,10 @@
-import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useQueryStates } from "nuqs";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
-import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
+import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { DateRangePicker } from "../../components/date-range-picker";
-import { adminApi, type AdminOrderData, type PaymentStatusValue } from "../../lib/api/admin";
-import {
-  beijingDayEnd,
-  beijingDayStart,
-  formatBeijing,
-  formatSats,
-  formatUsd,
-  shortId,
-} from "../../lib/format";
-import { ordersSearch, paginationState, paginationUpdate } from "../../lib/list-search";
+import { adminApi, type AdminOrderData } from "../../lib/api/admin";
+import { formatBeijing, formatSats, formatUsd, shortId } from "../../lib/format";
+import { beijingRange, ordersSearch } from "../../lib/list-search";
 import {
   CopyButton,
   ErrorState,
@@ -22,7 +12,9 @@ import {
   OrderStatusBadge,
   orderStatusOptions,
 } from "./common";
+import { FilterToggle } from "./filter-toggle";
 import { MerchantCell, MerchantSelect } from "./merchant-select";
+import { useServerList } from "./server-list";
 import { AdminPage } from "./shell";
 
 const helper = createAppColumnHelper<AdminOrderData>();
@@ -90,36 +82,27 @@ const columns = helper.columns([
     ),
   }),
 ]);
-const noRows: AdminOrderData[] = [];
-
 export function OrdersPage() {
-  const [search, setSearch] = useQueryStates(ordersSearch);
-  const pagination = paginationState(search);
-  const query = {
-    // One extra row tells whether a next page exists; the API returns no total.
-    limit: search.size + 1,
-    offset: search.page * search.size,
-    merchantId: search.merchantId ?? undefined,
-    status: search.status ?? undefined,
-    from: search.from ? beijingDayStart(search.from) : undefined,
-    to: search.to ? beijingDayEnd(search.to) : undefined,
-  };
-  const orders = useQuery({
-    queryKey: ["admin", "orders", query],
-    queryFn: ({ signal }) => adminApi.orders({ query }, { signal }),
-    placeholderData: keepPreviousData,
-  });
-  const fetched = orders.data ?? noRows;
-  const hasNext = fetched.length > search.size;
-  const table = useAppTable({
+  const { table, list, search, setFilter } = useServerList({
+    search: ordersSearch,
+    key: "orders",
+    // The orders API returns a bare array, so the list probes for a next page.
+    count: "probe",
+    fetchPage: (page, filters, signal) =>
+      adminApi.orders(
+        {
+          query: {
+            ...page,
+            merchantId: filters.merchantId ?? undefined,
+            status: filters.status ?? undefined,
+            ...beijingRange(filters),
+          },
+        },
+        { signal },
+      ),
     columns,
-    data: hasNext ? fetched.slice(0, search.size) : fetched,
     getRowId: (order) => order.id,
-    manualPagination: true,
-    pageCount: search.page + (hasNext ? 2 : 1),
-    state: { pagination },
-    onPaginationChange: (updater) => void setSearch(paginationUpdate(pagination, updater)),
-    meta: { totalKnown: false, emptyMessage: "当前筛选条件下没有订单。" },
+    emptyMessage: "当前筛选条件下没有订单。",
   });
 
   return (
@@ -129,36 +112,24 @@ export function OrdersPage() {
           <div className="flex flex-wrap items-center gap-2">
             <MerchantSelect
               value={search.merchantId}
-              onChange={(merchantId) => void setSearch({ merchantId, page: null })}
+              onChange={(merchantId) => setFilter({ merchantId })}
             />
             <DateRangePicker
               from={search.from}
               to={search.to}
-              onChange={({ from, to }) => void setSearch({ from, to, page: null })}
+              onChange={({ from, to }) => setFilter({ from, to })}
             />
-            <ToggleGroup
-              variant="outline"
-              size="sm"
-              spacing={0}
-              aria-label="支付状态"
-              value={[search.status ?? "all"]}
-              onValueChange={(values) => {
-                const next = values[0] as PaymentStatusValue | "all" | undefined;
-                if (next) void setSearch({ status: next === "all" ? null : next, page: null });
-              }}
-            >
-              <ToggleGroupItem value="all">全部</ToggleGroupItem>
-              {orderStatusOptions.map((option) => (
-                <ToggleGroupItem key={option.value} value={option.value}>
-                  {option.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
+            <FilterToggle
+              label="支付状态"
+              options={orderStatusOptions}
+              value={search.status}
+              onChange={(status) => setFilter({ status })}
+            />
           </div>
-          {orders.isError ? (
-            <ErrorState error={orders.error} onRetry={() => void orders.refetch()} />
+          {list.isError ? (
+            <ErrorState error={list.error} onRetry={() => void list.refetch()} />
           ) : (
-            <DataTable loading={orders.isPending} />
+            <DataTable loading={list.isPending} />
           )}
           <DataTablePagination />
         </section>

@@ -1,5 +1,4 @@
 import { MerchantId, PaymentStatus, SettlementStatus } from "@btc-lightning-pay/api";
-import type { PaginationState, Updater } from "@tanstack/react-table";
 import { Schema } from "effect";
 import {
   createParser,
@@ -8,6 +7,8 @@ import {
   parseAsNumberLiteral,
   parseAsStringLiteral,
 } from "nuqs";
+import type { PaginationState, Updater } from "@tanstack/react-table";
+import { beijingDayEnd, beijingDayStart } from "./format";
 
 /**
  * URL state for admin lists. nuqs owns reading and writing; each route also registers
@@ -62,11 +63,15 @@ export const accountsSearch = {
 export const searchSchema = <P extends Parameters<typeof createStandardSchemaV1>[0]>(parsers: P) =>
   createStandardSchemaV1(parsers, { partialOutput: true });
 
-/** Bridges URL pagination to TanStack Table's controlled pagination state. */
-export function paginationState(search: { page: number; size: number }): PaginationState {
-  return { pageIndex: search.page, pageSize: search.size };
+/** A Beijing calendar-day range from the URL as the UTC instants the API filters take. */
+export function beijingRange(days: { from: string | null; to: string | null }) {
+  return {
+    from: days.from ? beijingDayStart(days.from) : undefined,
+    to: days.to ? beijingDayEnd(days.to) : undefined,
+  };
 }
 
+/** Next URL pagination for a table update; a new page size starts over from the first page. */
 export function paginationUpdate(
   current: PaginationState,
   updater: Updater<PaginationState>,
@@ -75,6 +80,5 @@ export function paginationUpdate(
   const size = (PAGE_SIZES as readonly number[]).includes(next.pageSize)
     ? (next.pageSize as (typeof PAGE_SIZES)[number])
     : 10;
-  // Changing the page size starts over from the first page.
   return { page: size === current.pageSize ? next.pageIndex : 0, size };
 }

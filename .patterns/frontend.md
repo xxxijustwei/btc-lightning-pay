@@ -19,14 +19,16 @@ Applies to `apps/frontend`, `apps/pay` and `packages/ui`.
 
 - Lists use TanStack Table through `components/data-table`: `table-hook.ts` registers
   the features and typed column/table meta once; pages build columns with
-  `createAppColumnHelper`, call `useAppTable`, and render `<DataTable />` and
-  `<DataTablePagination />` inside `<table.AppTable>`. Define columns at module scope
-  (or memoize them when they close over props) and keep empty-data constants stable.
-- Filters and pagination live in the URL. Declare parsers in `lib/list-search.ts`,
-  read them with `useQueryStates`, register `searchSchema(parsers)` as the route's
-  `validateSearch`, and pass pagination to the table as controlled state. Lists
-  paginate on the server with `manualPagination`; when the API returns no total,
-  fetch one extra row, derive `pageCount`, and set `meta.totalKnown = false`.
+  `createAppColumnHelper` and render `<DataTable />` and `<DataTablePagination />`
+  inside `<table.AppTable>`. Define columns at module scope (or memoize them when they
+  close over props).
+- Filters and pagination live in the URL. Declare parsers in `lib/list-search.ts` and
+  register `searchSchema(parsers)` as the route's `validateSearch`. Server-paginated
+  lists call `useServerList` (`modules/admin/server-list.ts`) with the parsers, a
+  `fetchPage`, and `count: "total"` or, when the API returns a bare array,
+  `count: "probe"`; change filters through its `setFilter`, which returns to the first
+  page. Single-choice filters use `FilterToggle`; day ranges reach the API through
+  `beijingRange`.
 - Admin writes go through `useWriteDialog` (`modules/admin/write-dialog.tsx`) and
   render as `<FormDialog {...dialogProps}>`; a confirmation is a `FormDialog` without
   fields. The hook refreshes `["admin"]` data, reports success through the shadcn

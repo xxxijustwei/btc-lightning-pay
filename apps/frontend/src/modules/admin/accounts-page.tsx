@@ -1,44 +1,31 @@
 import { Badge } from "@btc-lightning-pay/ui/components/badge";
 import { Button } from "@btc-lightning-pay/ui/components/button";
 import { FieldGroup } from "@btc-lightning-pay/ui/components/field";
-import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { useQueryStates } from "nuqs";
 import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
-import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
+import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { adminApi, type ManagedUserData } from "../../lib/api/admin";
 import { formatBeijing } from "../../lib/format";
-import { accountsSearch, paginationState, paginationUpdate } from "../../lib/list-search";
+import { accountsSearch } from "../../lib/list-search";
 import { normalizeEmail, validateEmail, validateName } from "../../lib/validation";
 import { ErrorState } from "./common";
 import { FormDialog } from "./form-dialog";
+import { FilterToggle } from "./filter-toggle";
 import { MerchantCell } from "./merchant-select";
+import { useServerList } from "./server-list";
 import { AdminPage } from "./shell";
 import { useWriteDialog } from "./write-dialog";
 
 const helper = createAppColumnHelper<ManagedUserData>();
-const noRows: ManagedUserData[] = [];
+const roleOptions = [
+  { value: "admin", label: "管理员" },
+  { value: "merchant", label: "商户" },
+] as const;
 
 export function AccountsPage({ currentUserId }: { currentUserId: string }) {
-  const [search, setSearch] = useQueryStates(accountsSearch);
   const [creating, setCreating] = useState(false);
   const [target, setTarget] = useState<ManagedUserData | null>(null);
-  const pagination = paginationState(search);
-  const query = {
-    // One extra row tells whether a next page exists; the API returns no total.
-    limit: search.size + 1,
-    offset: search.page * search.size,
-    role: search.role ?? undefined,
-  };
-  const users = useQuery({
-    queryKey: ["admin", "users", query],
-    queryFn: ({ signal }) => adminApi.users({ query }, { signal }),
-    placeholderData: keepPreviousData,
-  });
-  const fetched = users.data ?? noRows;
-  const hasNext = fetched.length > search.size;
   const columns = useMemo(
     () =>
       helper.columns([
@@ -103,15 +90,16 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
       ]),
     [currentUserId],
   );
-  const table = useAppTable({
+  const { table, list, search, setFilter } = useServerList({
+    search: accountsSearch,
+    key: "users",
+    // The users API returns a bare array, so the list probes for a next page.
+    count: "probe",
+    fetchPage: (page, filters, signal) =>
+      adminApi.users({ query: { ...page, role: filters.role ?? undefined } }, { signal }),
     columns,
-    data: hasNext ? fetched.slice(0, search.size) : fetched,
     getRowId: (user) => user.id,
-    manualPagination: true,
-    pageCount: search.page + (hasNext ? 2 : 1),
-    state: { pagination },
-    onPaginationChange: (updater) => void setSearch(paginationUpdate(pagination, updater)),
-    meta: { totalKnown: false, emptyMessage: "没有账号。" },
+    emptyMessage: "没有账号。",
   });
 
   return (
@@ -127,25 +115,16 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
     >
       <table.AppTable>
         <section aria-label="账号列表" className="flex flex-col gap-3">
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            spacing={0}
-            aria-label="角色"
-            value={[search.role ?? "all"]}
-            onValueChange={(values) => {
-              const next = values[0] as "all" | "admin" | "merchant" | undefined;
-              if (next) void setSearch({ role: next === "all" ? null : next, page: null });
-            }}
-          >
-            <ToggleGroupItem value="all">全部</ToggleGroupItem>
-            <ToggleGroupItem value="admin">管理员</ToggleGroupItem>
-            <ToggleGroupItem value="merchant">商户</ToggleGroupItem>
-          </ToggleGroup>
-          {users.isError ? (
-            <ErrorState error={users.error} onRetry={() => void users.refetch()} />
+          <FilterToggle
+            label="角色"
+            options={roleOptions}
+            value={search.role}
+            onChange={(role) => setFilter({ role })}
+          />
+          {list.isError ? (
+            <ErrorState error={list.error} onRetry={() => void list.refetch()} />
           ) : (
-            <DataTable loading={users.isPending} />
+            <DataTable loading={list.isPending} />
           )}
           <DataTablePagination />
         </section>

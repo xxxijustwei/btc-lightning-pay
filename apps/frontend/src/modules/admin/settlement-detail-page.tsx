@@ -12,18 +12,18 @@ import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, CircleAlert } from "lucide-react";
-import { useQueryStates } from "nuqs";
 import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
-import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
+import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { adminApi, type SettlementData } from "../../lib/api/admin";
 import { formatBeijing, formatSats, shortId } from "../../lib/format";
-import { paginationParsers, paginationState, paginationUpdate } from "../../lib/list-search";
+import { paginationParsers } from "../../lib/list-search";
 import { validateProof, validateReason } from "../../lib/validation";
 import { Detail, ErrorState, SettlementStatusBadge } from "./common";
 import { FormDialog } from "./form-dialog";
 import { useMerchantNames } from "./merchant-select";
-import { allAdminsQuery, settlementOrdersQuery, settlementQuery } from "./queries";
+import { allAdminsQuery, settlementQuery } from "./queries";
+import { useServerList } from "./server-list";
 import { AdminPage } from "./shell";
 import { useWriteDialog } from "./write-dialog";
 
@@ -159,13 +159,8 @@ export function SettlementDetailPage({ settlementId }: { settlementId: string })
 
 type SettlementItem = Awaited<ReturnType<typeof adminApi.settlementOrders>>["items"][number];
 const itemHelper = createAppColumnHelper<SettlementItem>();
-const noItems: SettlementItem[] = [];
 
 function SettlementItems({ settlement }: { settlement: SettlementData }) {
-  const [search, setSearch] = useQueryStates(paginationParsers);
-  const pagination = paginationState(search);
-  const query = { limit: search.size, offset: search.page * search.size };
-  const items = useQuery(settlementOrdersQuery(settlement.id, query));
   const columns = useMemo(
     () =>
       itemHelper.columns([
@@ -195,15 +190,18 @@ function SettlementItems({ settlement }: { settlement: SettlementData }) {
       ]),
     [settlement.amountSat],
   );
-  const table = useAppTable({
+  const { table, list: items } = useServerList({
+    search: paginationParsers,
+    key: ["settlement-orders", settlement.id],
+    count: "total",
+    fetchPage: (page, _filters, signal) =>
+      adminApi.settlementOrders(
+        { params: { settlementId: settlement.id }, query: page },
+        { signal },
+      ),
     columns,
-    data: items.data?.items ?? noItems,
     getRowId: (item) => item.orderId,
-    manualPagination: true,
-    rowCount: items.data?.total ?? settlement.orderCount,
-    state: { pagination },
-    onPaginationChange: (updater) => void setSearch(paginationUpdate(pagination, updater)),
-    meta: { emptyMessage: "没有订单。" },
+    emptyMessage: "没有订单。",
   });
   return (
     <Card>

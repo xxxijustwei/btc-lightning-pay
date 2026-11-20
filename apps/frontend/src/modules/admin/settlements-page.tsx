@@ -1,23 +1,16 @@
 import { Button } from "@btc-lightning-pay/ui/components/button";
-import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
-import { useQueryStates } from "nuqs";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
-import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
+import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { DateRangePicker } from "../../components/date-range-picker";
-import { adminApi, type SettlementData, type SettlementStatusValue } from "../../lib/api/admin";
-import {
-  beijingDayEnd,
-  beijingDayStart,
-  formatBeijing,
-  formatSats,
-  shortId,
-} from "../../lib/format";
-import { paginationState, paginationUpdate, settlementsSearch } from "../../lib/list-search";
+import { adminApi, type SettlementData } from "../../lib/api/admin";
+import { formatBeijing, formatSats, shortId } from "../../lib/format";
+import { beijingRange, settlementsSearch } from "../../lib/list-search";
 import { ErrorState, SettlementStatusBadge, settlementStatusOptions } from "./common";
+import { FilterToggle } from "./filter-toggle";
 import { MerchantCell, MerchantSelect } from "./merchant-select";
+import { useServerList } from "./server-list";
 import { AdminPage } from "./shell";
 
 const helper = createAppColumnHelper<SettlementData>();
@@ -83,33 +76,27 @@ export const settlementColumns = helper.columns([
     },
   }),
 ]);
-const noRows: SettlementData[] = [];
 
 export function SettlementsPage() {
-  const [search, setSearch] = useQueryStates(settlementsSearch);
-  const pagination = paginationState(search);
-  const query = {
-    limit: search.size,
-    offset: search.page * search.size,
-    merchantId: search.merchantId ?? undefined,
-    status: search.status ?? undefined,
-    from: search.from ? beijingDayStart(search.from) : undefined,
-    to: search.to ? beijingDayEnd(search.to) : undefined,
-  };
-  const settlements = useQuery({
-    queryKey: ["admin", "settlements", query],
-    queryFn: ({ signal }) => adminApi.settlements({ query }, { signal }),
-    placeholderData: keepPreviousData,
-  });
-  const table = useAppTable({
+  const { table, list, search, setFilter } = useServerList({
+    search: settlementsSearch,
+    key: "settlements",
+    count: "total",
+    fetchPage: (page, filters, signal) =>
+      adminApi.settlements(
+        {
+          query: {
+            ...page,
+            merchantId: filters.merchantId ?? undefined,
+            status: filters.status ?? undefined,
+            ...beijingRange(filters),
+          },
+        },
+        { signal },
+      ),
     columns: settlementColumns,
-    data: settlements.data?.items ?? noRows,
     getRowId: (settlement) => settlement.id,
-    manualPagination: true,
-    rowCount: settlements.data?.total ?? 0,
-    state: { pagination },
-    onPaginationChange: (updater) => void setSearch(paginationUpdate(pagination, updater)),
-    meta: { emptyMessage: "当前筛选条件下没有结算单。" },
+    emptyMessage: "当前筛选条件下没有结算单。",
   });
 
   return (
@@ -128,38 +115,26 @@ export function SettlementsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <MerchantSelect
               value={search.merchantId}
-              onChange={(merchantId) => void setSearch({ merchantId, page: null })}
+              onChange={(merchantId) => setFilter({ merchantId })}
             />
             <DateRangePicker
               label="生成时间"
               showLabel
               from={search.from}
               to={search.to}
-              onChange={({ from, to }) => void setSearch({ from, to, page: null })}
+              onChange={({ from, to }) => setFilter({ from, to })}
             />
-            <ToggleGroup
-              variant="outline"
-              size="sm"
-              spacing={0}
-              aria-label="状态"
-              value={[search.status ?? "all"]}
-              onValueChange={(values) => {
-                const next = values[0] as SettlementStatusValue | "all" | undefined;
-                if (next) void setSearch({ status: next === "all" ? null : next, page: null });
-              }}
-            >
-              <ToggleGroupItem value="all">全部</ToggleGroupItem>
-              {settlementStatusOptions.map((option) => (
-                <ToggleGroupItem key={option.value} value={option.value}>
-                  {option.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
+            <FilterToggle
+              label="状态"
+              options={settlementStatusOptions}
+              value={search.status}
+              onChange={(status) => setFilter({ status })}
+            />
           </div>
-          {settlements.isError ? (
-            <ErrorState error={settlements.error} onRetry={() => void settlements.refetch()} />
+          {list.isError ? (
+            <ErrorState error={list.error} onRetry={() => void list.refetch()} />
           ) : (
-            <DataTable loading={settlements.isPending} />
+            <DataTable loading={list.isPending} />
           )}
           <DataTablePagination />
         </section>

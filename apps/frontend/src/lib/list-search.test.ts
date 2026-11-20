@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { paginationState, paginationUpdate } from "./list-search";
+import { beijingRange, paginationUpdate } from "./list-search";
 
 describe("list pagination state", () => {
-  it("maps the 0-based page index to table state", () => {
-    expect(paginationState({ page: 2, size: 20 })).toEqual({ pageIndex: 2, pageSize: 20 });
-  });
-
   it("keeps the page when only the page changes", () => {
     const current = { pageIndex: 0, pageSize: 10 };
     expect(paginationUpdate(current, (state) => ({ ...state, pageIndex: 3 }))).toEqual({
@@ -25,5 +21,21 @@ describe("list pagination state", () => {
   it("falls back to 10 rows for an unsupported page size", () => {
     const current = { pageIndex: 0, pageSize: 10 };
     expect(paginationUpdate(current, { pageIndex: 0, pageSize: 25 }).size).toBe(10);
+  });
+});
+
+describe("beijingRange", () => {
+  it("sends a Beijing day range as UTC instants, with an exclusive end", () => {
+    expect(beijingRange({ from: "2026-11-20", to: "2026-11-21" })).toEqual({
+      from: "2026-11-19T16:00:00.000Z",
+      to: "2026-11-21T16:00:00.000Z",
+    });
+  });
+
+  it("leaves out an open end", () => {
+    expect(beijingRange({ from: null, to: "2026-11-20" })).toEqual({
+      from: undefined,
+      to: "2026-11-20T16:00:00.000Z",
+    });
   });
 });
