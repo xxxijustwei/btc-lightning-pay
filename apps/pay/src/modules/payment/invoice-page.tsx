@@ -1,42 +1,11 @@
-import { useQuery, type Query } from "@tanstack/react-query";
 import { Check, Info, Lock, RotateCcw, Timer, WifiOff, Zap } from "lucide-react";
 import QRCode from "qrcode";
 import { useEffect, useState, type ReactNode } from "react";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { formatCountdown, formatUsd } from "../../lib/amount";
-import {
-  PublicApiError,
-  orderQueryKey,
-  publicApi,
-  type PublicOrderData,
-} from "../../lib/public-api";
 import { PayShell, primaryActionClass } from "./pay-shell";
+import { useOrderStatus, useRemaining } from "./order-status";
 import { UnavailableScreen } from "./unavailable-screen";
-
-const ACTIVE_POLL_MS = 3_000;
-const HIDDEN_POLL_MS = 15_000;
-const EXPIRED_POLL_MS = 15_000;
-const MAX_BACKOFF_MS = 30_000;
-/** The backend stops asking the wallet this long after expiry, so polling stops too. */
-export const POLL_AFTER_EXPIRY_MS = 10 * 60_000;
-
-/** Poll fast while the payer is looking, slow down in the background, back off on failures. */
-export function orderPollInterval(query: Query<PublicOrderData, Error>): number | false {
-  const { data, error, fetchFailureCount } = query.state;
-  if (error instanceof PublicApiError && error.code === "ORDER_NOT_FOUND") return false;
-  if (fetchFailureCount > 0)
-    return Math.min(ACTIVE_POLL_MS * 2 ** fetchFailureCount, MAX_BACKOFF_MS);
-  if (data?.status === "paid") return false;
-  if (data?.status === "expired") {
-    // Measured on the server clock, which the response carries.
-    const skew = Date.parse(data.serverTime) - query.state.dataUpdatedAt;
-    const expired = Date.now() + skew - Date.parse(data.expiresAt);
-    return expired > POLL_AFTER_EXPIRY_MS ? false : EXPIRED_POLL_MS;
-  }
-  if (typeof document !== "undefined" && document.visibilityState === "hidden")
-    return HIDDEN_POLL_MS;
-  return ACTIVE_POLL_MS;
-}
 
 export function InvoicePage({
   orderId,
@@ -46,55 +15,37 @@ export function InvoicePage({
   /** Slug of the merchant link the payer came from, when known. */
   merchantSlug?: string;
 }) {
-  const newInvoiceHref = merchantSlug ? `/${merchantSlug}` : undefined;
-  const order = useQuery({
-    queryKey: orderQueryKey(orderId),
-    queryFn: ({ signal }) => publicApi.order({ params: { orderId } }, { signal }),
-    // The amount page seeds a fresh order; don't fetch it again on arrival, the poll takes over.
-    staleTime: ACTIVE_POLL_MS,
-    refetchInterval: orderPollInterval,
-    refetchIntervalInBackground: true,
-    retry: false,
-  });
-
-  if (order.isPending) return <LoadingView />;
-  if (!order.data) {
-    if (order.error instanceof PublicApiError && order.error.code === "ORDER_NOT_FOUND") {
+  const status = useOrderStatus(orderId);
+  switch (status.kind) {
+    case "loading":
+      return <LoadingView />;
+    case "notFound":
       return <UnavailableScreen variant="notfound" />;
-    }
-    return <UnavailableScreen variant="offline" onRetry={() => void order.refetch()} />;
-  }
-
-  const data = order.data;
-  // A failed refresh keeps the last known order; the banner says we're retrying, not that payment failed.
-  const reconnecting = order.isError;
-  const clockOffset = Date.parse(data.serverTime) - order.dataUpdatedAt;
-
-  switch (data.status) {
+    case "offline":
+      return <UnavailableScreen variant="offline" onRetry={status.retry} />;
     case "pending":
       return (
         <PendingView
-          amountUsdCents={data.amountUsdCents}
-          invoice={data.invoice}
-          expiresAt={data.expiresAt}
-          clockOffset={clockOffset}
-          reconnecting={reconnecting}
+          amountUsdCents={status.order.amountUsdCents}
+          invoice={status.order.invoice}
+          deadline={status.deadline}
+          reconnecting={status.reconnecting}
         />
       );
     case "paid":
       return (
         <PaidView
-          amountUsdCents={data.amountUsdCents}
-          orderId={data.id}
+          amountUsdCents={status.order.amountUsdCents}
+          orderId={status.order.id}
           merchantSlug={merchantSlug}
         />
       );
     case "expired":
       return (
         <ExpiredView
-          amountUsdCents={data.amountUsdCents}
-          newInvoiceHref={newInvoiceHref}
-          reconnecting={reconnecting}
+          amountUsdCents={status.order.amountUsdCents}
+          newInvoiceHref={merchantSlug ? `/${merchantSlug}` : undefined}
+          reconnecting={status.reconnecting}
         />
       );
   }
@@ -164,18 +115,16 @@ function LoadingView() {
 function PendingView({
   amountUsdCents,
   invoice,
-  expiresAt,
-  clockOffset,
+  deadline,
   reconnecting,
 }: {
   amountUsdCents: number;
   invoice: string;
-  expiresAt: string;
-  clockOffset: number;
+  /** Invoice expiry on this device's clock. */
+  deadline: number;
   reconnecting: boolean;
 }) {
-  const now = useNow();
-  const remaining = Date.parse(expiresAt) - (now + clockOffset);
+  const remaining = useRemaining(deadline);
   return (
     <PayShell
       footer={
@@ -389,13 +338,4 @@ function ExpiredView({
       </div>
     </PayShell>
   );
-}
-
-function useNow() {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  return now;
 }

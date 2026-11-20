@@ -1,6 +1,4 @@
-import type { Query } from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { orderPollInterval, POLL_AFTER_EXPIRY_MS } from "../modules/payment/invoice-page";
 import { publicApi, PublicApiError, type PublicOrderData } from "./public-api";
 
 const order = (expiresAt: number, status: PublicOrderData["status"]): PublicOrderData => ({
@@ -16,17 +14,6 @@ const order = (expiresAt: number, status: PublicOrderData["status"]): PublicOrde
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
-});
-
-test("an expired order is polled until ten minutes past expiry, then polling stops", () => {
-  const query = (data: PublicOrderData) =>
-    ({
-      state: { data, error: null, fetchFailureCount: 0, dataUpdatedAt: Date.now() },
-    }) as unknown as Query<PublicOrderData, Error>;
-  expect(orderPollInterval(query(order(Date.now() - 60_000, "expired")))).toBe(15_000);
-  expect(
-    orderPollInterval(query(order(Date.now() - POLL_AFTER_EXPIRY_MS - 1_000, "expired"))),
-  ).toBe(false);
 });
 
 const MERCHANT = {
