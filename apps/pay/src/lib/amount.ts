@@ -1,4 +1,4 @@
-import { UsdCents } from "@btc-lightning-pay/api";
+import { UsdCents } from "@btc-lightning-pay/api/schemas";
 import { Schema } from "effect";
 
 export const PRESET_AMOUNTS_USD = [10, 15, 20, 25, 50, 75, 100, 150, 200, 250, 300] as const;

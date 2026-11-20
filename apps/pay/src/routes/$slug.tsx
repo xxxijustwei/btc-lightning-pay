@@ -1,11 +1,14 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
-import { AmountPage } from "../modules/payment/amount-page";
+import { AmountPage, merchantQueryOptions } from "../modules/payment/amount-page";
 import { isMerchantSlug } from "../lib/slug";
 
 export const Route = createFileRoute("/$slug")({
   beforeLoad: ({ params }) => {
     if (!isMerchantSlug(params.slug)) throw notFound();
   },
+  // The first page arrives with the merchant; a failure is left for the page to show and retry.
+  loader: ({ context, params }) =>
+    context.queryClient.prefetchQuery({ ...merchantQueryOptions(params.slug), retry: false }),
   component: MerchantPayment,
 });
 

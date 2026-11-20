@@ -1,8 +1,8 @@
-import { PaymentProblem, type PaymentErrorCode } from "@btc-lightning-pay/api";
+import { PaymentProblem, type PaymentErrorCode } from "@btc-lightning-pay/api/schemas";
 import { Schema } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 
-/** Failures the browser detects itself, beside the contract's `PaymentErrorCode`. */
+/** Failures the caller detects itself, beside the contract's `PaymentErrorCode`. */
 export type ClientErrorCode = "NETWORK" | "TIMEOUT" | "UNEXPECTED_RESPONSE";
 export type PublicApiErrorCode = PaymentErrorCode | ClientErrorCode;
 
@@ -22,8 +22,9 @@ export class PublicApiError extends Error {
   }
 }
 
-const TIMEOUT_MS = 15_000;
-const failure = (code: PublicApiErrorCode, status: number) =>
+/** How long the backend may take to answer one call. */
+export const BACKEND_TIMEOUT_MS = 15_000;
+export const failure = (code: PublicApiErrorCode, status: number) =>
   new PublicApiError(
     code,
     status === 0 || status === 429 || status >= 500,
@@ -31,6 +32,8 @@ const failure = (code: PublicApiErrorCode, status: number) =>
   );
 
 type Endpoint = HttpApiEndpoint.Top;
+/** Sends one contract request, addressed by path, and resolves with the backend's response. */
+export type Send = (path: string, init: RequestInit) => Promise<Response>;
 type Field<S> = [S] extends [never] ? never : S extends Schema.Top ? S["Type"] : never;
 /** Query fields the contract keeps as strings also accept numbers; they are sent as text. */
 type QueryInput<Q> = {
@@ -97,7 +100,12 @@ function decodeSuccess(endpoint: Endpoint, body: unknown) {
 
 const isProblem = Schema.is(PaymentProblem);
 
-async function call(endpoint: Endpoint, input: Record<string, unknown> = {}, signal?: AbortSignal) {
+async function call(
+  send: Send,
+  endpoint: Endpoint,
+  input: Record<string, unknown> = {},
+  signal?: AbortSignal,
+) {
   const query = input.query as Record<string, unknown> | undefined;
   const target = url(
     endpoint,
@@ -121,13 +129,13 @@ async function call(endpoint: Endpoint, input: Record<string, unknown> = {}, sig
   const timeout = new AbortController();
   const timer = setTimeout(
     () => timeout.abort(new DOMException("The request timed out.", "TimeoutError")),
-    TIMEOUT_MS,
+    BACKEND_TIMEOUT_MS,
   );
   const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
   let response: Response;
   let text: string;
   try {
-    response = await fetch(target, {
+    response = await send(target, {
       method: endpoint.method,
       headers,
       body: payload === undefined ? undefined : JSON.stringify(payload),
@@ -154,12 +162,13 @@ async function call(endpoint: Endpoint, input: Record<string, unknown> = {}, sig
 /** Builds a typed caller for every endpoint of a contract group, keyed by the contract's names. */
 export function contractClient<const Endpoints extends Record<string, HttpApiEndpoint.Constraint>>(
   endpoints: Endpoints,
+  send: Send,
 ): ContractClient<Endpoints> {
   return Object.fromEntries(
     Object.entries(endpoints).map(([name, endpoint]) => [
       name,
       (input?: Record<string, unknown>, options?: { signal?: AbortSignal }) =>
-        call(endpoint as unknown as Endpoint, input, options?.signal),
+        call(send, endpoint as unknown as Endpoint, input, options?.signal),
     ]),
   ) as unknown as ContractClient<Endpoints>;
 }

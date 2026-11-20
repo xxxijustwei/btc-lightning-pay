@@ -12,10 +12,14 @@ Applies to `packages/api`, backend HTTP handlers, and frontend API consumers/ada
 - Apps implement handlers and map failures into intentional HTTP responses. Avoid
   leaking internal exception details or treating failed requests as successful data.
 
-Browser apps call `PaymentsApi` through their own `contract-client.ts`, which takes
-paths, input encoding, and response decoding from the contract
-([ADR-0001](../docs/adr/0001-browser-adapters-derive-from-contract.md)). Pages branch
-on an error's `code`, `retryable`, and `outcomeUnknown`, never on HTTP status.
+Apps call `PaymentsApi` through their own `contract-client.ts`, which takes paths,
+input encoding, and response decoding from the contract
+([ADR-0001](../docs/adr/0001-browser-adapters-derive-from-contract.md)). The admin
+frontend runs it in the browser behind a proxy. The payer app runs it only in its
+server functions (`lib/public-api.functions.ts`), which return failures as data; its
+browser modules import schemas from `@btc-lightning-pay/api/schemas`, never the API
+definitions, so no endpoint table ships to payers. Pages branch on an error's `code`,
+`retryable`, and `outcomeUnknown`, never on HTTP status.
 
 Amounts stay integers in their smallest unit. `Sats` and `Millisats` are branded, so one
 cannot stand in for the other; convert only through `satsToMsat`, `msatToSats`,

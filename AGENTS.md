@@ -3,7 +3,8 @@
 BTC Lightning Pay contains two frontends (`apps/frontend` platform admin, `apps/pay`
 payer pages), a Worker backend, a wallet service, shared API contracts, shared UI
 source, and a database package. The admin frontend requires an admin session; the
-payer app needs no login and may only reach `/api/public/*`.
+payer app needs no login; its browser code calls only the app's own server functions,
+which reach the backend's `/api/public/*` endpoints.
 
 ## Task routing
 

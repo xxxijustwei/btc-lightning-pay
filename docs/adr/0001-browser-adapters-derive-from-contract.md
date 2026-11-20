@@ -11,3 +11,4 @@
 
 - 调用函数依赖 `HttpApiEndpoint` 公开字段（`path`、`method`、`params`、`query`、`headers`、`payload`、`success`、`error`）的形状，effect 大版本升级时要一起检查。
 - 契约包规定不含运行时 I/O，所以调用函数不放进 `packages/api`，两个 app 各放一份。
+- 付款页的调用函数后来移到服务端：它在服务端函数里经 `BACKEND` 绑定调用后端，失败以 `{code, retryable, outcomeUnknown}` 数据返回浏览器，浏览器再还原成同样的 `PublicApiError`。浏览器代码只导入 `@btc-lightning-pay/api/schemas`，不打包 `PaymentsApi`。

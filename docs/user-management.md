@@ -50,7 +50,7 @@
 { "name": "Onne 商户", "email": "merchant@example.com", "slug": "onne" }
 ```
 
-付款前端的 `/onne` 调用 `GET /api/public/merchants/onne`，创建订单调用 `POST /api/public/merchants/onne/orders`。返回的 merchantId 是内部 UUID。管理员查看订单、商户汇总及创建结算单使用这个 UUID，不能把 `onne` 传入 merchantId。
+付款页的 `/onne` 经服务端函数调用 `GET /api/public/merchants/onne`，创建订单调用 `POST /api/public/merchants/onne/orders`。返回的 merchantId 是内部 UUID。管理员查看订单、商户汇总及创建结算单使用这个 UUID，不能把 `onne` 传入 merchantId。
 
 公开商户响应仅含 `merchantId,slug,enabled,currency,minAmountUsdCents,maxAmountUsdCents`，不含姓名、邮箱、userId。公开订单接口和结算流程其余规则见 [后端接入](backend-setup.md)。
 

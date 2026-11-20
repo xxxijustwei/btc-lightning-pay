@@ -44,7 +44,7 @@ packages/
   ui/             shadcn/ui 组件源码、主题与样式工具
 ```
 
-浏览器请求同源 `/api/*` → 所在前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。平台管理端代理 `/api/auth/*`、`/api/me`、`/api/admin/*`；付款页只代理 `/api/public/*`，不转发 cookie，也不接触登录和管理接口。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
+浏览器请求同源 `/api/*` → 所在前端的服务端路由 → `BACKEND` 服务绑定 → 后端 Effect API。平台管理端代理 `/api/auth/*`、`/api/me`、`/api/admin/*`。付款页没有 `/api/*` 代理：浏览器只调用付款页自己的三个服务端函数（读商户、下单、查订单），由它们在 Worker 内调用后端 `/api/public/*`，只转发付款人的 `cf-connecting-ip`（供后端限流），不转发 cookie，也不接触登录和管理接口；商户页首屏在服务端带着商户数据渲染。付款页的浏览器代码只从 `@btc-lightning-pay/api/schemas` 导入契约 Schema，客户端包里不含任何接口路由表。前端校验响应契约，并展示连接失败、超时和重试状态。当前检查只代表 HTTP 服务可达，不代表任何支付节点可用。
 
 `packages/api` 和 `packages/ui` 直接导出源码，由使用它们的应用打包。shadcn/ui 组件代码归本项目维护，多个前端从 `@btc-lightning-pay/ui/components/*` 导入同一份源码，通过共享样式入口使用同一主题；应用路由、状态和业务逻辑留在各前端。
 
