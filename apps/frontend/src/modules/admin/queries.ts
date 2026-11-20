@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { adminApi } from "../../lib/api/admin";
 
 /** The platform has at most 100 merchants, so one request returns them all (also used for name lookups). */
@@ -25,4 +25,47 @@ export const allAdminsQuery = () =>
     queryKey: ["admin", "users", "admins"],
     queryFn: ({ signal }) =>
       adminApi.users({ query: { limit: 100, offset: 0, role: "admin" } }, { signal }),
+  });
+
+export const orderQuery = (orderId: string) =>
+  queryOptions({
+    queryKey: ["admin", "order", orderId],
+    queryFn: ({ signal }) => adminApi.order({ params: { orderId } }, { signal }),
+  });
+
+export const settlementQuery = (settlementId: string) =>
+  queryOptions({
+    queryKey: ["admin", "settlement", settlementId],
+    queryFn: ({ signal }) => adminApi.settlement({ params: { settlementId } }, { signal }),
+  });
+
+/** One page of a settlement batch's orders; the previous page stays visible while the next loads. */
+export const settlementOrdersQuery = (
+  settlementId: string,
+  page: { limit: number; offset: number },
+) =>
+  queryOptions({
+    queryKey: ["admin", "settlement-orders", settlementId, page],
+    queryFn: ({ signal }) =>
+      adminApi.settlementOrders({ params: { settlementId }, query: page }, { signal }),
+    placeholderData: keepPreviousData,
+  });
+
+/** Whether the merchant has a settlement batch awaiting payment: `total` counts them. */
+export const pendingSettlementsQuery = (merchantId: string) =>
+  queryOptions({
+    queryKey: ["admin", "settlements", { merchantId, status: "pending", limit: 1 }],
+    queryFn: ({ signal }) =>
+      adminApi.settlements(
+        { query: { merchantId, status: "pending", limit: 1, offset: 0 } },
+        { signal },
+      ),
+  });
+
+/** The merchant's five newest settlement batches. */
+export const recentSettlementsQuery = (merchantId: string) =>
+  queryOptions({
+    queryKey: ["admin", "settlements", { merchantId, limit: 5 }],
+    queryFn: ({ signal }) =>
+      adminApi.settlements({ query: { merchantId, limit: 5, offset: 0 } }, { signal }),
   });

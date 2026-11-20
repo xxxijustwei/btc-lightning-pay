@@ -9,7 +9,8 @@ import {
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { adminApi, type AdminOrderData, type SettlementData } from "../../lib/api/admin";
+import { type AdminOrderData, type SettlementData } from "../../lib/api/admin";
+import { orderQuery, settlementQuery } from "./queries";
 import { invoiceCreatedAt } from "../../lib/bolt11";
 import { formatBeijing, formatMsatAsSats, formatSats, formatUsd, shortId } from "../../lib/format";
 import {
@@ -26,15 +27,10 @@ import { AdminPage } from "./shell";
 const payOrigin = import.meta.env.VITE_PAY_ORIGIN as string | undefined;
 
 export function OrderDetailPage({ orderId }: { orderId: string }) {
-  const order = useQuery({
-    queryKey: ["admin", "order", orderId],
-    queryFn: ({ signal }) => adminApi.order({ params: { orderId } }, { signal }),
-  });
+  const order = useQuery(orderQuery(orderId));
   const settlementId = order.data?.settlementId ?? null;
   const settlement = useQuery({
-    queryKey: ["admin", "settlement", settlementId],
-    queryFn: ({ signal }) =>
-      adminApi.settlement({ params: { settlementId: settlementId! } }, { signal }),
+    ...settlementQuery(settlementId ?? ""),
     enabled: settlementId !== null,
   });
   const names = useMerchantNames();

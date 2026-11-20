@@ -7,40 +7,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@btc-lightning-pay/ui/components/card";
-import { Checkbox } from "@btc-lightning-pay/ui/components/checkbox";
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-} from "@btc-lightning-pay/ui/components/field";
+import { FieldGroup } from "@btc-lightning-pay/ui/components/field";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
-import { Textarea } from "@btc-lightning-pay/ui/components/textarea";
-import { toast } from "@btc-lightning-pay/ui/components/toast";
-import { useForm } from "@tanstack/react-form";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, CircleAlert } from "lucide-react";
 import { useQueryStates } from "nuqs";
 import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
 import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
-import { adminApi, describeAdminError, type SettlementData } from "../../lib/api/admin";
+import { adminApi, type SettlementData } from "../../lib/api/admin";
 import { formatBeijing, formatSats, shortId } from "../../lib/format";
 import { paginationParsers, paginationState, paginationUpdate } from "../../lib/list-search";
-import { fieldErrors, validateProof, validateReason } from "../../lib/validation";
+import { validateProof, validateReason } from "../../lib/validation";
 import { Detail, ErrorState, SettlementStatusBadge } from "./common";
 import { FormDialog } from "./form-dialog";
 import { useMerchantNames } from "./merchant-select";
-import { allAdminsQuery } from "./queries";
+import { allAdminsQuery, settlementOrdersQuery, settlementQuery } from "./queries";
 import { AdminPage } from "./shell";
+import { useWriteDialog } from "./write-dialog";
 
 export function SettlementDetailPage({ settlementId }: { settlementId: string }) {
-  const settlement = useQuery({
-    queryKey: ["admin", "settlement", settlementId],
-    queryFn: ({ signal }) => adminApi.settlement({ params: { settlementId } }, { signal }),
-  });
+  const settlement = useQuery(settlementQuery(settlementId));
   const names = useMerchantNames();
   const admins = useQuery(allAdminsQuery());
   const adminName = (id: string | null) =>
@@ -177,12 +165,7 @@ function SettlementItems({ settlement }: { settlement: SettlementData }) {
   const [search, setSearch] = useQueryStates(paginationParsers);
   const pagination = paginationState(search);
   const query = { limit: search.size, offset: search.page * search.size };
-  const items = useQuery({
-    queryKey: ["admin", "settlement-orders", settlement.id, query],
-    queryFn: ({ signal }) =>
-      adminApi.settlementOrders({ params: { settlementId: settlement.id }, query }, { signal }),
-    placeholderData: keepPreviousData,
-  });
+  const items = useQuery(settlementOrdersQuery(settlement.id, query));
   const columns = useMemo(
     () =>
       itemHelper.columns([
@@ -255,94 +238,56 @@ function ConfirmPaidDialog({
   onClose: () => void;
   merchantName?: string;
 }) {
-  const queryClient = useQueryClient();
-  const confirm = useMutation({
-    mutationFn: (proof: string) =>
-      adminApi.confirmSettlement({ params: { settlementId: settlement.id }, payload: { proof } }),
-  });
-  const form = useForm({
+  const { form, dialogProps } = useWriteDialog({
     defaultValues: { proof: "", paid: false },
-    onSubmit: async ({ value }) => {
-      const settled = await confirm.mutateAsync(value.proof.trim()).catch(() => null);
-      if (!settled) return;
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({
-        title: "结算单已确认付款",
-        description: `${formatSats(settled.amountSat)} sats 计入已结算`,
-        type: "success",
-      });
-      close();
-    },
+    mutationFn: (value) =>
+      adminApi.confirmSettlement({
+        params: { settlementId: settlement.id },
+        payload: { proof: value.proof.trim() },
+      }),
+    toast: (settled) => ({
+      title: "结算单已确认付款",
+      description: `${formatSats(settled.amountSat)} sats 计入已结算`,
+    }),
+    onClose,
   });
-  function close() {
-    form.reset();
-    confirm.reset();
-    onClose();
-  }
   return (
     <FormDialog
+      {...dialogProps}
       open={open}
-      onOpenChange={(next) => !next && close()}
       title="确认已付款"
       description="确认后计入已结算，不能取消、修改凭证或删除。"
       submitLabel="确认已付款"
-      submitting={confirm.isPending}
-      error={confirm.isError ? describeAdminError(confirm.error) : undefined}
-      onSubmit={() => void form.handleSubmit()}
     >
       <FieldGroup>
-        <form.Field name="proof" validators={{ onBlur: validateProof, onSubmit: validateProof }}>
-          {(field) => {
-            const errors = fieldErrors(field.state.meta.errors);
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="settlement-proof">转账凭证</FieldLabel>
-                <Textarea
-                  id="settlement-proof"
-                  rows={3}
-                  maxLength={1000}
-                  placeholder="payment hash、交易记录号或备注"
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? (
-                  <FieldError errors={errors} />
-                ) : (
-                  <FieldDescription>{field.state.value.length} / 1000</FieldDescription>
-                )}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field
+        <form.AppField name="proof" validators={{ onBlur: validateProof, onSubmit: validateProof }}>
+          {(field) => (
+            <field.TextareaField
+              label="转账凭证"
+              rows={3}
+              maxLength={1000}
+              placeholder="payment hash、交易记录号或备注"
+              description={(value) => `${value.length} / 1000`}
+            />
+          )}
+        </form.AppField>
+        <form.AppField
           name="paid"
           validators={{
             onSubmit: ({ value }) => (value ? undefined : "请确认已实际完成转账。"),
           }}
         >
-          {(field) => {
-            const errors = fieldErrors(field.state.meta.errors);
-            return (
-              <Field orientation="horizontal" data-invalid={errors.length ? true : undefined}>
-                <Checkbox
-                  id="settlement-paid"
-                  checked={field.state.value}
-                  onCheckedChange={(checked) => field.handleChange(checked === true)}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                <div className="flex flex-col gap-1">
-                  <FieldLabel htmlFor="settlement-paid" className="font-normal">
-                    我确认已向{merchantName ? ` ${merchantName} ` : "商户"}实际转账{" "}
-                    {formatSats(settlement.amountSat)} sats。
-                  </FieldLabel>
-                  {errors.length ? <FieldError errors={errors} /> : null}
-                </div>
-              </Field>
-            );
-          }}
-        </form.Field>
+          {(field) => (
+            <field.CheckboxField
+              label={
+                <>
+                  我确认已向{merchantName ? ` ${merchantName} ` : "商户"}实际转账{" "}
+                  {formatSats(settlement.amountSat)} sats。
+                </>
+              }
+            />
+          )}
+        </form.AppField>
       </FieldGroup>
     </FormDialog>
   );
@@ -357,63 +302,41 @@ function CancelDialog({
   open: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const cancel = useMutation({
-    mutationFn: (reason: string) =>
-      adminApi.cancelSettlement({ params: { settlementId: settlement.id }, payload: { reason } }),
-  });
-  const form = useForm({
+  const { form, dialogProps } = useWriteDialog({
     defaultValues: { reason: "" },
-    onSubmit: async ({ value }) => {
-      const cancelled = await cancel.mutateAsync(value.reason.trim()).catch(() => null);
-      if (!cancelled) return;
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({
-        title: "结算单已取消",
-        description: `${cancelled.orderCount} 笔订单已释放`,
-        type: "success",
-      });
-      close();
-    },
+    mutationFn: (value) =>
+      adminApi.cancelSettlement({
+        params: { settlementId: settlement.id },
+        payload: { reason: value.reason.trim() },
+      }),
+    toast: (cancelled) => ({
+      title: "结算单已取消",
+      description: `${cancelled.orderCount} 笔订单已释放`,
+    }),
+    onClose,
   });
-  function close() {
-    form.reset();
-    cancel.reset();
-    onClose();
-  }
   return (
     <FormDialog
+      {...dialogProps}
       open={open}
-      onOpenChange={(next) => !next && close()}
       title="取消结算单"
       description={`仅在确认尚未付款时取消。取消后 ${settlement.orderCount} 笔订单释放，可进入新的结算单；本单明细保留。`}
       submitLabel="取消结算单"
       destructive
-      submitting={cancel.isPending}
-      error={cancel.isError ? describeAdminError(cancel.error) : undefined}
-      onSubmit={() => void form.handleSubmit()}
     >
-      <form.Field name="reason" validators={{ onBlur: validateReason, onSubmit: validateReason }}>
-        {(field) => {
-          const errors = fieldErrors(field.state.meta.errors);
-          return (
-            <Field data-invalid={errors.length ? true : undefined}>
-              <FieldLabel htmlFor="settlement-reason">取消原因</FieldLabel>
-              <Textarea
-                id="settlement-reason"
-                rows={3}
-                maxLength={500}
-                placeholder="例如：尚未付款，重新核对"
-                value={field.state.value}
-                onBlur={field.handleBlur}
-                onChange={(event) => field.handleChange(event.target.value)}
-                aria-invalid={errors.length ? true : undefined}
-              />
-              {errors.length ? <FieldError errors={errors} /> : null}
-            </Field>
-          );
-        }}
-      </form.Field>
+      <form.AppField
+        name="reason"
+        validators={{ onBlur: validateReason, onSubmit: validateReason }}
+      >
+        {(field) => (
+          <field.TextareaField
+            label="取消原因"
+            rows={3}
+            maxLength={500}
+            placeholder="例如：尚未付款，重新核对"
+          />
+        )}
+      </form.AppField>
     </FormDialog>
   );
 }

@@ -27,11 +27,14 @@ Applies to `apps/frontend`, `apps/pay` and `packages/ui`.
   `validateSearch`, and pass pagination to the table as controlled state. Lists
   paginate on the server with `manualPagination`; when the API returns no total,
   fetch one extra row, derive `pageCount`, and set `meta.totalKnown = false`.
-- Forms use TanStack Form inside `FormDialog`. Field rules come from the shared
-  contract schemas in `lib/validation.ts`; server conflicts stay in mutation state
-  and render under the matching field. Simple confirmations use `ConfirmDialog`.
-- Successful writes report through the shadcn toast (`toast.add`); `<Toaster />` is
-  mounted once in the admin shell. Failures stay inline in the dialog or page.
+- Admin writes go through `useWriteDialog` (`modules/admin/write-dialog.tsx`) and
+  render as `<FormDialog {...dialogProps}>`; a confirmation is a `FormDialog` without
+  fields. The hook refreshes `["admin"]` data, reports success through the shadcn
+  toast (`<Toaster />` is mounted once in the admin shell), and closes; failures stay
+  in the dialog. Map server codes that describe one field with `fieldConflicts`.
+- Fields render through `form.AppField` with the bound `TextField`, `TextareaField`,
+  or `CheckboxField`, which own labels, errors, and server conflicts. Field rules
+  come from the shared contract schemas in `lib/validation.ts`.
 - Admin times display in Beijing time through `lib/format.ts` (`@date-fns/tz`);
   date-range filters store calendar days in the URL and send UTC instants to the API.
 

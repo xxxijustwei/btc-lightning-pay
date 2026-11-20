@@ -1,15 +1,6 @@
 import { Alert, AlertDescription, AlertTitle } from "@btc-lightning-pay/ui/components/alert";
 import { Badge } from "@btc-lightning-pay/ui/components/badge";
 import { Button } from "@btc-lightning-pay/ui/components/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@btc-lightning-pay/ui/components/dialog";
-import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
 import { Check, CircleAlert, Copy } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import {
@@ -93,60 +84,6 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
         ) : null}
       </AlertDescription>
     </Alert>
-  );
-}
-
-/** Confirmation dialog for writes; keeps the dialog open and shows the error when the write fails. */
-export function ConfirmDialog({
-  open,
-  onOpenChange,
-  title,
-  description,
-  confirmLabel,
-  destructive,
-  pending,
-  error,
-  onConfirm,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  description?: ReactNode;
-  confirmLabel: string;
-  destructive?: boolean;
-  pending?: boolean;
-  error?: string;
-  onConfirm: () => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          {description ? <DialogDescription>{description}</DialogDescription> : null}
-        </DialogHeader>
-        {error ? (
-          <Alert variant="destructive">
-            <CircleAlert aria-hidden="true" />
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
-        <DialogFooter>
-          <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button
-            variant={destructive ? "destructive" : "default"}
-            disabled={pending}
-            aria-busy={pending}
-            onClick={onConfirm}
-          >
-            {pending ? <Spinner aria-hidden="true" data-icon="inline-start" /> : null}
-            {confirmLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

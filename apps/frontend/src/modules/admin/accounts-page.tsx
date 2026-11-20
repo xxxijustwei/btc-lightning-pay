@@ -1,35 +1,22 @@
 import { Badge } from "@btc-lightning-pay/ui/components/badge";
 import { Button } from "@btc-lightning-pay/ui/components/button";
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-} from "@btc-lightning-pay/ui/components/field";
-import { Input } from "@btc-lightning-pay/ui/components/input";
-import { toast } from "@btc-lightning-pay/ui/components/toast";
+import { FieldGroup } from "@btc-lightning-pay/ui/components/field";
 import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
-import { useForm } from "@tanstack/react-form";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useQueryStates } from "nuqs";
 import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
 import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
-import {
-  AdminApiError,
-  adminApi,
-  describeAdminError,
-  type ManagedUserData,
-} from "../../lib/api/admin";
+import { adminApi, type ManagedUserData } from "../../lib/api/admin";
 import { formatBeijing } from "../../lib/format";
 import { accountsSearch, paginationState, paginationUpdate } from "../../lib/list-search";
-import { fieldErrors, normalizeEmail, validateEmail, validateName } from "../../lib/validation";
-import { ConfirmDialog, ErrorState } from "./common";
+import { normalizeEmail, validateEmail, validateName } from "../../lib/validation";
+import { ErrorState } from "./common";
 import { FormDialog } from "./form-dialog";
 import { MerchantCell } from "./merchant-select";
 import { AdminPage } from "./shell";
+import { useWriteDialog } from "./write-dialog";
 
 const helper = createAppColumnHelper<ManagedUserData>();
 const noRows: ManagedUserData[] = [];
@@ -176,92 +163,37 @@ function CreateAdminDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
-  const create = useMutation({
-    mutationFn: (input: { name: string; email: string }) =>
-      adminApi.createAdmin({ payload: input }),
-  });
-  const form = useForm({
+  const { form, dialogProps } = useWriteDialog({
     defaultValues: { name: "", email: "" },
-    onSubmit: async ({ value }) => {
-      const admin = await create
-        .mutateAsync({ name: value.name.trim(), email: normalizeEmail(value.email) })
-        .catch(() => null);
-      if (!admin) return;
-      await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
-      toast.add({ title: "管理员已创建", description: admin.email, type: "success" });
-      close();
-    },
+    mutationFn: (value) =>
+      adminApi.createAdmin({
+        payload: { name: value.name.trim(), email: normalizeEmail(value.email) },
+      }),
+    toast: (admin) => ({ title: "管理员已创建", description: admin.email }),
+    fieldConflicts: { EMAIL_EXISTS: "email" },
+    onClose: () => onOpenChange(false),
   });
-  const emailTaken = create.error instanceof AdminApiError && create.error.code === "EMAIL_EXISTS";
-  function close() {
-    form.reset();
-    create.reset();
-    onOpenChange(false);
-  }
-
   return (
     <FormDialog
+      {...dialogProps}
       open={open}
-      onOpenChange={(next) => (next ? onOpenChange(true) : close())}
       title="新建管理员"
       description="新管理员与你权限相同。不会发送邀请邮件，对方用该邮箱请求验证码即可登录。"
       submitLabel="创建管理员"
-      submitting={create.isPending}
-      error={create.isError && !emailTaken ? describeAdminError(create.error) : undefined}
-      onSubmit={() => void form.handleSubmit()}
     >
       <FieldGroup>
-        <form.Field name="name" validators={{ onBlur: validateName, onSubmit: validateName }}>
-          {(field) => {
-            const errors = fieldErrors(field.state.meta.errors);
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="admin-name">名称</FieldLabel>
-                <Input
-                  id="admin-name"
-                  maxLength={100}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? <FieldError errors={errors} /> : null}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="email" validators={{ onBlur: validateEmail, onSubmit: validateEmail }}>
-          {(field) => {
-            const errors = fieldErrors([
-              ...field.state.meta.errors,
-              emailTaken ? describeAdminError(create.error) : undefined,
-            ]);
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="admin-email">登录邮箱</FieldLabel>
-                <Input
-                  id="admin-email"
-                  type="email"
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => {
-                    field.handleChange(event.target.value);
-                    if (emailTaken) create.reset();
-                  }}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? (
-                  <FieldError errors={errors} />
-                ) : (
-                  <FieldDescription>
-                    全平台唯一，创建后不能修改；角色也不能再转换。
-                  </FieldDescription>
-                )}
-              </Field>
-            );
-          }}
-        </form.Field>
+        <form.AppField name="name" validators={{ onBlur: validateName, onSubmit: validateName }}>
+          {(field) => <field.TextField label="名称" maxLength={100} />}
+        </form.AppField>
+        <form.AppField name="email" validators={{ onBlur: validateEmail, onSubmit: validateEmail }}>
+          {(field) => (
+            <field.TextField
+              label="登录邮箱"
+              type="email"
+              description="全平台唯一，创建后不能修改；角色也不能再转换。"
+            />
+          )}
+        </form.AppField>
       </FieldGroup>
     </FormDialog>
   );
@@ -276,29 +208,25 @@ function BanDialog({
   currentUserId: string;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const update = useMutation({
-    mutationFn: (input: { id: string; banned: boolean }) =>
-      adminApi.updateUser({ params: { userId: input.id }, payload: { banned: input.banned } }),
-    onSuccess: async (updated, input) => {
+  const banning = user ? !user.banned : false;
+  const self = user?.id === currentUserId;
+  const { dialogProps } = useWriteDialog({
+    mutationFn: () =>
+      adminApi.updateUser({ params: { userId: user!.id }, payload: { banned: banning } }),
+    toast: (updated) => ({
+      title: updated.banned ? "账号已禁用" : "账号已恢复",
+      description: updated.email,
+    }),
+    onSuccess: (updated) => {
       // Disabling yourself revokes this session; leave for the sign-in page instead of failing requests.
-      if (input.banned && input.id === currentUserId) {
+      if (updated.banned && self) {
         window.location.assign("/sign-in");
-        return;
+        return "handled";
       }
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({
-        title: input.banned ? "账号已禁用" : "账号已恢复",
-        description: updated.email,
-        type: "success",
-      });
-      update.reset();
-      onClose();
     },
+    onClose,
   });
   if (!user) return null;
-  const banning = !user.banned;
-  const self = user.id === currentUserId;
   let title = "";
   let description = "";
   if (!banning) {
@@ -317,21 +245,13 @@ function BanDialog({
       "等同于停用该商户：禁用账号、停止新开票并注销会话。已发出的 invoice 仍会到账入账并可结算。";
   }
   return (
-    <ConfirmDialog
+    <FormDialog
+      {...dialogProps}
       open
-      onOpenChange={(open) => {
-        if (!open) {
-          update.reset();
-          onClose();
-        }
-      }}
       title={title}
       description={description}
-      confirmLabel={banning ? "禁用" : "恢复"}
+      submitLabel={banning ? "禁用" : "恢复"}
       destructive={banning}
-      pending={update.isPending}
-      error={update.isError ? describeAdminError(update.error) : undefined}
-      onConfirm={() => update.mutate({ id: user.id, banned: banning })}
     />
   );
 }

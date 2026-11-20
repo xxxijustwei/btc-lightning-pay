@@ -1,41 +1,22 @@
 import { Button } from "@btc-lightning-pay/ui/components/button";
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-} from "@btc-lightning-pay/ui/components/field";
-import { Input } from "@btc-lightning-pay/ui/components/input";
-import { toast } from "@btc-lightning-pay/ui/components/toast";
+import { FieldGroup } from "@btc-lightning-pay/ui/components/field";
 import { ToggleGroup, ToggleGroupItem } from "@btc-lightning-pay/ui/components/toggle-group";
-import { useForm } from "@tanstack/react-form";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useQueryStates } from "nuqs";
 import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
 import { createAppColumnHelper, useAppTable } from "../../components/data-table/table-hook";
-import {
-  AdminApiError,
-  adminApi,
-  describeAdminError,
-  type MerchantData,
-} from "../../lib/api/admin";
+import { adminApi, type MerchantData } from "../../lib/api/admin";
 import { formatBeijing } from "../../lib/format";
 import { merchantsSearch, paginationState, paginationUpdate } from "../../lib/list-search";
-import {
-  fieldErrors,
-  normalizeEmail,
-  validateEmail,
-  validateName,
-  validateSlug,
-} from "../../lib/validation";
-import { ConfirmDialog, EnabledBadge, ErrorState } from "./common";
+import { normalizeEmail, validateEmail, validateName, validateSlug } from "../../lib/validation";
+import { EnabledBadge, ErrorState } from "./common";
 import { FormDialog } from "./form-dialog";
 import { allMerchantsQuery } from "./queries";
 import { AdminPage } from "./shell";
+import { useWriteDialog } from "./write-dialog";
 
 const helper = createAppColumnHelper<MerchantData>();
 const noRows: MerchantData[] = [];
@@ -169,150 +150,65 @@ export function MerchantsPage() {
   );
 }
 
-function CreateMerchantDialog({
+export function CreateMerchantDialog({
   open,
   onOpenChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
-  const create = useMutation({
-    mutationFn: (input: { name: string; email: string; slug: string }) =>
-      adminApi.createMerchant({ payload: input }),
-  });
-  const form = useForm({
+  const { form, dialogProps } = useWriteDialog({
     defaultValues: { name: "", email: "", slug: "" },
-    onSubmit: async ({ value }) => {
-      const merchant = await create
-        .mutateAsync({
-          name: value.name.trim(),
-          email: normalizeEmail(value.email),
-          slug: value.slug,
-        })
-        .catch(() => null);
-      if (!merchant) return;
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({
-        title: "商户已创建",
-        description: `${merchant.name} · /${merchant.slug}`,
-        type: "success",
-      });
-      close();
-    },
+    mutationFn: (value) =>
+      adminApi.createMerchant({
+        payload: { name: value.name.trim(), email: normalizeEmail(value.email), slug: value.slug },
+      }),
+    toast: (merchant) => ({
+      title: "商户已创建",
+      description: `${merchant.name} · /${merchant.slug}`,
+    }),
+    fieldConflicts: { EMAIL_EXISTS: "email", MERCHANT_EXISTS: "slug" },
+    onClose: () => onOpenChange(false),
   });
-  // Conflicts reported by the backend belong to a field; anything else shows above the actions.
-  const conflict = create.error instanceof AdminApiError ? create.error.code : "";
-  const serverError = (code: string) =>
-    conflict === code ? describeAdminError(create.error) : undefined;
-  function close() {
-    form.reset();
-    create.reset();
-    onOpenChange(false);
-  }
-
   return (
     <FormDialog
+      {...dialogProps}
       open={open}
-      onOpenChange={(next) => (next ? onOpenChange(true) : close())}
       title="新建商户"
       description="同时开通一个商户账号。第一阶段商户不能登录，也不会发送通知邮件。"
       submitLabel="创建商户"
-      submitting={create.isPending}
-      error={
-        create.isError && !["EMAIL_EXISTS", "MERCHANT_EXISTS"].includes(conflict)
-          ? describeAdminError(create.error)
-          : undefined
-      }
-      onSubmit={() => void form.handleSubmit()}
     >
       <FieldGroup>
-        <form.Field name="name" validators={{ onBlur: validateName, onSubmit: validateName }}>
-          {(field) => {
-            const errors = fieldErrors(field.state.meta.errors);
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="merchant-name">名称</FieldLabel>
-                <Input
-                  id="merchant-name"
-                  maxLength={100}
-                  placeholder="例如 Onne 商户"
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => field.handleChange(event.target.value)}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? (
-                  <FieldError errors={errors} />
-                ) : (
-                  <FieldDescription>仅管理员可见，之后可以修改。</FieldDescription>
-                )}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="email" validators={{ onBlur: validateEmail, onSubmit: validateEmail }}>
-          {(field) => {
-            const errors = [
-              ...fieldErrors(field.state.meta.errors),
-              ...fieldErrors([serverError("EMAIL_EXISTS")]),
-            ];
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="merchant-email">商户邮箱</FieldLabel>
-                <Input
-                  id="merchant-email"
-                  type="email"
-                  placeholder="merchant@example.com"
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => {
-                    field.handleChange(event.target.value);
-                    if (conflict === "EMAIL_EXISTS") create.reset();
-                  }}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? (
-                  <FieldError errors={errors} />
-                ) : (
-                  <FieldDescription>全平台唯一，创建后不能修改。</FieldDescription>
-                )}
-              </Field>
-            );
-          }}
-        </form.Field>
-        <form.Field name="slug" validators={{ onBlur: validateSlug, onSubmit: validateSlug }}>
-          {(field) => {
-            const errors = [
-              ...fieldErrors(field.state.meta.errors),
-              ...fieldErrors([serverError("MERCHANT_EXISTS")]),
-            ];
-            return (
-              <Field data-invalid={errors.length ? true : undefined}>
-                <FieldLabel htmlFor="merchant-slug">收款链接 slug</FieldLabel>
-                <Input
-                  id="merchant-slug"
-                  className="font-mono"
-                  placeholder="例如 onne"
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => {
-                    field.handleChange(event.target.value);
-                    if (conflict === "MERCHANT_EXISTS") create.reset();
-                  }}
-                  aria-invalid={errors.length ? true : undefined}
-                />
-                {errors.length ? (
-                  <FieldError errors={errors} />
-                ) : (
-                  <FieldDescription>
-                    3–32 位，小写字母开头，仅含小写字母、数字、连字符。创建后不可修改。
-                  </FieldDescription>
-                )}
-              </Field>
-            );
-          }}
-        </form.Field>
+        <form.AppField name="name" validators={{ onBlur: validateName, onSubmit: validateName }}>
+          {(field) => (
+            <field.TextField
+              label="名称"
+              maxLength={100}
+              placeholder="例如 Onne 商户"
+              description="仅管理员可见，之后可以修改。"
+            />
+          )}
+        </form.AppField>
+        <form.AppField name="email" validators={{ onBlur: validateEmail, onSubmit: validateEmail }}>
+          {(field) => (
+            <field.TextField
+              label="商户邮箱"
+              type="email"
+              placeholder="merchant@example.com"
+              description="全平台唯一，创建后不能修改。"
+            />
+          )}
+        </form.AppField>
+        <form.AppField name="slug" validators={{ onBlur: validateSlug, onSubmit: validateSlug }}>
+          {(field) => (
+            <field.TextField
+              label="收款链接 slug"
+              className="font-mono"
+              placeholder="例如 onne"
+              description="3–32 位，小写字母开头，仅含小写字母、数字、连字符。创建后不可修改。"
+            />
+          )}
+        </form.AppField>
       </FieldGroup>
     </FormDialog>
   );
@@ -325,46 +221,32 @@ export function ToggleMerchantDialog({
   merchant: MerchantData | null;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const toggle = useMutation({
-    mutationFn: (input: { id: string; enabled: boolean }) =>
+  const disabling = merchant?.enabled ?? false;
+  const { dialogProps } = useWriteDialog({
+    mutationFn: () =>
       adminApi.updateMerchant({
-        params: { merchantId: input.id },
-        payload: { enabled: input.enabled },
+        params: { merchantId: merchant!.id },
+        payload: { enabled: !disabling },
       }),
-    onSuccess: async (updated) => {
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({
-        title: updated.enabled ? "商户已恢复" : "商户已停用",
-        description: updated.name,
-        type: "success",
-      });
-      toggle.reset();
-      onClose();
-    },
+    toast: (updated) => ({
+      title: updated.enabled ? "商户已恢复" : "商户已停用",
+      description: updated.name,
+    }),
+    onClose,
   });
   if (!merchant) return null;
-  const disabling = merchant.enabled;
   return (
-    <ConfirmDialog
+    <FormDialog
+      {...dialogProps}
       open
-      onOpenChange={(open) => {
-        if (!open) {
-          toggle.reset();
-          onClose();
-        }
-      }}
       title={disabling ? `停用「${merchant.name}」？` : `恢复「${merchant.name}」？`}
       description={
         disabling
           ? "将同时禁用商户账号、停止新开票并注销全部会话。已发出的 invoice 仍会到账入账并可结算，历史记录保留。"
           : `同时恢复商户账号和收款，/${merchant.slug} 可以再次开票。第一阶段商户仍不能登录。`
       }
-      confirmLabel={disabling ? "停用" : "恢复"}
+      submitLabel={disabling ? "停用" : "恢复"}
       destructive={disabling}
-      pending={toggle.isPending}
-      error={toggle.isError ? describeAdminError(toggle.error) : undefined}
-      onConfirm={() => toggle.mutate({ id: merchant.id, enabled: !disabling })}
     />
   );
 }

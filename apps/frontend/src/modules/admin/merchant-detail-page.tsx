@@ -9,18 +9,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@btc-lightning-pay/ui/components/card";
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldLabel,
-} from "@btc-lightning-pay/ui/components/field";
-import { Input } from "@btc-lightning-pay/ui/components/input";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
 import { toast } from "@btc-lightning-pay/ui/components/toast";
-import { useForm } from "@tanstack/react-form";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Ban, CircleAlert, ExternalLink, Info, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
@@ -33,14 +25,20 @@ import {
 import { DataTable } from "../../components/data-table/data-table";
 import { useAppTable } from "../../components/data-table/table-hook";
 import { formatBeijing, formatSats } from "../../lib/format";
-import { fieldErrors, validateName } from "../../lib/validation";
+import { validateName } from "../../lib/validation";
 import { Detail, EnabledBadge, ErrorState } from "./common";
 import { FormDialog } from "./form-dialog";
 import { useGenerateSettlement } from "./generate-settlement";
 import { ToggleMerchantDialog } from "./merchants-page";
-import { merchantQuery, summaryQuery } from "./queries";
+import {
+  merchantQuery,
+  pendingSettlementsQuery,
+  recentSettlementsQuery,
+  summaryQuery,
+} from "./queries";
 import { settlementColumns } from "./settlements-page";
 import { AdminPage } from "./shell";
+import { useWriteDialog } from "./write-dialog";
 
 const payOrigin = import.meta.env.VITE_PAY_ORIGIN as string | undefined;
 
@@ -145,11 +143,7 @@ export function MerchantDetailPage({ merchantId }: { merchantId: string }) {
 
 function SummarySection({ merchantId }: { merchantId: string }) {
   const summary = useQuery(summaryQuery(merchantId));
-  const pendingQuery = { merchantId, status: "pending" as const, limit: 1, offset: 0 };
-  const pendingSettlements = useQuery({
-    queryKey: ["admin", "settlements", pendingQuery],
-    queryFn: ({ signal }) => adminApi.settlements({ query: pendingQuery }, { signal }),
-  });
+  const pendingSettlements = useQuery(pendingSettlementsQuery(merchantId));
   const pendingCount = pendingSettlements.data?.total ?? 0;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -265,11 +259,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
 const noSettlements: SettlementData[] = [];
 
 function MerchantSettlements({ merchantId }: { merchantId: string }) {
-  const settlements = useQuery({
-    queryKey: ["admin", "settlements", { merchantId, limit: 5 }],
-    queryFn: ({ signal }) =>
-      adminApi.settlements({ query: { merchantId, limit: 5, offset: 0 } }, { signal }),
-  });
+  const settlements = useQuery(recentSettlementsQuery(merchantId));
   // Same columns as the settlements list; the merchant and creation time are implied here.
   const table = useAppTable({
     columns: settlementColumns,
@@ -316,66 +306,34 @@ function RenameDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
-  const rename = useMutation({
-    mutationFn: (name: string) =>
-      adminApi.updateMerchant({ params: { merchantId: merchant.id }, payload: { name } }),
-  });
-  const form = useForm({
+  const { form, dialogProps } = useWriteDialog({
     defaultValues: { name: merchant.name },
-    onSubmit: async ({ value }) => {
+    // An unchanged name needs no request.
+    mutationFn: async (value) => {
       const name = value.name.trim();
-      if (name === merchant.name) return close();
-      const updated = await rename.mutateAsync(name).catch(() => null);
-      if (!updated) return;
-      await queryClient.invalidateQueries({ queryKey: ["admin"] });
-      toast.add({ title: "名称已更新", description: updated.name, type: "success" });
-      close();
+      return name === merchant.name
+        ? null
+        : adminApi.updateMerchant({ params: { merchantId: merchant.id }, payload: { name } });
     },
+    toast: (updated) => ({ title: "名称已更新", description: updated?.name }),
+    onSuccess: (updated, _value, { close }) => {
+      if (updated) return;
+      close();
+      return "handled";
+    },
+    onClose: () => onOpenChange(false),
   });
-  function close() {
-    rename.reset();
-    onOpenChange(false);
-  }
   return (
     <FormDialog
+      {...dialogProps}
       open={open}
-      onOpenChange={(next) => {
-        // Start each edit from the saved name.
-        if (next) form.reset({ name: merchant.name });
-        rename.reset();
-        onOpenChange(next);
-      }}
       title="修改名称"
       description="名称仅管理员可见，不会出现在付款页。slug 和邮箱不能修改。"
       submitLabel="保存"
-      submitting={rename.isPending}
-      error={rename.isError ? describeAdminError(rename.error) : undefined}
-      onSubmit={() => void form.handleSubmit()}
     >
-      <form.Field name="name" validators={{ onChange: validateName, onSubmit: validateName }}>
-        {(field) => {
-          const errors = fieldErrors(field.state.meta.errors);
-          return (
-            <Field data-invalid={errors.length ? true : undefined}>
-              <FieldLabel htmlFor="rename-merchant">名称</FieldLabel>
-              <Input
-                id="rename-merchant"
-                maxLength={100}
-                value={field.state.value}
-                onBlur={field.handleBlur}
-                onChange={(event) => field.handleChange(event.target.value)}
-                aria-invalid={errors.length ? true : undefined}
-              />
-              {errors.length ? (
-                <FieldError errors={errors} />
-              ) : (
-                <FieldDescription>1–100 个字符。</FieldDescription>
-              )}
-            </Field>
-          );
-        }}
-      </form.Field>
+      <form.AppField name="name" validators={{ onChange: validateName, onSubmit: validateName }}>
+        {(field) => <field.TextField label="名称" maxLength={100} description="1–100 个字符。" />}
+      </form.AppField>
     </FormDialog>
   );
 }
