@@ -1,7 +1,7 @@
 import type { Query } from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { orderPollInterval, POLL_AFTER_EXPIRY_MS } from "../modules/payment/invoice-page";
-import { createOrder, publicApi, PublicApiError, type PublicOrderData } from "./public-api";
+import { publicApi, PublicApiError, type PublicOrderData } from "./public-api";
 
 const order = (expiresAt: number, status: PublicOrderData["status"]): PublicOrderData => ({
   id: "12345678-1234-4234-8234-123456789abc",
@@ -16,25 +16,6 @@ const order = (expiresAt: number, status: PublicOrderData["status"]): PublicOrde
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
-});
-
-test("an order still being invoiced is retried with the same idempotency key", async () => {
-  vi.useFakeTimers();
-  const fetcher = vi
-    .fn<typeof fetch>()
-    .mockResolvedValueOnce(
-      Response.json({ code: "ORDER_IN_PROGRESS", message: "ORDER_IN_PROGRESS" }, { status: 409 }),
-    )
-    .mockResolvedValueOnce(Response.json(order(Date.now() + 3_600_000, "pending")));
-  vi.stubGlobal("fetch", fetcher);
-  const created = createOrder("onne", { amountUsdCents: 1000 }, "key-0000000000000001");
-  await vi.advanceTimersByTimeAsync(1_000);
-  expect((await created).status).toBe("pending");
-  expect(fetcher).toHaveBeenCalledTimes(2);
-  const keys = fetcher.mock.calls.map(([, init]) =>
-    new Headers(init?.headers).get("idempotency-key"),
-  );
-  expect(keys).toEqual(["key-0000000000000001", "key-0000000000000001"]);
 });
 
 test("an expired order is polled until ten minutes past expiry, then polling stops", () => {
@@ -71,7 +52,11 @@ const stubOnce = (response: () => Response | Promise<Response>) => {
 
 test("an order is created from the contract's path, key header and payload, without credentials", async () => {
   const fetcher = stubOnce(() => Response.json(order(Date.now() + 3_600_000, "pending")));
-  await createOrder("onne", { amountUsdCents: 1000 }, "key-0000000000000001");
+  await publicApi.createOrder({
+    params: { slug: "onne" },
+    headers: { "idempotency-key": "key-0000000000000001" },
+    payload: { amountUsdCents: 1000 },
+  });
   const [url, init] = fetcher.mock.calls[0]!;
   expect(url).toBe("/api/public/merchants/onne/orders");
   expect(init?.method).toBe("POST");

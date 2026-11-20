@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, CircleDollarSign, Lock } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { useId, useState } from "react";
 import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
 import {
@@ -9,7 +9,8 @@ import {
   formatUsd,
   parseUsdAmount,
 } from "../../lib/amount";
-import { PublicApiError, createOrder, orderQueryKey, publicApi } from "../../lib/public-api";
+import { PublicApiError, orderQueryKey, publicApi } from "../../lib/public-api";
+import { useOrderIntake } from "./order-intake";
 import { PayShell, primaryActionClass } from "./pay-shell";
 import { UnavailableScreen } from "./unavailable-screen";
 
@@ -59,8 +60,6 @@ function AmountForm({
   const [custom, setCustom] = useState("");
   const [expanded, setExpanded] = useState(true);
   const [disabled, setDisabled] = useState(false);
-  // One payer submission keeps one idempotency key, so a retry never opens a second order.
-  const attempt = useRef<{ cents: number; key: string } | null>(null);
   const customId = useId();
   const moreId = useId();
   const errorId = useId();
@@ -69,29 +68,14 @@ function AmountForm({
   const cents = parsed ? (parsed.ok ? parsed.cents : null) : preset === null ? null : preset * 100;
   const inputError = parsed && !parsed.ok ? parsed.error : "";
 
-  const submit = useMutation({
-    mutationFn: async (amountUsdCents: number) => {
-      if (!attempt.current || attempt.current.cents !== amountUsdCents) {
-        attempt.current = { cents: amountUsdCents, key: crypto.randomUUID() };
-      }
-      return createOrder(slug, { amountUsdCents }, attempt.current.key);
-    },
+  const submit = useOrderIntake(slug, {
     onSuccess: (order) => {
-      attempt.current = null;
       // The order already carries its invoice: the invoice page shows it without refetching.
       queryClient.setQueryData(orderQueryKey(order.id), order);
       onOrderCreated(order.id);
     },
     onError: (error) => {
-      if (!(error instanceof PublicApiError)) return;
       if (error.code === "MERCHANT_DISABLED") setDisabled(true);
-      // The backend rejected this request's content; the next try must start with a fresh key.
-      if (
-        error.code === "IDEMPOTENCY_CONFLICT" ||
-        error.code === "INVALID_INPUT" ||
-        error.code === "BODY_TOO_LARGE"
-      )
-        attempt.current = null;
     },
   });
 

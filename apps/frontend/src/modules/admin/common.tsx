@@ -189,7 +189,3 @@ export function Detail({
     </div>
   );
 }
-
-export function newIdempotencyKey() {
-  return crypto.randomUUID();
-}

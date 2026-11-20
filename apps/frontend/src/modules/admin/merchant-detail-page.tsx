@@ -23,9 +23,8 @@ import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Ban, CircleAlert, ExternalLink, Info, Pencil, Plus } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
-  AdminApiError,
   adminApi,
   describeAdminError,
   type MerchantData,
@@ -35,8 +34,9 @@ import { DataTable } from "../../components/data-table/data-table";
 import { useAppTable } from "../../components/data-table/table-hook";
 import { formatBeijing, formatSats } from "../../lib/format";
 import { fieldErrors, validateName } from "../../lib/validation";
-import { Detail, EnabledBadge, ErrorState, newIdempotencyKey } from "./common";
+import { Detail, EnabledBadge, ErrorState } from "./common";
 import { FormDialog } from "./form-dialog";
+import { useGenerateSettlement } from "./generate-settlement";
 import { ToggleMerchantDialog } from "./merchants-page";
 import { merchantQuery, summaryQuery } from "./queries";
 import { settlementColumns } from "./settlements-page";
@@ -153,18 +153,8 @@ function SummarySection({ merchantId }: { merchantId: string }) {
   const pendingCount = pendingSettlements.data?.total ?? 0;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  // One click → one key; a retry after a network error reuses it and returns the same batch.
-  const key = useRef<string | null>(null);
-  const generate = useMutation({
-    mutationFn: () => {
-      key.current ??= newIdempotencyKey();
-      return adminApi.settle({
-        headers: { "idempotency-key": key.current },
-        payload: { merchantId },
-      });
-    },
+  const generate = useGenerateSettlement(merchantId, {
     onSuccess: async (settlement) => {
-      key.current = null;
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
       toast.add({
         title: "结算单已生成",
@@ -172,10 +162,6 @@ function SummarySection({ merchantId }: { merchantId: string }) {
         type: "success",
       });
       await navigate({ to: "/settlements/$settlementId", params: { settlementId: settlement.id } });
-    },
-    onError: (error) => {
-      // Keep the key only when the outcome is unknown (no response or server fault).
-      if (error instanceof AdminApiError && !error.outcomeUnknown) key.current = null;
     },
   });
 
