@@ -6,8 +6,8 @@ import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { formatCountdown, formatUsd } from "../../lib/amount";
 import {
   PublicApiError,
-  getOrder,
   orderQueryKey,
+  publicApi,
   type PublicOrderData,
 } from "../../lib/public-api";
 import { PayShell, primaryActionClass } from "./pay-shell";
@@ -23,7 +23,7 @@ export const POLL_AFTER_EXPIRY_MS = 10 * 60_000;
 /** Poll fast while the payer is looking, slow down in the background, back off on failures. */
 export function orderPollInterval(query: Query<PublicOrderData, Error>): number | false {
   const { data, error, fetchFailureCount } = query.state;
-  if (error instanceof PublicApiError && error.status === 404) return false;
+  if (error instanceof PublicApiError && error.code === "ORDER_NOT_FOUND") return false;
   if (fetchFailureCount > 0)
     return Math.min(ACTIVE_POLL_MS * 2 ** fetchFailureCount, MAX_BACKOFF_MS);
   if (data?.status === "paid") return false;
@@ -49,7 +49,7 @@ export function InvoicePage({
   const newInvoiceHref = merchantSlug ? `/${merchantSlug}` : undefined;
   const order = useQuery({
     queryKey: orderQueryKey(orderId),
-    queryFn: ({ signal }) => getOrder(orderId, signal),
+    queryFn: ({ signal }) => publicApi.order({ params: { orderId } }, { signal }),
     // The amount page seeds a fresh order; don't fetch it again on arrival, the poll takes over.
     staleTime: ACTIVE_POLL_MS,
     refetchInterval: orderPollInterval,
@@ -59,7 +59,7 @@ export function InvoicePage({
 
   if (order.isPending) return <LoadingView />;
   if (!order.data) {
-    if (order.error instanceof PublicApiError && order.error.status === 404) {
+    if (order.error instanceof PublicApiError && order.error.code === "ORDER_NOT_FOUND") {
       return <UnavailableScreen variant="notfound" />;
     }
     return <UnavailableScreen variant="offline" onRetry={() => void order.refetch()} />;

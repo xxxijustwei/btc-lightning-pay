@@ -179,13 +179,15 @@ export const paymentErrorStatus = {
   PAYMENTS_UNAVAILABLE: 503,
   WALLET_UNAVAILABLE: 503,
   AMOUNT_OVERFLOW: 503,
+  /** Sent by an app's same-origin proxy when the backend Worker cannot be reached. */
+  BACKEND_UNAVAILABLE: 502,
 } as const;
 export type PaymentErrorCode = keyof typeof paymentErrorStatus;
 export const PaymentProblem = Schema.Struct({
   code: Schema.Literals(Object.keys(paymentErrorStatus) as PaymentErrorCode[]),
   message: Schema.String,
 });
-const errors = [400, 401, 403, 404, 405, 409, 429, 500, 503].map((httpApiStatus) =>
+const errors = [400, 401, 403, 404, 405, 409, 429, 500, 502, 503].map((httpApiStatus) =>
   PaymentProblem.annotate({ httpApiStatus }),
 );
 const paging = { limit: Schema.optional(Schema.String), offset: Schema.optional(Schema.String) };

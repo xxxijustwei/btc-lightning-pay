@@ -47,7 +47,7 @@ export function AccountsPage({ currentUserId }: { currentUserId: string }) {
   };
   const users = useQuery({
     queryKey: ["admin", "users", query],
-    queryFn: ({ signal }) => adminApi.users(query, signal),
+    queryFn: ({ signal }) => adminApi.users({ query }, { signal }),
     placeholderData: keepPreviousData,
   });
   const fetched = users.data ?? noRows;
@@ -177,7 +177,10 @@ function CreateAdminDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const create = useMutation({ mutationFn: adminApi.createAdmin });
+  const create = useMutation({
+    mutationFn: (input: { name: string; email: string }) =>
+      adminApi.createAdmin({ payload: input }),
+  });
   const form = useForm({
     defaultValues: { name: "", email: "" },
     onSubmit: async ({ value }) => {
@@ -276,7 +279,7 @@ function BanDialog({
   const queryClient = useQueryClient();
   const update = useMutation({
     mutationFn: (input: { id: string; banned: boolean }) =>
-      adminApi.updateUser(input.id, { banned: input.banned }),
+      adminApi.updateUser({ params: { userId: input.id }, payload: { banned: input.banned } }),
     onSuccess: async (updated, input) => {
       // Disabling yourself revokes this session; leave for the sign-in page instead of failing requests.
       if (input.banned && input.id === currentUserId) {
@@ -327,13 +330,7 @@ function BanDialog({
       confirmLabel={banning ? "禁用" : "恢复"}
       destructive={banning}
       pending={update.isPending}
-      error={
-        update.error instanceof AdminApiError && update.error.code === "LAST_ADMIN"
-          ? "不能禁用最后一位启用的管理员。请先新建或恢复另一位管理员。"
-          : update.isError
-            ? describeAdminError(update.error)
-            : undefined
-      }
+      error={update.isError ? describeAdminError(update.error) : undefined}
       onConfirm={() => update.mutate({ id: user.id, banned: banning })}
     />
   );

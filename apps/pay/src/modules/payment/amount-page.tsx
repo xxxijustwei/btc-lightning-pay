@@ -9,7 +9,7 @@ import {
   formatUsd,
   parseUsdAmount,
 } from "../../lib/amount";
-import { PublicApiError, createOrder, getMerchant, orderQueryKey } from "../../lib/public-api";
+import { PublicApiError, createOrder, orderQueryKey, publicApi } from "../../lib/public-api";
 import { PayShell, primaryActionClass } from "./pay-shell";
 import { UnavailableScreen } from "./unavailable-screen";
 
@@ -18,7 +18,8 @@ const COLLAPSED_COUNT = 6;
 export function merchantQueryOptions(slug: string) {
   return {
     queryKey: ["public-merchant", slug] as const,
-    queryFn: ({ signal }: { signal: AbortSignal }) => getMerchant(slug, signal),
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      publicApi.merchant({ params: { slug } }, { signal }),
     retry: (failures: number, error: Error) =>
       error instanceof PublicApiError && error.retryable && failures < 2,
     staleTime: 30_000,
@@ -37,7 +38,7 @@ export function AmountPage({
   if (merchant.isPending) return <AmountSkeleton />;
   if (merchant.isError) {
     const error = merchant.error;
-    if (error instanceof PublicApiError && error.status === 404) {
+    if (error instanceof PublicApiError && error.code === "MERCHANT_NOT_FOUND") {
       return <UnavailableScreen variant="notfound" />;
     }
     return <UnavailableScreen variant="offline" onRetry={() => void merchant.refetch()} />;
@@ -84,8 +85,13 @@ function AmountForm({
     onError: (error) => {
       if (!(error instanceof PublicApiError)) return;
       if (error.code === "MERCHANT_DISABLED") setDisabled(true);
-      // The backend saw this key with different content; the next try must start fresh.
-      if (error.code === "IDEMPOTENCY_CONFLICT" || error.status === 400) attempt.current = null;
+      // The backend rejected this request's content; the next try must start with a fresh key.
+      if (
+        error.code === "IDEMPOTENCY_CONFLICT" ||
+        error.code === "INVALID_INPUT" ||
+        error.code === "BODY_TOO_LARGE"
+      )
+        attempt.current = null;
     },
   });
 

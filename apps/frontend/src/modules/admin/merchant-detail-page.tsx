@@ -148,7 +148,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
   const pendingQuery = { merchantId, status: "pending" as const, limit: 1, offset: 0 };
   const pendingSettlements = useQuery({
     queryKey: ["admin", "settlements", pendingQuery],
-    queryFn: ({ signal }) => adminApi.settlements(pendingQuery, signal),
+    queryFn: ({ signal }) => adminApi.settlements({ query: pendingQuery }, { signal }),
   });
   const pendingCount = pendingSettlements.data?.total ?? 0;
   const queryClient = useQueryClient();
@@ -158,7 +158,10 @@ function SummarySection({ merchantId }: { merchantId: string }) {
   const generate = useMutation({
     mutationFn: () => {
       key.current ??= newIdempotencyKey();
-      return adminApi.createSettlement(merchantId, key.current);
+      return adminApi.settle({
+        headers: { "idempotency-key": key.current },
+        payload: { merchantId },
+      });
     },
     onSuccess: async (settlement) => {
       key.current = null;
@@ -172,8 +175,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
     },
     onError: (error) => {
       // Keep the key only when the outcome is unknown (no response or server fault).
-      if (error instanceof AdminApiError && error.status > 0 && error.status < 500)
-        key.current = null;
+      if (error instanceof AdminApiError && !error.outcomeUnknown) key.current = null;
     },
   });
 
@@ -279,7 +281,8 @@ const noSettlements: SettlementData[] = [];
 function MerchantSettlements({ merchantId }: { merchantId: string }) {
   const settlements = useQuery({
     queryKey: ["admin", "settlements", { merchantId, limit: 5 }],
-    queryFn: ({ signal }) => adminApi.settlements({ merchantId, limit: 5, offset: 0 }, signal),
+    queryFn: ({ signal }) =>
+      adminApi.settlements({ query: { merchantId, limit: 5, offset: 0 } }, { signal }),
   });
   // Same columns as the settlements list; the merchant and creation time are implied here.
   const table = useAppTable({
@@ -329,7 +332,8 @@ function RenameDialog({
 }) {
   const queryClient = useQueryClient();
   const rename = useMutation({
-    mutationFn: (name: string) => adminApi.updateMerchant(merchant.id, { name }),
+    mutationFn: (name: string) =>
+      adminApi.updateMerchant({ params: { merchantId: merchant.id }, payload: { name } }),
   });
   const form = useForm({
     defaultValues: { name: merchant.name },

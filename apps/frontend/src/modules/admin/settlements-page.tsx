@@ -98,7 +98,7 @@ export function SettlementsPage() {
   };
   const settlements = useQuery({
     queryKey: ["admin", "settlements", query],
-    queryFn: ({ signal }) => adminApi.settlements(query, signal),
+    queryFn: ({ signal }) => adminApi.settlements({ query }, { signal }),
     placeholderData: keepPreviousData,
   });
   const table = useAppTable({

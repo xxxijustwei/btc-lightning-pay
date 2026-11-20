@@ -12,6 +12,11 @@ Applies to `packages/api`, backend HTTP handlers, and frontend API consumers/ada
 - Apps implement handlers and map failures into intentional HTTP responses. Avoid
   leaking internal exception details or treating failed requests as successful data.
 
+Browser apps call `PaymentsApi` through their own `contract-client.ts`, which takes
+paths, input encoding, and response decoding from the contract
+([ADR-0001](../docs/adr/0001-browser-adapters-derive-from-contract.md)). Pages branch
+on an error's `code`, `retryable`, and `outcomeUnknown`, never on HTTP status.
+
 When adding or changing an operation, update the shared contract, backend handler,
 frontend adapter/consumer, and affected tests together. Check all callers before
 changing a public shape or path. The existing health flow is the smallest example,

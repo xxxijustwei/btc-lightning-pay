@@ -1,10 +1,6 @@
-const SLUG = /^[a-z][a-z0-9-]{2,31}$/;
-const ORDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+import { MerchantSlug, OrderId } from "@btc-lightning-pay/api";
+import { Schema } from "effect";
 
-export function isMerchantSlug(value: unknown): value is string {
-  return typeof value === "string" && SLUG.test(value);
-}
+export const isMerchantSlug: (value: unknown) => value is string = Schema.is(MerchantSlug);
 
-export function isOrderId(value: unknown): value is string {
-  return typeof value === "string" && ORDER_ID.test(value);
-}
+export const isOrderId: (value: unknown) => value is string = Schema.is(OrderId);

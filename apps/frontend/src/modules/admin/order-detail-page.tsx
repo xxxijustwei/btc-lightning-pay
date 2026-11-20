@@ -28,12 +28,13 @@ const payOrigin = import.meta.env.VITE_PAY_ORIGIN as string | undefined;
 export function OrderDetailPage({ orderId }: { orderId: string }) {
   const order = useQuery({
     queryKey: ["admin", "order", orderId],
-    queryFn: ({ signal }) => adminApi.order(orderId, signal),
+    queryFn: ({ signal }) => adminApi.order({ params: { orderId } }, { signal }),
   });
   const settlementId = order.data?.settlementId ?? null;
   const settlement = useQuery({
     queryKey: ["admin", "settlement", settlementId],
-    queryFn: ({ signal }) => adminApi.settlement(settlementId!, signal),
+    queryFn: ({ signal }) =>
+      adminApi.settlement({ params: { settlementId: settlementId! } }, { signal }),
     enabled: settlementId !== null,
   });
   const names = useMerchantNames();

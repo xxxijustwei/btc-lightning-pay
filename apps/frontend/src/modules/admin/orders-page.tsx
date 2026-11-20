@@ -106,7 +106,7 @@ export function OrdersPage() {
   };
   const orders = useQuery({
     queryKey: ["admin", "orders", query],
-    queryFn: ({ signal }) => adminApi.orders(query, signal),
+    queryFn: ({ signal }) => adminApi.orders({ query }, { signal }),
     placeholderData: keepPreviousData,
   });
   const fetched = orders.data ?? noRows;

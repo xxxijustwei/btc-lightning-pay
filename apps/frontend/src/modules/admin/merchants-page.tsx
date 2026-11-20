@@ -177,7 +177,10 @@ function CreateMerchantDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const create = useMutation({ mutationFn: adminApi.createMerchant });
+  const create = useMutation({
+    mutationFn: (input: { name: string; email: string; slug: string }) =>
+      adminApi.createMerchant({ payload: input }),
+  });
   const form = useForm({
     defaultValues: { name: "", email: "", slug: "" },
     onSubmit: async ({ value }) => {
@@ -325,7 +328,10 @@ export function ToggleMerchantDialog({
   const queryClient = useQueryClient();
   const toggle = useMutation({
     mutationFn: (input: { id: string; enabled: boolean }) =>
-      adminApi.updateMerchant(input.id, { enabled: input.enabled }),
+      adminApi.updateMerchant({
+        params: { merchantId: input.id },
+        payload: { enabled: input.enabled },
+      }),
     onSuccess: async (updated) => {
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
       toast.add({

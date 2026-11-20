@@ -39,7 +39,7 @@ import { AdminPage } from "./shell";
 export function SettlementDetailPage({ settlementId }: { settlementId: string }) {
   const settlement = useQuery({
     queryKey: ["admin", "settlement", settlementId],
-    queryFn: ({ signal }) => adminApi.settlement(settlementId, signal),
+    queryFn: ({ signal }) => adminApi.settlement({ params: { settlementId } }, { signal }),
   });
   const names = useMerchantNames();
   const admins = useQuery(allAdminsQuery());
@@ -179,7 +179,8 @@ function SettlementItems({ settlement }: { settlement: SettlementData }) {
   const query = { limit: search.size, offset: search.page * search.size };
   const items = useQuery({
     queryKey: ["admin", "settlement-orders", settlement.id, query],
-    queryFn: ({ signal }) => adminApi.settlementOrders(settlement.id, query, signal),
+    queryFn: ({ signal }) =>
+      adminApi.settlementOrders({ params: { settlementId: settlement.id }, query }, { signal }),
     placeholderData: keepPreviousData,
   });
   const columns = useMemo(
@@ -256,7 +257,8 @@ function ConfirmPaidDialog({
 }) {
   const queryClient = useQueryClient();
   const confirm = useMutation({
-    mutationFn: (proof: string) => adminApi.confirmSettlement(settlement.id, proof),
+    mutationFn: (proof: string) =>
+      adminApi.confirmSettlement({ params: { settlementId: settlement.id }, payload: { proof } }),
   });
   const form = useForm({
     defaultValues: { proof: "", paid: false },
@@ -357,7 +359,8 @@ function CancelDialog({
 }) {
   const queryClient = useQueryClient();
   const cancel = useMutation({
-    mutationFn: (reason: string) => adminApi.cancelSettlement(settlement.id, reason),
+    mutationFn: (reason: string) =>
+      adminApi.cancelSettlement({ params: { settlementId: settlement.id }, payload: { reason } }),
   });
   const form = useForm({
     defaultValues: { reason: "" },
