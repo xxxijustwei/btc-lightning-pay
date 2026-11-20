@@ -1,4 +1,4 @@
-import type { WalletPayment } from "@btc-lightning-pay/api";
+import { satsToMsat, type Sats, type WalletPayment } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import type { PaymentError } from "./errors";
 import { errorFields, type PaymentLog } from "./logging";
@@ -69,7 +69,7 @@ export function judgeReceipt(
       ? { update: { expiresAt: expiry, status: "pending" } }
       : { anomaly: "contradicts_order" };
   if (payment.receivedMsat === null) return { anomaly: "contradicts_order" };
-  if (payment.receivedMsat < row.amountSat * 1000) return { anomaly: "underpaid" };
+  if (payment.receivedMsat < satsToMsat(row.amountSat)) return { anomaly: "underpaid" };
   return {
     update: { expiresAt: expiry, paidAt, receivedMsat: payment.receivedMsat, status: "paid" },
   };
@@ -142,7 +142,7 @@ export function createCrediting(store: ReturnType<typeof createPaymentStore>, lo
      */
     issueInvoice: (reservation: {
       id: string;
-      amountSat: number;
+      amountSat: Sats;
     }): Effect.Effect<
       { invoice: Invoice } | { anomaly: Anomaly; orderId: string },
       PaymentError,

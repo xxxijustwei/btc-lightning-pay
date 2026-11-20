@@ -1,11 +1,12 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
+import { Sats } from "@btc-lightning-pay/api";
 import { publicApi, PublicApiError, type PublicOrderData } from "./public-api";
 
 const order = (expiresAt: number, status: PublicOrderData["status"]): PublicOrderData => ({
   id: "12345678-1234-4234-8234-123456789abc",
   merchantId: "12345678-1234-4234-8234-123456789abd",
   amountUsdCents: 1000,
-  amountSat: 10000,
+  amountSat: Sats.make(10000),
   status,
   invoice: "lnbc100u1test",
   expiresAt: new Date(expiresAt).toISOString(),

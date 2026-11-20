@@ -626,6 +626,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@btc-lightning-pay/api':
+        specifier: workspace:*
+        version: link:../api
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.16)(better-sqlite3@12.11.1)(kysely@0.29.9)(pg@8.23.1)(postgres@4.1.1)

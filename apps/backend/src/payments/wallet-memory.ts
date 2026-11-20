@@ -1,4 +1,4 @@
-import type { WalletPayment } from "@btc-lightning-pay/api";
+import { Millisats, satsToMsat, type WalletPayment } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import { UpstreamFailure } from "./errors";
 import type { Wallet } from "./wallet";
@@ -34,7 +34,7 @@ export function memoryWallet() {
   /** What the wallet reports for an order now: a contradicted order reads as paid with 1 msat. */
   const report = (payment: Payment): Payment =>
     contradicted.has(payment.orderId)
-      ? { ...payment, paidAt: new Date().toISOString(), receivedMsat: 1 }
+      ? { ...payment, paidAt: new Date().toISOString(), receivedMsat: Millisats.make(1) }
       : payment;
   const wallet: typeof Wallet.Service = {
     issueInvoice: ({ orderId, amountSat }) =>
@@ -96,7 +96,8 @@ export function memoryWallet() {
       invoices.set(orderId, {
         ...issued,
         paidAt: new Date().toISOString(),
-        receivedMsat: receivedMsat ?? issued.amountSat * 1000,
+        receivedMsat:
+          receivedMsat === undefined ? satsToMsat(issued.amountSat) : Millisats.make(receivedMsat),
       });
     },
     /** From now on the wallet reports a fact that contradicts the order, until it is paid. */

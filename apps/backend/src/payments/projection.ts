@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { Settlement } from "@btc-lightning-pay/api";
+import { excessMsat, Settlement } from "@btc-lightning-pay/api";
 import type { PaymentStatus } from "@btc-lightning-pay/api";
 import type { OrderRow } from "./store";
 export function publicOrder(row: OrderRow) {
@@ -25,7 +25,7 @@ export function adminOrder(row: OrderRow & { settlementStatus?: string | null })
     paidAt: row.paidAt?.toISOString() ?? null,
     paymentHash: row.paymentHash,
     receivedMsat: row.receivedMsat,
-    excessMsat: row.receivedMsat === null ? null : row.receivedMsat - row.amountSat * 1000,
+    excessMsat: row.receivedMsat === null ? null : excessMsat(row.receivedMsat, row.amountSat),
     settlementId: row.settlementId,
     settlementStatus:
       row.settlementStatus === "pending"

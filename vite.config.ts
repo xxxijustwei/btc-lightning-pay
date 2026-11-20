@@ -20,7 +20,11 @@ export default defineConfig({
       {
         test: {
           name: "backend",
-          include: ["apps/backend/src/**/*.test.ts", "apps/wallet/src/**/*.test.ts"],
+          include: [
+            "apps/backend/src/**/*.test.ts",
+            "apps/wallet/src/**/*.test.ts",
+            "packages/api/src/**/*.test.ts",
+          ],
         },
       },
       {

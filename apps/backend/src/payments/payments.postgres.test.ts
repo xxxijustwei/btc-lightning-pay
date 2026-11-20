@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { createDatabase } from "@btc-lightning-pay/db/client";
 import { sql, type SQL } from "drizzle-orm";
+import { Millisats } from "@btc-lightning-pay/api";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test";
 import { createPaymentStore, transactionRunner } from "./store";
@@ -211,7 +212,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
         paymentHash: order.paymentHash,
         expiresAt: order.expiresAt.toISOString(),
         paidAt: new Date().toISOString(),
-        receivedMsat: 10000000,
+        receivedMsat: Millisats.make(10000000),
       }),
     );
     const release = await hold(sql`SELECT id FROM payment_order WHERE id=${order.id} FOR UPDATE`);

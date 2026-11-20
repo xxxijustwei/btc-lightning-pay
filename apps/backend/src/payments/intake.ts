@@ -1,4 +1,4 @@
-import type { NewOrder } from "@btc-lightning-pay/api";
+import type { NewOrder, Sats } from "@btc-lightning-pay/api";
 import { btcQuote, merchant, paymentOrder } from "@btc-lightning-pay/db/schema";
 import { and, count, eq, getTableColumns, gte, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
@@ -100,7 +100,7 @@ function reservations(transaction: TransactionRunner) {
       merchantId: string,
       key: string,
       input: typeof NewOrder.Type,
-      price: Quote & { amountSat: number },
+      price: Quote & { amountSat: Sats },
     ): Promise<{ order: OrderRow } | { reservation: StoredOrder }> {
       return transaction({ admin: true }, async (tx) => {
         const [m] = await tx

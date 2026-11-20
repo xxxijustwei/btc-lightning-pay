@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { Context, Effect, Schema } from "effect";
-import { PaymentProblem, PublicOrder } from "@btc-lightning-pay/api";
+import { Millisats, PaymentProblem, PublicOrder, Sats, satsToMsat } from "@btc-lightning-pay/api";
 import type { Database } from "@btc-lightning-pay/db/client";
 import * as schema from "@btc-lightning-pay/db/schema";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vite-plus/test";
@@ -111,17 +111,17 @@ const call = (req: Request, actor?: string) =>
   callWith(req, { read: async () => ({ actor: actor ?? null, cookies: [] }) });
 const invoice = (id: string, amountSat = 10000) => ({
   orderId: id,
-  amountSat,
+  amountSat: Sats.make(amountSat),
   invoice: "lnbc100u1test",
   paymentHash: id.replaceAll("-", "").repeat(2),
   expiresAt: new Date(Date.now() + 3600000).toISOString(),
-  paidAt: null,
-  receivedMsat: null,
+  paidAt: null as string | null,
+  receivedMsat: null as Millisats | null,
 });
 const paid = (id: string, amountSat = 10000) => ({
   ...invoice(id, amountSat),
   paidAt: new Date().toISOString(),
-  receivedMsat: amountSat * 1000,
+  receivedMsat: satsToMsat(Sats.make(amountSat)),
 });
 
 beforeAll(async () => {
@@ -280,7 +280,7 @@ test("payment updates are monotonic, late payments are credited and net cost is 
     unsettledSat: 10000,
   });
   expect(await store.summary(other)).toMatchObject({ paidSat: 0 });
-  expect(await credited({ ...payment, receivedMsat: 1 })).toEqual({
+  expect(await credited({ ...payment, receivedMsat: Millisats.make(1) })).toEqual({
     anomaly: "amount_changed",
     orderId: row.id,
   });
@@ -517,7 +517,7 @@ test("the HTTP wallet refuses redirects and bodies it cannot read", async () => 
           APP_ENV: "development",
         }),
         { fetcher },
-      ).issueInvoice({ orderId: id, amountSat }),
+      ).issueInvoice({ orderId: id, amountSat: Sats.make(amountSat) }),
     );
   await expect(issue()).rejects.toMatchObject({ reason: "http", upstreamStatus: 302 });
   expect(fetcher.mock.calls[0][1]?.redirect).toBe("manual");
@@ -687,7 +687,7 @@ test("an invoice that contradicts its reservation is an anomaly and stores nothi
   const overcharging = {
     ...wallet.wallet,
     issueInvoice: (request: { orderId: string; amountSat: number }) =>
-      wallet.wallet.issueInvoice({ ...request, amountSat: request.amountSat + 1 }),
+      wallet.wallet.issueInvoice({ ...request, amountSat: Sats.make(request.amountSat + 1) }),
   };
   log.mockClear();
   await expect(create(overcharging)).rejects.toMatchObject({ code: "WALLET_UNAVAILABLE" });
@@ -886,12 +886,12 @@ const walletEnv = {
 
 test("an overpaid order is paid; the excess is recorded but never owed to the merchant", async () => {
   const row = await createOrder(onne, key, { amountUsdCents: 1000 });
-  await credit({ ...paid(row.id), receivedMsat: 12_000_000 });
+  await credit({ ...paid(row.id), receivedMsat: Millisats.make(12_000_000) });
   const admin = await (await call(request(`/api/admin/orders/${row.id}`), "admin")).json();
   expect(admin).toMatchObject({ status: "paid", receivedMsat: 12_000_000, excessMsat: 2_000_000 });
   expect(await store.summary(onne)).toMatchObject({ paidSat: 10000 });
   const short = await createOrder(onne, `${key}-short`, { amountUsdCents: 1000 });
-  expect(await credited({ ...paid(short.id), receivedMsat: 9_999_000 })).toEqual({
+  expect(await credited({ ...paid(short.id), receivedMsat: Millisats.make(9_999_000) })).toEqual({
     anomaly: "underpaid",
     orderId: short.id,
   });
@@ -958,7 +958,7 @@ test("the payment sync credits receipts nobody polled, skips anomalies and keeps
     Effect.succeed({
       payments: [
         paid(row.id),
-        { ...paid(contradicted.id), receivedMsat: 1 },
+        { ...paid(contradicted.id), receivedMsat: Millisats.make(1) },
         paid(crypto.randomUUID()),
       ],
       latest,
@@ -1122,7 +1122,9 @@ test("production wallet calls carry the Cloudflare Access service token", async 
   const body = fetcher.mock.calls[0][1]?.body as Uint8Array;
   expect(JSON.parse(new TextDecoder().decode(body))).toEqual({ since: 5 });
   await expect(
-    Effect.runPromise(wallet.issueInvoice({ orderId: crypto.randomUUID(), amountSat: 1 })),
+    Effect.runPromise(
+      wallet.issueInvoice({ orderId: crypto.randomUUID(), amountSat: Sats.make(1) }),
+    ),
   ).rejects.toMatchObject({
     reason: "mismatch",
     upstreamStatus: 409,

@@ -1,4 +1,4 @@
-import { Context, Schema } from "effect";
+import { Context, Option, Schema } from "effect";
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -39,10 +39,34 @@ export const ManagedUser = Schema.Struct({
   createdAt: Schema.String,
 });
 export const IdempotencyKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{16,128}$/));
-export const Sats = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 9_007_199_254_740 }));
+/** Whole satoshis of one order or receipt; branded so a millisatoshi value cannot stand in. */
+export const Sats = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 9_007_199_254_740 }),
+).pipe(Schema.brand("Sats"));
+export type Sats = typeof Sats.Type;
+/** Millisatoshis as Lightning reports them; branded apart from `Sats`. */
 export const Millisats = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-);
+).pipe(Schema.brand("Millisats"));
+export type Millisats = typeof Millisats.Type;
+
+const MSAT_PER_SAT = 1000;
+/** The millisatoshis in whole satoshis. Every `Sats` amount fits: its maximum is chosen so. */
+export const satsToMsat = (sats: Sats): Millisats => Millisats.make(sats * MSAT_PER_SAT);
+/** Whole satoshis in `msat`, or `undefined` when it is not a valid whole-satoshi amount. */
+export const msatToSats = (msat: number): Sats | undefined =>
+  Option.getOrUndefined(Sats.makeOption(msat / MSAT_PER_SAT));
+/** Millisatoshis in a satoshi count reported as `bigint`; throws when it is not a safe integer. */
+export function bigintSatsToMsat(sats: bigint): Millisats {
+  const msat = sats * BigInt(MSAT_PER_SAT);
+  if (msat < 0n || msat > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError("Millisatoshi amount out of range");
+  }
+  return Millisats.make(Number(msat));
+}
+/** Millisatoshis received above an invoice of `sats`; throws when `received` is less. */
+export const excessMsat = (received: Millisats, sats: Sats): Millisats =>
+  Millisats.make(received - satsToMsat(sats));
 export const UsdCents = Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 30000 }));
 export const Reference = Schema.String.check(Schema.isMaxLength(128));
 export const NewOrder = Schema.Struct({

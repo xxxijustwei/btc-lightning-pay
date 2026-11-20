@@ -17,6 +17,10 @@ paths, input encoding, and response decoding from the contract
 ([ADR-0001](../docs/adr/0001-browser-adapters-derive-from-contract.md)). Pages branch
 on an error's `code`, `retryable`, and `outcomeUnknown`, never on HTTP status.
 
+Amounts stay integers in their smallest unit. `Sats` and `Millisats` are branded, so one
+cannot stand in for the other; convert only through `satsToMsat`, `msatToSats`,
+`bigintSatsToMsat`, and `excessMsat`, and type database amount columns with them.
+
 When adding or changing an operation, update the shared contract, backend handler,
 frontend adapter/consumer, and affected tests together. Check all callers before
 changing a public shape or path. The existing health flow is the smallest example,

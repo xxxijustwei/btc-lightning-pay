@@ -1,3 +1,4 @@
+import type { Millisats, Sats } from "@btc-lightning-pay/api/payments";
 import { sql, type SQLWrapper } from "drizzle-orm";
 import {
   bigint,
@@ -97,7 +98,7 @@ export const paymentOrder = pgTable(
       .references(() => merchant.id, { onDelete: "restrict" }),
     key: text("idempotency_key").notNull(),
     amountUsdCents: integer("amount_usd_cents").notNull(),
-    amountSat: bigint("amount_sat", { mode: "number" }).notNull(),
+    amountSat: bigint("amount_sat", { mode: "number" }).$type<Sats>().notNull(),
     reference: text("reference").notNull().default(""),
     rateUsd: text("rate_usd").notNull(),
     quotedAt: timestamp("quoted_at", { withTimezone: true }).notNull(),
@@ -107,7 +108,7 @@ export const paymentOrder = pgTable(
     paymentHash: text("payment_hash"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
-    receivedMsat: bigint("received_msat", { mode: "number" }),
+    receivedMsat: bigint("received_msat", { mode: "number" }).$type<Millisats>(),
     settlementId: uuid("settlement_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -159,7 +160,7 @@ export const settlementItem = pgTable(
     settlementId: uuid("settlement_id").notNull(),
     merchantId: text("merchant_id").notNull(),
     orderId: uuid("order_id").notNull(),
-    amountSat: bigint("amount_sat", { mode: "number" }).notNull(),
+    amountSat: bigint("amount_sat", { mode: "number" }).$type<Sats>().notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.settlementId, t.orderId] }),

@@ -1,6 +1,12 @@
 import type { BreezSdk, ListPaymentsRequest, Payment } from "@breeztech/breez-sdk-spark/nodejs";
 import { Schema } from "effect";
-import { WalletPayment } from "@btc-lightning-pay/api";
+import {
+  bigintSatsToMsat,
+  msatToSats,
+  satsToMsat,
+  WalletPayment,
+  type Sats,
+} from "@btc-lightning-pay/api";
 import { WalletDependencyFailure, logWalletAnomaly } from "./errors.ts";
 
 export type SparkSdk = Pick<BreezSdk, "receivePayment" | "parse" | "listPayments" | "getInfo">;
@@ -16,7 +22,7 @@ const completedReceipts = {
 } satisfies ListPaymentsRequest;
 
 /** True when a completed SDK receipt can settle an invoice of `amountSat`; overpayment counts. */
-function settles(payment: Payment, bolt11: string, amountSat: number) {
+function settles(payment: Payment, bolt11: string, amountSat: Sats) {
   return (
     payment.paymentType === "receive" &&
     payment.status === "completed" &&
@@ -30,16 +36,16 @@ function settles(payment: Payment, bolt11: string, amountSat: number) {
 }
 const received = (payment: Payment) => ({
   paidAt: new Date(payment.timestamp * 1000).toISOString(),
-  receivedMsat: Number(payment.amount * 1000n),
+  receivedMsat: bigintSatsToMsat(payment.amount),
 });
 
 export function createSparkWallet(sdk: SparkSdk) {
-  async function invoice(orderId: string, amountSat: number, value: string, hash?: string) {
+  async function invoice(orderId: string, amountSat: Sats, value: string, hash?: string) {
     const parsed = await sdk.parse(value);
     if (
       parsed.type !== "bolt11Invoice" ||
       parsed.network !== "bitcoin" ||
-      parsed.amountMsat !== amountSat * 1000 ||
+      parsed.amountMsat !== satsToMsat(amountSat) ||
       parsed.description !== `Order ${orderId}` ||
       (hash && parsed.paymentHash !== hash)
     )
@@ -81,7 +87,7 @@ export function createSparkWallet(sdk: SparkSdk) {
         Date.now() / 1000 - info.lastSyncedAt < 180
       );
     },
-    async create(orderId: string, amountSat: number) {
+    async create(orderId: string, amountSat: Sats) {
       const response = await sdk.receivePayment({
         paymentMethod: {
           type: "bolt11Invoice",
@@ -93,7 +99,7 @@ export function createSparkWallet(sdk: SparkSdk) {
       const { payment } = await invoice(orderId, amountSat, response.paymentRequest);
       return Schema.decodeUnknownSync(WalletPayment)(payment);
     },
-    async find(orderId: string, amountSat: number, paymentHash: string, bolt11: string) {
+    async find(orderId: string, amountSat: Sats, paymentHash: string, bolt11: string) {
       const { issuedAt, payment: pending } = await invoice(orderId, amountSat, bolt11, paymentHash);
       // A payment completes while its invoice is valid; the margins cover clock skew and claiming.
       const expiresAt = Date.parse(pending.expiresAt) / 1000;
@@ -129,9 +135,9 @@ export function createSparkWallet(sdk: SparkSdk) {
             ? orderDescription.exec(parsed.description ?? "")?.[1]
             : undefined;
         if (!parsed || parsed.type !== "bolt11Invoice" || !orderId) continue;
-        const amountSat = (parsed.amountMsat ?? 0) / 1000;
+        const amountSat = msatToSats(parsed.amountMsat ?? 0);
         try {
-          if (!Number.isSafeInteger(amountSat) || amountSat < 1) throw mismatch();
+          if (amountSat === undefined) throw mismatch();
           const { payment: pending } = await invoice(orderId, amountSat, bolt11);
           if (
             pending.paymentHash !== payment.details.htlcDetails.paymentHash ||

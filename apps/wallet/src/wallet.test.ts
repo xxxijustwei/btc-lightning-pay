@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import type { InputType, Payment } from "@breeztech/breez-sdk-spark/nodejs";
+import { Sats } from "@btc-lightning-pay/api";
 import { createSparkWallet, type SparkSdk } from "./spark.ts";
 import { walletWebHandler } from "./app.ts";
 import { parseConfig, readSecret } from "./config.ts";
@@ -67,7 +68,7 @@ function fixture(records: Payment[] = []) {
 }
 test("creates fixed one-hour invoices; pending receipt has no fabricated amount", async () => {
   const { sdk, wallet } = fixture();
-  const result = await wallet.create(id, 10000);
+  const result = await wallet.create(id, Sats.make(10000));
   expect(result).toMatchObject({ paymentHash: hash, paidAt: null, receivedMsat: null });
   expect(sdk.receivePayment).toHaveBeenCalledWith({
     paymentMethod: {
@@ -77,12 +78,12 @@ test("creates fixed one-hour invoices; pending receipt has no fabricated amount"
       expirySecs: 3600,
     },
   });
-  expect(await wallet.find(id, 10000, hash, bolt11)).toEqual(result);
+  expect(await wallet.find(id, Sats.make(10000), hash, bolt11)).toEqual(result);
 });
 test("completed receipt uses SDK amount directly, strips fees and preimage, survives a fresh service", async () => {
   for (let i = 0; i < 2; i++) {
     const { wallet } = fixture([payment]);
-    expect(await wallet.find(id, 10000, hash, bolt11)).toEqual({
+    expect(await wallet.find(id, Sats.make(10000), hash, bolt11)).toEqual({
       orderId: id,
       amountSat: 10000,
       paymentHash: hash,
@@ -97,25 +98,29 @@ test.each([{ amount: 9999n }, { paymentType: "send" as const }, { status: "pendi
   "rejects mismatched payment facts",
   async (change) => {
     const { wallet } = fixture([{ ...payment, ...change }]);
-    await expect(wallet.find(id, 10000, hash, bolt11)).rejects.toMatchObject({
+    await expect(wallet.find(id, Sats.make(10000), hash, bolt11)).rejects.toMatchObject({
       reason: "mismatch",
     });
   },
 );
 test("an overpaid invoice is paid and reports the full amount received", async () => {
   const { wallet } = fixture([{ ...payment, amount: 12000n }]);
-  expect(await wallet.find(id, 10000, hash, bolt11)).toMatchObject({
+  expect(await wallet.find(id, Sats.make(10000), hash, bolt11)).toMatchObject({
     amountSat: 10000,
     receivedMsat: 12000000,
   });
 });
 test("binds the invoice to the order, hash and amount", async () => {
   const { wallet } = fixture([payment]);
-  await expect(wallet.find(crypto.randomUUID(), 10000, hash, bolt11)).rejects.toMatchObject({
+  await expect(
+    wallet.find(crypto.randomUUID(), Sats.make(10000), hash, bolt11),
+  ).rejects.toMatchObject({
     reason: "mismatch",
   });
-  await expect(wallet.find(id, 10001, hash, bolt11)).rejects.toMatchObject({ reason: "mismatch" });
-  await expect(wallet.find(id, 10000, "b".repeat(64), bolt11)).rejects.toMatchObject({
+  await expect(wallet.find(id, Sats.make(10001), hash, bolt11)).rejects.toMatchObject({
+    reason: "mismatch",
+  });
+  await expect(wallet.find(id, Sats.make(10000), "b".repeat(64), bolt11)).rejects.toMatchObject({
     reason: "mismatch",
   });
 });
@@ -125,7 +130,7 @@ test("a lookup reads only the invoice's lifetime, page by page", async () => {
   sdk.listPayments
     .mockResolvedValueOnce({ payments: Array.from({ length: 500 }, () => unrelated) })
     .mockResolvedValueOnce({ payments: [payment] });
-  expect((await wallet.find(id, 10000, hash, bolt11)).paidAt).not.toBeNull();
+  expect((await wallet.find(id, Sats.make(10000), hash, bolt11)).paidAt).not.toBeNull();
   expect(sdk.listPayments).toHaveBeenCalledTimes(2);
   expect(sdk.listPayments).toHaveBeenNthCalledWith(
     2,
@@ -138,13 +143,15 @@ test("a lookup reads only the invoice's lifetime, page by page", async () => {
 });
 test("a duplicated payment hash fails only its own order", async () => {
   const { wallet } = fixture([payment, { ...payment, id: "copy" }]);
-  await expect(wallet.find(id, 10000, hash, bolt11)).rejects.toMatchObject({ reason: "mismatch" });
+  await expect(wallet.find(id, Sats.make(10000), hash, bolt11)).rejects.toMatchObject({
+    reason: "mismatch",
+  });
 });
 test("history failure is retryable and never becomes an unpaid verdict", async () => {
   const { sdk, wallet } = fixture([payment]);
   sdk.listPayments.mockRejectedValueOnce(new Error("offline"));
-  await expect(wallet.find(id, 10000, hash, bolt11)).rejects.toThrow();
-  expect((await wallet.find(id, 10000, hash, bolt11)).paidAt).not.toBeNull();
+  await expect(wallet.find(id, Sats.make(10000), hash, bolt11)).rejects.toThrow();
+  expect((await wallet.find(id, Sats.make(10000), hash, bolt11)).paidAt).not.toBeNull();
 });
 test("completed receipts list order payments since a time and skip foreign or bad receipts", async () => {
   const foreign = { ...payment, id: "foreign", timestamp: 1700000200 };

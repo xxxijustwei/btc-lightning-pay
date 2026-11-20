@@ -1,3 +1,4 @@
+import { Sats } from "@btc-lightning-pay/api";
 import { Schema } from "effect";
 import { UpstreamFailure } from "./errors";
 
@@ -5,7 +6,7 @@ const Rate = Schema.String.check(Schema.isPattern(/^[0-9]{1,12}(\.[0-9]{1,8})?$/
 const Price = Schema.Struct({
   data: Schema.Struct({ amount: Rate, currency: Schema.Literal("USD") }),
 });
-export function quoteSats(cents: number, price: string): number {
+export function quoteSats(cents: number, price: string): Sats {
   const rate = Schema.decodeUnknownSync(Rate)(price);
   const [whole, fraction = ""] = rate.split(".");
   const denominator = BigInt(whole + fraction);
@@ -14,7 +15,7 @@ export function quoteSats(cents: number, price: string): number {
   const numerator = BigInt(cents) * 1_000_000n * 10n ** BigInt(fraction.length);
   const sats = (numerator + denominator - 1n) / denominator;
   if (sats < 1n || sats > 9_007_199_254_740n) throw new Error("Invalid quote");
-  return Number(sats);
+  return Sats.make(Number(sats));
 }
 export function createQuoteSource(fetcher: typeof fetch = fetch, now = Date.now) {
   let cached: { rateUsd: string; quotedAt: Date } | undefined;
