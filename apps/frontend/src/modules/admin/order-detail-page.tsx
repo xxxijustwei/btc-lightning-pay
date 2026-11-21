@@ -14,6 +14,8 @@ import { orderQuery, settlementQuery } from "./queries";
 import { invoiceCreatedAt } from "../../lib/bolt11";
 import { formatBeijing, formatMsatAsSats, formatSats, formatUsd, shortId } from "../../lib/format";
 import {
+  Amount,
+  satsLabel,
   CopyButton,
   Detail,
   ErrorState,
@@ -110,9 +112,12 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                     <span className="font-mono">{data.merchantId}</span>
                   )}
                 </Detail>
-                <Detail label="原始 USD 金额">{formatUsd(data.amountUsdCents)}</Detail>
-                <Detail label="固定 sats（向上取整）">
-                  <span className="font-mono">{formatSats(data.amountSat)}</span>
+                <Detail label="金额">
+                  <Amount
+                    size="xl"
+                    main={formatUsd(data.amountUsdCents)}
+                    sub={`${satsLabel(data.amountSat)}（向上取整）`}
+                  />
                 </Detail>
                 <Detail label="BTC/USD 参考价">
                   <span className="font-mono">{data.rateUsd}</span>
@@ -132,7 +137,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                 <Detail label="开票时间">{formatBeijing(invoiceCreatedAt(data.invoice))}</Detail>
                 <Detail label="到期时间">{formatBeijing(data.expiresAt)}</Detail>
                 <Detail label="Invoice 金额">
-                  <span className="font-mono">{formatSats(data.amountSat)} sats</span>
+                  <Amount main={formatUsd(data.amountUsdCents)} sub={satsLabel(data.amountSat)} />
                 </Detail>
               </dl>
               <LongValue label="Payment hash" value={data.paymentHash} />
@@ -146,14 +151,17 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
             <CardContent>
               <dl className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-x-6 gap-y-4">
                 <Detail label="商户应收">
-                  <span className="font-mono">{formatSats(data.amountSat)} sats</span>
+                  <Amount main={formatUsd(data.amountUsdCents)} sub={satsLabel(data.amountSat)} />
                 </Detail>
                 <Detail label="钱包实收">
                   {data.receivedMsat === null ? (
                     "—"
                   ) : (
                     <>
-                      <span className="font-mono">{formatMsatAsSats(data.receivedMsat)} sats</span>
+                      <Amount
+                        main={formatUsd(data.amountUsdCents)}
+                        sub={`${formatMsatAsSats(data.receivedMsat)} sats`}
+                      />
                       <span className="block font-mono text-xs text-muted-foreground">
                         {data.receivedMsat.toLocaleString("en-US")} msat ·{" "}
                         {data.excessMsat ? (

@@ -24,9 +24,9 @@ import {
 } from "../../lib/api/admin";
 import { DataTable } from "../../components/data-table/data-table";
 import { useAppTable } from "../../components/data-table/table-hook";
-import { formatBeijing, formatSats } from "../../lib/format";
+import { formatBeijing, formatSats, formatUsd } from "../../lib/format";
 import { validateName } from "../../lib/validation";
-import { Detail, EnabledBadge, ErrorState } from "./common";
+import { Amount, CurrentValue, Detail, EnabledBadge, ErrorState, satsLabel } from "./common";
 import { FormDialog } from "./form-dialog";
 import { useGenerateSettlement } from "./generate-settlement";
 import { ToggleMerchantDialog } from "./merchants-page";
@@ -152,7 +152,7 @@ function SummarySection({ merchantId }: { merchantId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["admin"] });
       toast.add({
         title: "结算单已生成",
-        description: `${settlement.orderCount} 笔订单 · ${formatSats(settlement.amountSat)} sats`,
+        description: `${settlement.orderCount} 笔订单 · 原价 ${formatUsd(settlement.amountUsdCents)}`,
         type: "success",
       });
       await navigate({ to: "/settlements/$settlementId", params: { settlementId: settlement.id } });
@@ -162,15 +162,17 @@ function SummarySection({ merchantId }: { merchantId: string }) {
   if (summary.isError)
     return <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />;
   const data = summary.data;
+  // Settled history shows the orders' original prices; what is still held in BTC shows its
+  // current value.
   const cards = [
-    { label: "已支付应付", value: data?.paidSat },
-    { label: "已结算", value: data?.settledSat },
+    { label: "已支付应付", sats: data?.paidSat, originalUsdCents: data?.paidUsdCents },
+    { label: "已结算", sats: data?.settledSat, originalUsdCents: data?.settledUsdCents },
     {
       label: "待付款占用",
-      value: data?.pendingSettlementSat,
+      sats: data?.pendingSettlementSat,
       badge: data && data.pendingSettlementSat > 0 && pendingCount > 0,
     },
-    { label: "可生成结算单", value: data?.availableSettlementSat },
+    { label: "可生成结算单", sats: data?.availableSettlementSat },
   ];
   const available = data?.availableSettlementSat ?? 0;
 
@@ -185,14 +187,21 @@ function SummarySection({ merchantId }: { merchantId: string }) {
                   {card.label}
                   {card.badge ? <Badge variant="warning">{pendingCount} 张待付款</Badge> : null}
                 </CardDescription>
-                <CardTitle className="text-2xl font-semibold tabular-nums">
-                  {card.value === undefined ? (
+                <CardTitle>
+                  {card.sats === undefined ? (
                     <Skeleton className="h-8 w-28" />
                   ) : (
-                    <>
-                      {formatSats(card.value)}{" "}
-                      <span className="text-sm font-normal text-muted-foreground">sats</span>
-                    </>
+                    <Amount
+                      size="xl"
+                      main={
+                        card.originalUsdCents === undefined ? (
+                          <CurrentValue sats={card.sats} />
+                        ) : (
+                          formatUsd(card.originalUsdCents)
+                        )
+                      }
+                      sub={satsLabel(card.sats)}
+                    />
                   )}
                 </CardTitle>
               </CardHeader>
@@ -201,8 +210,8 @@ function SummarySection({ merchantId }: { merchantId: string }) {
         </div>
         {data ? (
           <p className="text-xs text-muted-foreground">
-            未结清 = 已支付应付 − 已结算 = {formatSats(data.unsettledSat)}{" "}
-            sats（含待付款占用）。按已支付订单的 sats 记账，不是钱包余额。
+            未结清 <CurrentValue sats={data.unsettledSat} /> · {satsLabel(data.unsettledSat)}
+            （含待付款占用）
           </p>
         ) : null}
       </section>
@@ -217,10 +226,12 @@ function SummarySection({ merchantId }: { merchantId: string }) {
           <div className="flex flex-wrap items-center justify-end gap-4">
             <div className="flex flex-col items-end">
               <span className="text-xs text-muted-foreground">预览金额（以生成结果为准）</span>
-              <span className="text-xl font-semibold tabular-nums">
-                {formatSats(available)}{" "}
-                <span className="text-sm font-normal text-muted-foreground">sats</span>
-              </span>
+              <Amount
+                size="lg"
+                align="end"
+                main={<CurrentValue sats={available} />}
+                sub={`${satsLabel(available)} · 原价 ${formatUsd(data?.availableSettlementUsdCents ?? 0)}`}
+              />
             </div>
             <Button
               disabled={!data || available <= 0 || generate.isPending}

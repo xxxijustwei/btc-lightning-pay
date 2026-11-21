@@ -4,8 +4,7 @@ import { Skeleton } from "@btc-lightning-pay/ui/components/skeleton";
 import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
 import { useQuery } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { formatSats } from "../../lib/format";
-import { ErrorState, UsdApprox } from "./common";
+import { Amount, CurrentValue, ErrorState, satsLabel } from "./common";
 import { walletQuery } from "./queries";
 import { AdminPage } from "./shell";
 
@@ -33,18 +32,11 @@ export function OverviewPage() {
             ) : wallet.isError ? (
               <ErrorState error={wallet.error} onRetry={() => void wallet.refetch()} />
             ) : (
-              <>
-                <span className="flex items-baseline gap-1.5 font-mono tabular-nums">
-                  <span className="text-3xl font-semibold tracking-tight">
-                    {formatSats(wallet.data.balanceSat)}
-                  </span>
-                  <span className="text-muted-foreground">sats</span>
-                </span>
-                <UsdApprox
-                  sats={wallet.data.balanceSat}
-                  className="font-medium text-muted-foreground tabular-nums"
-                />
-              </>
+              <Amount
+                size="xl"
+                main={<CurrentValue sats={wallet.data.balanceSat} />}
+                sub={satsLabel(wallet.data.balanceSat)}
+              />
             )}
           </CardContent>
         </Card>

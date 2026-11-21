@@ -15,17 +15,19 @@ import { useMemo, useState } from "react";
 import { DataTable, DataTablePagination } from "../../components/data-table/data-table";
 import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { adminApi, type PayoutData, type SettlementDetailData } from "../../lib/api/admin";
-import { formatBeijing, formatSats, shortId } from "../../lib/format";
+import { formatBeijing, formatUsd, shortId } from "../../lib/format";
 import { paginationParsers } from "../../lib/list-search";
 import { explorerLink, formatTokenUnits, networkName } from "../../lib/payout";
 import { validateNotSentReason, validateReason } from "../../lib/validation";
 import {
+  Amount,
   CopyButton,
   Detail,
   ErrorState,
   PayoutStatusBadge,
+  satsLabel,
+  SettlementAmount,
   SettlementStatusBadge,
-  UsdApprox,
 } from "./common";
 import { FormDialog } from "./form-dialog";
 import { useMerchantNames } from "./merchant-select";
@@ -112,17 +114,8 @@ export function SettlementDetailPage({ settlementId }: { settlementId: string })
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
           <dl className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-x-6 gap-y-4">
-            <Detail label="应付金额">
-              <span className="text-2xl font-semibold tabular-nums">
-                {formatSats(data.amountSat)}{" "}
-                <span className="text-sm font-normal text-muted-foreground">sats</span>
-              </span>
-              {data.status === "pending" ? (
-                <UsdApprox
-                  sats={data.amountSat}
-                  className="block font-medium text-muted-foreground tabular-nums"
-                />
-              ) : null}
+            <Detail label={data.status === "settled" ? "实收" : "金额"}>
+              <SettlementAmount settlement={data} size="xl" />
             </Detail>
             <Detail label="商户">
               {merchant ? (
@@ -451,17 +444,29 @@ function SettlementItems({ settlement }: { settlement: SettlementDetailData }) {
           ),
           footer: "合计（整张结算单）",
         }),
-        itemHelper.accessor("amountSat", {
-          header: "应付 (sats)",
+        itemHelper.accessor("amountUsdCents", {
+          header: "金额（原价）",
           meta: {
             headerClassName: "text-right",
-            cellClassName: "text-right font-mono tabular-nums",
+            cellClassName: "text-right",
           },
-          cell: ({ getValue }) => formatSats(getValue()),
-          footer: () => formatSats(settlement.amountSat),
+          cell: ({ row }) => (
+            <Amount
+              align="end"
+              main={formatUsd(row.original.amountUsdCents)}
+              sub={satsLabel(row.original.amountSat)}
+            />
+          ),
+          footer: () => (
+            <Amount
+              align="end"
+              main={formatUsd(settlement.amountUsdCents)}
+              sub={satsLabel(settlement.amountSat)}
+            />
+          ),
         }),
       ]),
-    [settlement.amountSat],
+    [settlement.amountSat, settlement.amountUsdCents],
   );
   const { table, list: items } = useServerList({
     search: paginationParsers,

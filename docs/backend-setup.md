@@ -79,7 +79,9 @@ HTTP 200 时订单和 invoice 都已保存，状态为 `pending`（同一幂等�
 | `availableSettlementSat` | 未被批次占用，可以生成新结算单的金额                 |
 | `unconfirmedOrderCount`  | 尚未过期、等待付款的订单数量；已过期未付的订单不计入 |
 
-恒等式：`unsettledSat = paidSat - settledSat`，`availableSettlementSat = unsettledSat - pendingSettlementSat`。这些数值不是钱包可用余额，平台节点成本不从商户应付扣除。
+恒等式：`unsettledSat = paidSat - settledSat`，`availableSettlementSat = unsettledSat - pendingSettlementSat`。这些数值不是钱包可用余额，平台节点成本不从商户应付扣除。每个金额字段另有按订单原价合计的美元口径（单位美分）：`paidUsdCents`、`settledUsdCents`、`unsettledUsdCents`、`pendingSettlementUsdCents`、`availableSettlementUsdCents`，恒等式相同。
+
+管理端以美元为主显示、sats 为副行，账仍按 sats 记：已发生的金额显示原价（订单金额）或实收（打款到账的稳定币）；仍以 BTC 持有的金额（钱包余额、未结清、待付款结算单）显示“≈ 现值”，按 `GET /api/admin/quote` 的最近报价换算，随行情变化。
 
 ### 结算单接口
 
@@ -95,7 +97,7 @@ Content-Type: application/json
 
 创建时不再传 orderIds、amountSat 或 proof，旧字段和其他未知字段返回 400。后端在同一事务内固定该商户全部已确认到账、未被有效批次占用的订单及总金额，不限制为 100 笔；无可选订单返回 409 `NO_ELIGIBLE_ORDERS`。停用商户仍能结算历史收款。
 
-新建返回 201；同幂等键、同商户重试返回 200 和原批次当前状态。响应包含 `id, merchantId, status, displayStatus, amountSat, orderCount, cutoffAt, createdAt, createdBy, proof, confirmedAt, confirmedBy, cancelReason, cancelledAt, cancelledBy`，不返回整个订单 ID 数组，也不暴露幂等键。未填写的审计字段为 null。`displayStatus` 在待付款单有进行中的打款时为 `paying`，打款提交超过 30 秒仍无结果时为 `unconfirmed`，其余同 `status`。
+新建返回 201；同幂等键、同商户重试返回 200 和原批次当前状态。响应包含 `id, merchantId, status, displayStatus, amountSat, amountUsdCents, delivered, orderCount, cutoffAt, createdAt, createdBy, proof, confirmedAt, confirmedBy, cancelReason, cancelledAt, cancelledBy`，不返回整个订单 ID 数组，也不暴露幂等键。未填写的审计字段为 null。`displayStatus` 在待付款单有进行中的打款时为 `paying`，打款提交超过 30 秒仍无结果时为 `unconfirmed`，其余同 `status`。`amountUsdCents` 是批次订单的原价合计；`delivered` 在打款完成后为 `{asset, decimals, deliveredOut}`（实收，最小单位），否则为 null。明细每行另带 `amountUsdCents`。
 
 | 接口                                                         | 说明                                                                                                 |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |

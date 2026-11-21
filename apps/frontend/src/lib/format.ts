@@ -37,7 +37,7 @@ export function formatMsatAsSats(msat: number) {
 }
 
 export function formatUsd(cents: number) {
-  return `$${(cents / 100).toFixed(2)}`;
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function shortId(id: string) {

@@ -9,10 +9,12 @@ import {
   describeAdminError,
   type PaymentStatusValue,
   type PayoutDisplayStatusValue,
+  type SettlementData,
   type SettlementDisplayStatusValue,
   type SettlementStatusValue,
 } from "../../lib/api/admin";
-import { satsToUsd } from "../../lib/payout";
+import { formatBeijing, formatSats, formatUsd } from "../../lib/format";
+import { formatTokenUnits, satsToUsd } from "../../lib/payout";
 import { btcQuoteQuery } from "./queries";
 
 const orderStatus: Record<
@@ -101,15 +103,97 @@ export function PayoutStatusBadge({ status }: { status: PayoutDisplayStatusValue
   );
 }
 
-/** "≈ $X" for `sats` at the latest stored BTC price; nothing until a price is known. */
-export function UsdApprox({ sats, className }: { sats: number; className?: string }) {
+/**
+ * "≈ $X": what `sats` still held in BTC are worth at the latest stored price. Only for amounts
+ * that move with the market; settled facts show their original price or what was received.
+ */
+export function CurrentValue({ sats, className }: { sats: number; className?: string }) {
   const quote = useQuery(btcQuoteQuery());
-  if (!quote.data) return null;
+  if (!quote.data) return <span className={className}>≈ —</span>;
   const rate = Number(quote.data.rateUsd).toLocaleString("en-US");
   return (
-    <span className={className} title={`按当前价 1 BTC ≈ $${rate} 估算`}>
+    <span
+      className={className}
+      title={`1 BTC ≈ $${rate} · Coinbase · ${formatBeijing(quote.data.quotedAt, false)}`}
+    >
       ≈ {satsToUsd(sats, quote.data.rateUsd)}
     </span>
+  );
+}
+
+const amountSizes = { sm: "text-sm", lg: "text-xl", xl: "text-2xl" } as const;
+
+/**
+ * An amount in the console's house style: dollars as the main figure, with the ledger's sats
+ * (and any reference figure) on a smaller line underneath.
+ */
+export function Amount({
+  main,
+  sub,
+  size = "sm",
+  align = "start",
+  muted,
+}: {
+  main: ReactNode;
+  sub?: ReactNode;
+  size?: keyof typeof amountSizes;
+  align?: "start" | "end";
+  muted?: boolean;
+}) {
+  return (
+    <span className={`inline-flex flex-col ${align === "end" ? "items-end" : "items-start"}`}>
+      <span
+        className={`${amountSizes[size]} font-semibold tabular-nums ${muted ? "text-muted-foreground" : ""}`}
+      >
+        {main}
+      </span>
+      {sub ? (
+        <span className="text-xs font-normal text-muted-foreground tabular-nums">{sub}</span>
+      ) : null}
+    </span>
+  );
+}
+
+export const satsLabel = (sats: number) => `${formatSats(sats)} sats`;
+
+/** A settlement's figure: current value while unpaid, received stablecoin once settled. */
+export function SettlementAmount({
+  settlement,
+  size,
+  align,
+}: {
+  settlement: Pick<SettlementData, "status" | "amountSat" | "amountUsdCents" | "delivered">;
+  size?: keyof typeof amountSizes;
+  align?: "start" | "end";
+}) {
+  const sats = satsLabel(settlement.amountSat);
+  const original = `原价 ${formatUsd(settlement.amountUsdCents)}`;
+  if (settlement.status === "pending")
+    return (
+      <Amount
+        size={size}
+        align={align}
+        main={<CurrentValue sats={settlement.amountSat} />}
+        sub={`${sats} · ${original}`}
+      />
+    );
+  if (settlement.status === "settled" && settlement.delivered)
+    return (
+      <Amount
+        size={size}
+        align={align}
+        main={`${formatTokenUnits(settlement.delivered.deliveredOut, settlement.delivered.decimals)} ${settlement.delivered.asset}`}
+        sub={`${sats} · ${original}`}
+      />
+    );
+  return (
+    <Amount
+      size={size}
+      align={align}
+      muted={settlement.status === "cancelled"}
+      main={formatUsd(settlement.amountUsdCents)}
+      sub={sats}
+    />
   );
 }
 

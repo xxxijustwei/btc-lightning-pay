@@ -38,7 +38,15 @@ export const UNCONFIRMED_AFTER_SECONDS = 30;
 // Qualified by hand: drizzle may render a selected column unqualified, which the subquery would
 // resolve against its own table.
 const displayStatus = sql<string>`CASE WHEN "settlement"."status" = 'pending' THEN coalesce((SELECT CASE WHEN p.status = 'submitting' AND p.submitted_at < now() - make_interval(secs => ${UNCONFIRMED_AFTER_SECONDS}) THEN 'unconfirmed' ELSE 'paying' END FROM settlement_payout p WHERE p.settlement_id = "settlement"."id" AND p.status IN ('submitting','pending') LIMIT 1), 'pending') ELSE "settlement"."status" END`;
-const withDisplay = { ...getTableColumns(settlement), displayStatus };
+/** The batch's orders at their original prices, in US cents; text, since the sum can pass int4. */
+const amountUsdCents = sql<string>`(SELECT coalesce(sum(o.amount_usd_cents), 0)::text FROM settlement_item i JOIN payment_order o ON o.merchant_id = i.merchant_id AND o.id = i.order_id WHERE i.settlement_id = "settlement"."id")`;
+/** The completed payout's received amount, if any. */
+const delivered = sql<{
+  asset: string;
+  decimals: number;
+  deliveredOut: string;
+} | null>`(SELECT json_build_object('asset', p.asset, 'decimals', p.asset_decimals, 'deliveredOut', p.delivered_out) FROM settlement_payout p WHERE p.settlement_id = "settlement"."id" AND p.status = 'completed' LIMIT 1)`;
+const withDisplay = { ...getTableColumns(settlement), displayStatus, amountUsdCents, delivered };
 export function createSettlementStore(transaction: TransactionRunner) {
   async function get(tx: Transaction, id: string) {
     const [row] = await tx.select(withDisplay).from(settlement).where(eq(settlement.id, id));
@@ -166,8 +174,16 @@ export function createSettlementStore(transaction: TransactionRunner) {
             orderId: settlementItem.orderId,
             merchantId: settlementItem.merchantId,
             amountSat: settlementItem.amountSat,
+            amountUsdCents: paymentOrder.amountUsdCents,
           })
           .from(settlementItem)
+          .innerJoin(
+            paymentOrder,
+            and(
+              eq(paymentOrder.merchantId, settlementItem.merchantId),
+              eq(paymentOrder.id, settlementItem.orderId),
+            ),
+          )
           .where(eq(settlementItem.settlementId, id))
           .orderBy(settlementItem.orderId)
           .limit(limit)
@@ -219,6 +235,9 @@ export function createSettlementStore(transaction: TransactionRunner) {
             paid: sql<string>`coalesce(sum(case when ${paymentOrder.status}='paid' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             settled: sql<string>`coalesce(sum(case when ${settlement.status}='settled' then ${paymentOrder.amountSat} else 0 end),0)::text`,
             pending: sql<string>`coalesce(sum(case when ${settlement.status}='pending' then ${paymentOrder.amountSat} else 0 end),0)::text`,
+            paidUsd: sql<string>`coalesce(sum(case when ${paymentOrder.status}='paid' then ${paymentOrder.amountUsdCents} else 0 end),0)::text`,
+            settledUsd: sql<string>`coalesce(sum(case when ${settlement.status}='settled' then ${paymentOrder.amountUsdCents} else 0 end),0)::text`,
+            pendingUsd: sql<string>`coalesce(sum(case when ${settlement.status}='pending' then ${paymentOrder.amountUsdCents} else 0 end),0)::text`,
             // Invoices that can still be paid; expired ones are not waiting on anything.
             unconfirmed: sql<number>`count(*) filter (where ${paymentOrder.status} = 'pending' and ${paymentOrder.expiresAt} > now())::int`,
           })
@@ -228,7 +247,14 @@ export function createSettlementStore(transaction: TransactionRunner) {
         const paidSat = Number(totals.paid),
           settledSat = Number(totals.settled),
           pendingSettlementSat = Number(totals.pending);
-        if (![paidSat, settledSat, pendingSettlementSat].every(Number.isSafeInteger))
+        const paidUsd = Number(totals.paidUsd),
+          settledUsd = Number(totals.settledUsd),
+          pendingUsd = Number(totals.pendingUsd);
+        if (
+          ![paidSat, settledSat, pendingSettlementSat, paidUsd, settledUsd, pendingUsd].every(
+            Number.isSafeInteger,
+          )
+        )
           throw new PaymentFailure({ code: "AMOUNT_OVERFLOW" });
         return {
           merchantId,
@@ -237,6 +263,11 @@ export function createSettlementStore(transaction: TransactionRunner) {
           unsettledSat: paidSat - settledSat,
           pendingSettlementSat,
           availableSettlementSat: paidSat - settledSat - pendingSettlementSat,
+          paidUsdCents: paidUsd,
+          settledUsdCents: settledUsd,
+          unsettledUsdCents: paidUsd - settledUsd,
+          pendingSettlementUsdCents: pendingUsd,
+          availableSettlementUsdCents: paidUsd - settledUsd - pendingUsd,
           unconfirmedOrderCount: totals.unconfirmed,
         };
       });

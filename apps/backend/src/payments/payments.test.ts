@@ -318,6 +318,8 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
     amountSat: 10000,
     orderCount: 1,
     createdBy: "admin",
+    amountUsdCents: "1000",
+    delivered: null,
   });
   expect(await store.summary(onne)).toMatchObject({
     settledSat: 0,
@@ -334,7 +336,7 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
   const later = await createOrder(onne, "later-order-key-0001", { amountUsdCents: 1000 });
   await credit(paid(later.id));
   expect((await store.settlementOrders(record.id, 50, 0)).items).toEqual([
-    { orderId: a.id, merchantId: onne, amountSat: 10000 },
+    { orderId: a.id, merchantId: onne, amountSat: 10000, amountUsdCents: 1000 },
   ]);
   expect((await store.settlement(record.id)).amountSat).toBe(10000);
   await store.cancelSettlement(record.id, "not paid", "admin");
@@ -350,11 +352,14 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
   ).rejects.toMatchObject({ code: "SETTLEMENT_STATE_CONFLICT" });
   const next = (await store.settle("replacement-batch-key", { merchantId: onne }, "admin")).record;
   expect(next.orderCount).toBe(2);
-  expect(await paySettlement(next.id)).toMatchObject({
+  const settled = await paySettlement(next.id);
+  expect(settled).toMatchObject({
     status: "settled",
     displayStatus: "settled",
     proof: "0xtx",
     confirmedBy: "admin",
+    amountUsdCents: "2000",
+    delivered: { asset: "USDC", decimals: 6 },
   });
   await expect(store.cancelSettlement(next.id, "oops", "admin")).rejects.toMatchObject({
     code: "SETTLEMENT_STATE_CONFLICT",
@@ -363,6 +368,10 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
     settledSat: 20000,
     unsettledSat: 0,
     pendingSettlementSat: 0,
+    paidUsdCents: 2000,
+    settledUsdCents: 2000,
+    unsettledUsdCents: 0,
+    availableSettlementUsdCents: 0,
   });
   expect(await store.summary(other)).toMatchObject({
     settledSat: 0,
@@ -429,7 +438,9 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
   expect(await submitted.json()).toMatchObject({ status: "pending", submittedBy: "admin" });
   expect(
     await (await call(request(`/api/admin/settlements?limit=1`), "admin")).json(),
-  ).toMatchObject({ items: [{ id: batch.id, status: "pending", displayStatus: "paying" }] });
+  ).toMatchObject({
+    items: [{ id: batch.id, status: "pending", displayStatus: "paying", amountUsdCents: 1000 }],
+  });
   wallet.setPayout(payout.id, { state: "completed", deliveredOut: "5500000", externalTx: "0xabc" });
   // The detail read asks the wallet about the active payout and settles the batch.
   expect(
@@ -437,6 +448,7 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
   ).toMatchObject({
     status: "settled",
     proof: "0xabc",
+    delivered: { asset: "USDC", decimals: 6, deliveredOut: "5500000" },
     payouts: [{ id: payout.id, status: "completed", deliveredOut: "5500000", externalTx: "0xabc" }],
   });
   expect(await (await call(request("/api/admin/wallet"), "admin")).json()).toEqual({

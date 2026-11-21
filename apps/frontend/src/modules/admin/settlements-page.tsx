@@ -5,9 +5,14 @@ import { DataTable, DataTablePagination } from "../../components/data-table/data
 import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { DateRangePicker } from "../../components/date-range-picker";
 import { adminApi, type SettlementData } from "../../lib/api/admin";
-import { formatBeijing, formatSats, shortId } from "../../lib/format";
+import { formatBeijing, shortId } from "../../lib/format";
 import { beijingRange, settlementsSearch } from "../../lib/list-search";
-import { ErrorState, SettlementStatusBadge, settlementStatusOptions, UsdApprox } from "./common";
+import {
+  ErrorState,
+  SettlementAmount,
+  SettlementStatusBadge,
+  settlementStatusOptions,
+} from "./common";
 import { FilterToggle } from "./filter-toggle";
 import { MerchantCell, MerchantSelect } from "./merchant-select";
 import { useServerList } from "./server-list";
@@ -36,18 +41,9 @@ export const settlementColumns = helper.columns([
     cell: ({ getValue }) => <SettlementStatusBadge status={getValue()} />,
   }),
   helper.accessor("amountSat", {
-    header: "应付 (sats)",
-    meta: { headerClassName: "text-right", cellClassName: "text-right font-mono tabular-nums" },
-    cell: ({ getValue, row }) => (
-      <span className="flex flex-col items-end">
-        <span className={row.original.status === "cancelled" ? "text-muted-foreground" : undefined}>
-          {formatSats(getValue())}
-        </span>
-        {row.original.status === "pending" ? (
-          <UsdApprox sats={getValue()} className="font-sans text-xs text-muted-foreground" />
-        ) : null}
-      </span>
-    ),
+    header: "金额",
+    meta: { headerClassName: "text-right", cellClassName: "text-right" },
+    cell: ({ row }) => <SettlementAmount settlement={row.original} align="end" />,
   }),
   helper.accessor("orderCount", { header: "笔数", cell: ({ getValue }) => `${getValue()} 笔` }),
   helper.accessor("cutoffAt", {

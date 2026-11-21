@@ -36,7 +36,7 @@ import {
   type PayoutRouteData,
   type SettlementDetailData,
 } from "../../lib/api/admin";
-import { formatSats } from "../../lib/format";
+import { formatSats, formatUsd } from "../../lib/format";
 import {
   addressProblem,
   compareNetworks,
@@ -45,7 +45,7 @@ import {
   satsToUsd,
   usdCentsToSats,
 } from "../../lib/payout";
-import { UsdApprox } from "./common";
+import { Amount, CurrentValue, satsLabel } from "./common";
 import { btcQuoteQuery, payoutRoutesQuery, walletQuery } from "./queries";
 
 type Asset = PayoutRouteData["asset"];
@@ -187,7 +187,11 @@ export function PayoutDialog({
           <DialogTitle>打款</DialogTitle>
         </DialogHeader>
         {quote ? (
-          <QuoteView quote={quote} secondsLeft={secondsLeft} />
+          <QuoteView
+            quote={quote}
+            secondsLeft={secondsLeft}
+            originalUsdCents={settlement.amountUsdCents}
+          />
         ) : (
           <FieldGroup>
             <Field>
@@ -253,14 +257,21 @@ export function PayoutDialog({
             </Field>
             <Field data-invalid={amountError ? true : undefined}>
               <FieldLabel>金额</FieldLabel>
-              <div className="flex items-baseline gap-2 font-mono tabular-nums">
-                <span className="text-lg font-semibold">{formatSats(amount)}</span>
-                <span className="text-muted-foreground">sats</span>
-                <UsdApprox sats={amount} className="font-sans text-sm text-muted-foreground" />
-              </div>
+              <Amount
+                size="lg"
+                main={<CurrentValue sats={amount} />}
+                sub={`${satsLabel(amount)} · 原价 ${formatUsd(settlement.amountUsdCents)}`}
+              />
               {amountError ? <FieldError errors={[{ message: amountError }]} /> : null}
               <FieldDescription>
-                钱包余额 {balance === undefined ? "—" : `${formatSats(balance)} sats`}
+                钱包余额{" "}
+                {balance === undefined ? (
+                  "—"
+                ) : (
+                  <>
+                    <CurrentValue sats={balance} />（{satsLabel(balance)}）
+                  </>
+                )}
                 {route && limits ? (
                   <>
                     <br />
@@ -342,15 +353,23 @@ function rangeText(
   limits: { min: number | null; max: number | null },
   rateUsd: string | undefined,
 ) {
-  const usd = (sats: number) => (rateUsd ? `约 ${satsToUsd(sats, rateUsd)}` : "");
+  const usd = (sats: number) => (rateUsd ? satsToUsd(sats, rateUsd) : "—");
   if (limits.min !== null && limits.max !== null)
-    return `范围 ${formatSats(limits.min)} – ${formatSats(limits.max)} sats（${usd(limits.min)} – ${usd(limits.max)}）`;
-  if (limits.min !== null) return `最小 ${formatSats(limits.min)} sats（${usd(limits.min)}）`;
-  if (limits.max !== null) return `最大 ${formatSats(limits.max)} sats（${usd(limits.max)}）`;
+    return `范围 ≈ ${usd(limits.min)} – ${usd(limits.max)}（${formatSats(limits.min)} – ${formatSats(limits.max)} sats）`;
+  if (limits.min !== null) return `最小 ≈ ${usd(limits.min)}（${formatSats(limits.min)} sats）`;
+  if (limits.max !== null) return `最大 ≈ ${usd(limits.max)}（${formatSats(limits.max)} sats）`;
   return "";
 }
 
-function QuoteView({ quote, secondsLeft }: { quote: PayoutData; secondsLeft: number }) {
+function QuoteView({
+  quote,
+  secondsLeft,
+  originalUsdCents,
+}: {
+  quote: PayoutData;
+  secondsLeft: number;
+  originalUsdCents: number;
+}) {
   const expired = secondsLeft === 0;
   const units = (value: string) => `${formatTokenUnits(value, quote.decimals)} ${quote.asset}`;
   const dim = expired ? "text-muted-foreground" : "";
@@ -371,6 +390,9 @@ function QuoteView({ quote, secondsLeft }: { quote: PayoutData; secondsLeft: num
           <dt className="font-medium">预计到账</dt>
           <dd className="text-xl font-semibold">{units(quote.estimatedOut)}</dd>
         </div>
+        <Row label="原价合计">
+          <span className="text-muted-foreground">{formatUsd(originalUsdCents)}</span>
+        </Row>
         <Row label="服务商">{quote.provider === "orchestra" ? "Orchestra" : "Boltz"}</Row>
         <Row label="报价有效期">
           <span

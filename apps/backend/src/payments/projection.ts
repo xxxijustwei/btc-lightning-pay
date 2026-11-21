@@ -42,12 +42,17 @@ export function statusOf(row: OrderRow): typeof PaymentStatus.Type {
   return row.expiresAt.getTime() <= Date.now() ? "expired" : "pending";
 }
 
-type SettlementRow = typeof settlement.$inferSelect & { displayStatus: string };
+type SettlementRow = typeof settlement.$inferSelect & {
+  displayStatus: string;
+  amountUsdCents: string;
+  delivered: { asset: string; decimals: number; deliveredOut: string } | null;
+};
 const iso = (date: Date | null) => date?.toISOString() ?? null;
 export function settlementView(row: SettlementRow) {
   const { key: _key, ...rest } = row;
   return Schema.decodeUnknownSync(Settlement)({
     ...rest,
+    amountUsdCents: Number(row.amountUsdCents),
     createdAt: row.createdAt.toISOString(),
     cutoffAt: iso(row.cutoffAt),
     confirmedAt: iso(row.confirmedAt),

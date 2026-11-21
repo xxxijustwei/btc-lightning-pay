@@ -115,6 +115,12 @@ export const AdminOrder = Schema.Struct({
   settlementId: Schema.NullOr(SettlementId),
   settlementStatus: Schema.NullOr(Schema.Literals(["pending", "settled"])),
 });
+export const PayoutAsset = Schema.Literals(["USDC", "USDT"]);
+/**
+ * An amount in the destination token's smallest unit. A decimal string, because an 18-decimal
+ * token's amounts exceed the safe integer range.
+ */
+export const TokenUnits = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]{0,39})$/));
 export const SettlementStatus = Schema.Literals(["pending", "settled", "cancelled"]);
 export const SettlementDisplayStatus = Schema.Literals([
   "pending",
@@ -150,6 +156,12 @@ export const Settlement = Schema.Struct({
   cancelledBy: Schema.NullOr(Schema.String),
   /** `status`, except a pending settlement shows its active payout as paying or unconfirmed. */
   displayStatus: SettlementDisplayStatus,
+  /** What the payers paid for the batch's orders: their original prices, in US cents. */
+  amountUsdCents: Schema.Int,
+  /** What the merchant received, once a payout completed the batch. */
+  delivered: Schema.NullOr(
+    Schema.Struct({ asset: PayoutAsset, decimals: Schema.Int, deliveredOut: TokenUnits }),
+  ),
 });
 export const SettlementPage = Schema.Struct({
   items: Schema.Array(Settlement),
@@ -158,22 +170,23 @@ export const SettlementPage = Schema.Struct({
   offset: Schema.Int,
 });
 export const SettlementOrderPage = Schema.Struct({
-  items: Schema.Array(Schema.Struct({ orderId: OrderId, merchantId: MerchantId, amountSat: Sats })),
+  items: Schema.Array(
+    Schema.Struct({
+      orderId: OrderId,
+      merchantId: MerchantId,
+      amountSat: Sats,
+      amountUsdCents: Schema.Int,
+    }),
+  ),
   total: Schema.Int,
   limit: Schema.Int,
   offset: Schema.Int,
 });
 export const PayoutId = Schema.String.check(Schema.isPattern(uuidV4));
-export const PayoutAsset = Schema.Literals(["USDC", "USDT"]);
 /** A destination chain as the wallet's cross-chain routes name it, such as `base` or `tron`. */
 export const PayoutChain = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/));
 export const AddressFamily = Schema.Literals(["evm", "solana", "tron"]);
 export const PayoutAddress = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{20,64}$/));
-/**
- * An amount in the destination token's smallest unit. A decimal string, because an 18-decimal
- * token's amounts exceed the safe integer range.
- */
-export const TokenUnits = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]{0,39})$/));
 export const PayoutProvider = Schema.Literals(["orchestra", "boltz"]);
 /** A destination the platform wallet can pay from BTC, with the provider's published limits. */
 export const PayoutRoute = Schema.Struct({
@@ -257,6 +270,12 @@ export const Summary = Schema.Struct({
   unsettledSat: Schema.Int,
   pendingSettlementSat: Schema.Int,
   availableSettlementSat: Schema.Int,
+  /** The same totals at the orders' original prices, in US cents. */
+  paidUsdCents: Schema.Int,
+  settledUsdCents: Schema.Int,
+  unsettledUsdCents: Schema.Int,
+  pendingSettlementUsdCents: Schema.Int,
+  availableSettlementUsdCents: Schema.Int,
   /** Unexpired invoices still awaiting payment. */
   unconfirmedOrderCount: Schema.Int,
 });

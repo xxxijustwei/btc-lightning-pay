@@ -3,9 +3,11 @@ import { DataTable, DataTablePagination } from "../../components/data-table/data
 import { createAppColumnHelper } from "../../components/data-table/table-hook";
 import { DateRangePicker } from "../../components/date-range-picker";
 import { adminApi, type AdminOrderData } from "../../lib/api/admin";
-import { formatBeijing, formatSats, formatUsd, shortId } from "../../lib/format";
+import { formatBeijing, formatUsd, shortId } from "../../lib/format";
 import { beijingRange, ordersSearch } from "../../lib/list-search";
 import {
+  Amount,
+  satsLabel,
   CopyButton,
   ErrorState,
   OrderSettlementBadge,
@@ -52,14 +54,15 @@ const columns = helper.columns([
     cell: ({ getValue }) => <MerchantCell merchantId={getValue()} />,
   }),
   helper.accessor("amountUsdCents", {
-    header: "报价 USD",
-    meta: { headerClassName: "text-right", cellClassName: "text-right tabular-nums" },
-    cell: ({ getValue }) => formatUsd(getValue()),
-  }),
-  helper.accessor("amountSat", {
-    header: "应收 sats",
-    meta: { headerClassName: "text-right", cellClassName: "text-right font-mono tabular-nums" },
-    cell: ({ getValue }) => formatSats(getValue()),
+    header: "金额",
+    meta: { headerClassName: "text-right", cellClassName: "text-right" },
+    cell: ({ row }) => (
+      <Amount
+        align="end"
+        main={formatUsd(row.original.amountUsdCents)}
+        sub={satsLabel(row.original.amountSat)}
+      />
+    ),
   }),
   helper.accessor("status", {
     header: "状态",
