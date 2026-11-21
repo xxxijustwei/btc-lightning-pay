@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vite-plus/test"
 import { createPaymentStore, transactionRunner } from "./store";
 import { createCrediting } from "./crediting";
 import { createOrderIntake } from "./intake";
+import { createPayoutStore } from "./payout-store";
+import { createPayouts } from "./payouts";
 import { Wallet } from "./wallet";
 import { memoryWallet } from "./wallet-memory";
 
@@ -87,6 +89,19 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     };
     return { gate, wallet };
   };
+  const recipient = "0x1111111111111111111111111111111111111111";
+  const payoutsOn = (client: ReturnType<typeof createDatabase>) =>
+    createPayouts(createPayoutStore(transactionRunner(client.database)), vi.fn());
+  /** A quoted payout of `settlementId` on the first connection, with its wallet. */
+  async function quotePayout(settlementId: string) {
+    const wallet = memoryWallet();
+    const payout = await Effect.runPromise(
+      payoutsOn(clients[0])
+        .quote(settlementId, { chain: "base", asset: "USDC", address: recipient }, actor)
+        .pipe(Effect.provideService(Wallet, wallet.wallet)),
+    );
+    return { wallet, payout };
+  }
   const fixture = async () => {
     const slug = `m${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
     const { id } = await createPaymentStore(clients[0].database).createMerchant(
@@ -158,6 +173,7 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
       if (admin) {
         await admin.database.execute(sql`DELETE FROM admin_audit`);
         for (const id of merchantIds) {
+          await admin.database.execute(sql`DELETE FROM settlement_payout WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM settlement_item WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM payment_order WHERE merchant_id=${id}`);
           await admin.database.execute(sql`DELETE FROM settlement WHERE merchant_id=${id}`);
@@ -278,13 +294,21 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
         pendingSettlementSat: 0,
       });
       const second = (await store.settle(crypto.randomUUID(), { merchantId: id }, actor)).record;
-      await store.confirmSettlement(second.id, "wire-proof", actor);
+      const { wallet, payout } = await quotePayout(second.id);
+      const payouts = payoutsOn(clients[0]);
+      await Effect.runPromise(
+        payouts
+          .submit(second.id, payout.id, actor)
+          .pipe(Effect.provideService(Wallet, wallet.wallet)),
+      );
+      wallet.setPayout(payout.id, { state: "completed", deliveredOut: "1", externalTx: "0xtx" });
+      await Effect.runPromise(payouts.sync().pipe(Effect.provideService(Wallet, wallet.wallet)));
       expect(await store.summary(id)).toMatchObject({ settledSat: size * 10000, unsettledSat: 0 });
     },
     20000,
   );
 
-  test("confirm and cancel serialize and only one can win", async () => {
+  test("payout submission and cancel serialize and only one can win", async () => {
     const id = await fixture();
     await seedPaid(id, 1);
     const record = (
@@ -294,11 +318,16 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
         actor,
       )
     ).record;
+    const { payout } = await quotePayout(record.id);
     const release = await hold(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"settlement:merchant:" + id},0))`,
     );
     const pending = Promise.allSettled([
-      createPaymentStore(clients[0].database).confirmSettlement(record.id, "wire", actor),
+      createPayoutStore(transactionRunner(clients[0].database))
+        .beginSubmit(record.id, payout.id, actor)
+        .then((claim) => {
+          if (!claim.claimed) throw new Error("Quote expired");
+        }),
       createPaymentStore(clients[1].database).cancelSettlement(record.id, "unpaid", actor),
     ]);
     try {
@@ -308,9 +337,9 @@ describe.skipIf(!url)("PostgreSQL multi-connection payment invariants", () => {
     }
     const results = await pending;
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    expect(results.find((r) => r.status === "rejected")).toMatchObject({
-      reason: { code: "SETTLEMENT_STATE_CONFLICT" },
-    });
+    // A submission first blocks the cancel; a cancel first ends the settlement and its quote.
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(["PAYOUT_IN_PROGRESS", "SETTLEMENT_STATE_CONFLICT"]).toContain(rejected.reason.code);
   });
 
   test("cancelled generation rolls back both batch and order reservation", async () => {

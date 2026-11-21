@@ -116,16 +116,19 @@ export const AdminOrder = Schema.Struct({
   settlementStatus: Schema.NullOr(Schema.Literals(["pending", "settled"])),
 });
 export const SettlementStatus = Schema.Literals(["pending", "settled", "cancelled"]);
+export const SettlementDisplayStatus = Schema.Literals([
+  "pending",
+  "paying",
+  "unconfirmed",
+  "settled",
+  "cancelled",
+]);
 export const SettlementAmount = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: 2100000000000000 }),
 );
 export const NewSettlement = Schema.StructWithRest(Schema.Struct({ merchantId: MerchantId }), [
   Schema.Record(Schema.String, Schema.Unknown),
 ]).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "merchantId")));
-export const ConfirmSettlement = Schema.StructWithRest(
-  Schema.Struct({ proof: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1000)) }),
-  [Schema.Record(Schema.String, Schema.Unknown)],
-).check(Schema.makeFilter((value) => Object.keys(value).every((key) => key === "proof")));
 export const CancelSettlement = Schema.StructWithRest(
   Schema.Struct({ reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500)) }),
   [Schema.Record(Schema.String, Schema.Unknown)],
@@ -145,6 +148,8 @@ export const Settlement = Schema.Struct({
   cancelReason: Schema.NullOr(Schema.String),
   cancelledAt: Schema.NullOr(Schema.String),
   cancelledBy: Schema.NullOr(Schema.String),
+  /** `status`, except a pending settlement shows its active payout as paying or unconfirmed. */
+  displayStatus: SettlementDisplayStatus,
 });
 export const SettlementPage = Schema.Struct({
   items: Schema.Array(Settlement),
@@ -157,6 +162,93 @@ export const SettlementOrderPage = Schema.Struct({
   total: Schema.Int,
   limit: Schema.Int,
   offset: Schema.Int,
+});
+export const PayoutId = Schema.String.check(Schema.isPattern(uuidV4));
+export const PayoutAsset = Schema.Literals(["USDC", "USDT"]);
+/** A destination chain as the wallet's cross-chain routes name it, such as `base` or `tron`. */
+export const PayoutChain = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/));
+export const AddressFamily = Schema.Literals(["evm", "solana", "tron"]);
+export const PayoutAddress = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{20,64}$/));
+/**
+ * An amount in the destination token's smallest unit. A decimal string, because an 18-decimal
+ * token's amounts exceed the safe integer range.
+ */
+export const TokenUnits = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]{0,39})$/));
+export const PayoutProvider = Schema.Literals(["orchestra", "boltz"]);
+/** A destination the platform wallet can pay from BTC, with the provider's published limits. */
+export const PayoutRoute = Schema.Struct({
+  chain: PayoutChain,
+  chainId: Schema.NullOr(Schema.String),
+  asset: PayoutAsset,
+  contract: Schema.NullOr(Schema.String),
+  decimals: Schema.Int,
+  addressFamily: AddressFamily,
+  minSat: Schema.NullOr(Schema.Int),
+  maxSat: Schema.NullOr(Schema.Int),
+  minUsdCents: Schema.NullOr(Schema.Int),
+  maxUsdCents: Schema.NullOr(Schema.Int),
+});
+export const PayoutRoutes = Schema.Struct({ routes: Schema.Array(PayoutRoute) });
+export const PayoutStatus = Schema.Literals([
+  "quoted",
+  "expired",
+  "submitting",
+  "pending",
+  "completed",
+  "refunded",
+  "failed",
+  "not_sent",
+]);
+/** `status`, except a submission whose outcome is not yet known shows as `unconfirmed`. */
+export const PayoutDisplayStatus = Schema.Literals([...PayoutStatus.literals, "unconfirmed"]);
+/** One attempt to pay a settlement; the settlement's whole amount, in sats, converts to `asset`. */
+export const Payout = Schema.Struct({
+  id: PayoutId,
+  settlementId: SettlementId,
+  merchantId: MerchantId,
+  amountSat: SettlementAmount,
+  chain: PayoutChain,
+  chainId: Schema.NullOr(Schema.String),
+  asset: PayoutAsset,
+  contract: Schema.NullOr(Schema.String),
+  decimals: Schema.Int,
+  address: PayoutAddress,
+  provider: PayoutProvider,
+  providerRef: Schema.String,
+  quoteExpiresAt: Schema.String,
+  /** What `amountSat` converts to before fees; `feeOut` comes out of it, leaving `estimatedOut`. */
+  valueOut: TokenUnits,
+  feeOut: TokenUnits,
+  estimatedOut: TokenUnits,
+  status: PayoutStatus,
+  displayStatus: PayoutDisplayStatus,
+  paymentId: Schema.NullOr(Schema.String),
+  deliveredOut: Schema.NullOr(TokenUnits),
+  externalTx: Schema.NullOr(Schema.String),
+  notSentReason: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+  createdBy: Schema.String,
+  submittedAt: Schema.NullOr(Schema.String),
+  submittedBy: Schema.NullOr(Schema.String),
+  resolvedAt: Schema.NullOr(Schema.String),
+  resolvedBy: Schema.NullOr(Schema.String),
+});
+export const SettlementDetail = Schema.Struct({
+  ...Settlement.fields,
+  /** Every payout attempt, newest first. */
+  payouts: Schema.Array(Payout),
+});
+export const NewPayout = strict({ chain: PayoutChain, asset: PayoutAsset, address: PayoutAddress });
+export const NotSentPayout = strict({
+  reason: Schema.String.check(Schema.isPattern(/\S/), Schema.isMaxLength(500)),
+});
+export const WalletBalance = Schema.Struct({
+  balanceSat: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export const BtcQuote = Schema.Struct({
+  rateUsd: Schema.String,
+  source: Schema.Literal("coinbase"),
+  quotedAt: Schema.String,
 });
 export const Summary = Schema.Struct({
   merchantId: MerchantId,
@@ -193,6 +285,17 @@ export const paymentErrorStatus = {
   MERCHANT_DISABLED: 409,
   MERCHANT_EXISTS: 409,
   PAYMENT_MISMATCH: 409,
+  PAYOUT_NOT_FOUND: 404,
+  PAYOUT_ADDRESS_INVALID: 400,
+  ADDRESS_NETWORK_MISMATCH: 400,
+  AMOUNT_OUT_OF_RANGE: 409,
+  ROUTE_UNAVAILABLE: 409,
+  INSUFFICIENT_BALANCE: 409,
+  QUOTE_EXPIRED: 409,
+  PAYOUT_IN_PROGRESS: 409,
+  PAYOUT_STATE_CONFLICT: 409,
+  /** A payout was submitted but the wallet's answer was lost; never resubmit it. */
+  PAYOUT_OUTCOME_UNKNOWN: 502,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
   QUOTE_UNAVAILABLE: 503,

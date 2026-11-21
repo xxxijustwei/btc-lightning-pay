@@ -20,6 +20,7 @@ const SETTLEMENT = {
   cancelReason: null,
   cancelledAt: null,
   cancelledBy: null,
+  displayStatus: "pending",
 };
 
 /** Answers each settle request with the next response and records the idempotency key it carried. */

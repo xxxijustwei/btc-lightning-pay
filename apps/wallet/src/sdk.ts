@@ -4,6 +4,7 @@ import {
   postgresStorage,
   SdkBuilder,
 } from "@breeztech/breez-sdk-spark/nodejs";
+import { createPayouts } from "./payouts.ts";
 import { createSparkWallet } from "./spark.ts";
 import type { WalletConfig } from "./config.ts";
 
@@ -33,6 +34,8 @@ export async function openWallet(config: WalletConfig) {
   settings.realTimeSyncServerUrl = undefined;
   settings.preferSparkOverLightning = false;
   settings.syncIntervalSecs = 60;
+  // Settlement payouts convert BTC to USDC/USDT; without it every cross-chain call fails.
+  settings.crossChainConfig = { defaultSlippageBps: 100 };
   let sdk;
   try {
     sdk = await SdkBuilder.new(settings, { type: "mnemonic", mnemonic: config.mnemonic })
@@ -52,7 +55,10 @@ export async function openWallet(config: WalletConfig) {
       throw new Error(
         `Identity ${info.identityPubkey} does not match BREEZ_IDENTITY_PUBKEY ${config.identityPubkey}`,
       );
-    return { wallet: createSparkWallet(sdk), close: () => sdk.disconnect() };
+    return {
+      wallet: { ...createSparkWallet(sdk), payouts: createPayouts(sdk) },
+      close: () => sdk.disconnect(),
+    };
   } catch (error) {
     logInitFailure(stage, error, config);
     await sdk.disconnect();

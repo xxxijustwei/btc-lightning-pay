@@ -9,8 +9,8 @@ import {
 
 import {
   AdminOrder,
+  BtcQuote,
   CancelSettlement,
-  ConfirmSettlement,
   IdempotencyKey,
   ManagedUser,
   Merchant,
@@ -21,20 +21,32 @@ import {
   NewAdmin,
   NewMerchant,
   NewOrder,
+  NewPayout,
+  NotSentPayout,
   NewSettlement,
   OrderId,
+  PayoutAddress,
+  PayoutAsset,
+  PayoutChain,
+  Payout,
+  PayoutId,
+  PayoutProvider,
+  PayoutRoutes,
   PaymentProblem,
   PaymentStatus,
   PublicMerchant,
   PublicOrder,
   Sats,
   Settlement,
+  SettlementDetail,
   SettlementId,
   SettlementOrderPage,
   SettlementPage,
   SettlementStatus,
   strict,
   Summary,
+  TokenUnits,
+  WalletBalance,
 } from "./schemas";
 
 export * from "./schemas";
@@ -45,6 +57,7 @@ const paging = { limit: Schema.optional(Schema.String), offset: Schema.optional(
 const merchantParams = { merchantId: MerchantId };
 const orderParams = { orderId: OrderId };
 const settlementParams = { settlementId: SettlementId };
+const payoutParams = { settlementId: SettlementId, payoutId: PayoutId };
 const idempotencyHeaders = { "idempotency-key": IdempotencyKey };
 /** The enabled admin an admin request acts as, established once by `AdminSession`. */
 export class AdminActor extends Context.Service<AdminActor, { readonly id: string }>()(
@@ -151,7 +164,7 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
       }),
       HttpApiEndpoint.get("settlement", "/api/admin/settlements/:settlementId", {
         params: settlementParams,
-        success: Settlement,
+        success: SettlementDetail,
         error: errors,
       }),
       HttpApiEndpoint.get("settlementOrders", "/api/admin/settlements/:settlementId/orders", {
@@ -160,10 +173,26 @@ export const PaymentsApi = HttpApi.make("PaymentsApi").add(
         success: SettlementOrderPage,
         error: errors,
       }),
-      HttpApiEndpoint.post("confirmSettlement", "/api/admin/settlements/:settlementId/confirm", {
+      HttpApiEndpoint.post("quotePayout", "/api/admin/settlements/:settlementId/payouts", {
         params: settlementParams,
-        payload: ConfirmSettlement,
-        success: Settlement,
+        payload: NewPayout,
+        success: Payout.annotate({ httpApiStatus: 201 }),
+        error: errors,
+      }),
+      HttpApiEndpoint.post(
+        "submitPayout",
+        "/api/admin/settlements/:settlementId/payouts/:payoutId/submit",
+        { params: payoutParams, success: Payout, error: errors },
+      ),
+      HttpApiEndpoint.post(
+        "markPayoutNotSent",
+        "/api/admin/settlements/:settlementId/payouts/:payoutId/not-sent",
+        { params: payoutParams, payload: NotSentPayout, success: Payout, error: errors },
+      ),
+      HttpApiEndpoint.get("wallet", "/api/admin/wallet", { success: WalletBalance, error: errors }),
+      HttpApiEndpoint.get("quote", "/api/admin/quote", { success: BtcQuote, error: errors }),
+      HttpApiEndpoint.get("payoutRoutes", "/api/admin/payouts/routes", {
+        success: PayoutRoutes,
         error: errors,
       }),
       HttpApiEndpoint.post("cancelSettlement", "/api/admin/settlements/:settlementId/cancel", {
@@ -219,6 +248,41 @@ export const WalletCompletedPage = Schema.Struct({
   /** True when the page was full and more receipts may follow `latest`. */
   more: Schema.Boolean,
 });
+export const WalletPayoutQuoteRequest = Schema.Struct({
+  payoutId: PayoutId,
+  chain: PayoutChain,
+  asset: PayoutAsset,
+  address: PayoutAddress,
+  amountSat: Sats,
+});
+/** A quote held by the wallet for `payoutId` until `expiresAt`; the whole `amountSat` is sent. */
+export const WalletPayoutQuote = Schema.Struct({
+  payoutId: PayoutId,
+  provider: PayoutProvider,
+  providerRef: Schema.String,
+  chain: PayoutChain,
+  chainId: Schema.NullOr(Schema.String),
+  asset: PayoutAsset,
+  contract: Schema.NullOr(Schema.String),
+  decimals: Schema.Int,
+  valueOut: TokenUnits,
+  feeOut: TokenUnits,
+  estimatedOut: TokenUnits,
+  expiresAt: Schema.String,
+});
+export const WalletPayoutRef = Schema.Struct({ payoutId: PayoutId });
+export const WalletPayoutSent = Schema.Struct({ paymentId: Schema.String });
+export const WalletPayoutStatusRequest = Schema.Struct({
+  payoutId: PayoutId,
+  paymentId: Schema.NullOr(Schema.String),
+});
+/** Where a sent payout stands; `missing` means the wallet holds no payment for it at all. */
+export const WalletPayoutState = Schema.Struct({
+  state: Schema.Literals(["missing", "pending", "completed", "refunded", "failed"]),
+  paymentId: Schema.NullOr(Schema.String),
+  deliveredOut: Schema.NullOr(TokenUnits),
+  externalTx: Schema.NullOr(Schema.String),
+});
 /** Wallet endpoints that touch funds require the shared bearer token; health checks do not. */
 export class WalletAuth extends HttpApiMiddleware.Service<WalletAuth>()("api/WalletAuth", {
   security: { bearer: HttpApiSecurity.bearer },
@@ -245,6 +309,29 @@ export const WalletApi = HttpApi.make("LightningWalletApi").add(
     HttpApiEndpoint.post("completed", "/v1/payments/completed", {
       payload: WalletCompletedRequest,
       success: WalletCompletedPage,
+      error: errors,
+    }).middleware(WalletAuth),
+    HttpApiEndpoint.get("balance", "/v1/balance", {
+      success: WalletBalance,
+      error: errors,
+    }).middleware(WalletAuth),
+    HttpApiEndpoint.get("payoutRoutes", "/v1/payouts/routes", {
+      success: PayoutRoutes,
+      error: errors,
+    }).middleware(WalletAuth),
+    HttpApiEndpoint.post("quotePayout", "/v1/payouts/quote", {
+      payload: WalletPayoutQuoteRequest,
+      success: WalletPayoutQuote,
+      error: errors,
+    }).middleware(WalletAuth),
+    HttpApiEndpoint.post("sendPayout", "/v1/payouts/send", {
+      payload: WalletPayoutRef,
+      success: WalletPayoutSent,
+      error: errors,
+    }).middleware(WalletAuth),
+    HttpApiEndpoint.post("payoutStatus", "/v1/payouts/status", {
+      payload: WalletPayoutStatusRequest,
+      success: WalletPayoutState,
       error: errors,
     }).middleware(WalletAuth),
   ),

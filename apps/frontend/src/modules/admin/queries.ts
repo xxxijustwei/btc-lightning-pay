@@ -57,3 +57,24 @@ export const recentSettlementsQuery = (merchantId: string) =>
     queryFn: ({ signal }) =>
       adminApi.settlements({ query: { merchantId, limit: 5, offset: 0 } }, { signal }),
   });
+
+export const walletQuery = () =>
+  queryOptions({
+    queryKey: ["admin", "wallet"],
+    queryFn: ({ signal }) => adminApi.wallet({}, { signal }),
+  });
+
+/** The stored BTC/USD price every "≈ $" in the console is estimated with. */
+export const btcQuoteQuery = () =>
+  queryOptions({
+    queryKey: ["admin", "btc-quote"],
+    queryFn: ({ signal }) => adminApi.quote({}, { signal }),
+    staleTime: 60_000,
+  });
+
+export const payoutRoutesQuery = () =>
+  queryOptions({
+    queryKey: ["admin", "payout-routes"],
+    queryFn: ({ signal }) => adminApi.payoutRoutes({}, { signal }),
+    staleTime: 5 * 60_000,
+  });

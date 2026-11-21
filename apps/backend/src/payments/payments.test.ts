@@ -12,6 +12,8 @@ import { createOrderIntake } from "./intake";
 import { publicOrder } from "./projection";
 import { createPaymentService } from "./service";
 import { createCrediting } from "./crediting";
+import { createPayoutStore } from "./payout-store";
+import { createPayouts } from "./payouts";
 import { UpstreamFailure } from "./errors";
 import { makeWallet, parseWalletConfig, Wallet } from "./wallet";
 import { memoryWallet, type MemoryWallet } from "./wallet-memory";
@@ -71,6 +73,26 @@ const intake = createOrderIntake({
   quote,
   log,
 });
+const payoutStore = createPayoutStore(transactionRunner(database as unknown as Database));
+const payouts = createPayouts(payoutStore, log);
+const recipient = "0x1111111111111111111111111111111111111111";
+/** Runs a payout workflow step against the test's wallet. */
+const withWallet = <A, E>(effect: Effect.Effect<A, E, Wallet>) =>
+  Effect.runPromise(effect.pipe(Effect.provideService(Wallet, wallet.wallet)));
+/** Pays a settlement through the payout flow and returns it as stored afterwards. */
+async function paySettlement(settlementId: string, actor = "admin") {
+  const payout = await withWallet(
+    payouts.quote(settlementId, { chain: "base", asset: "USDC", address: recipient }, actor),
+  );
+  await withWallet(payouts.submit(settlementId, payout.id, actor));
+  wallet.setPayout(payout.id, {
+    state: "completed",
+    deliveredOut: payout.estimatedOut,
+    externalTx: "0xtx",
+  });
+  await withWallet(payouts.sync());
+  return store.settlement(settlementId);
+}
 /** Credits a receipt as the payment sync does; the result says whether it was an anomaly. */
 const credited = (payment: Parameters<typeof crediting.credit>[0]) =>
   Effect.runPromise(crediting.credit(payment));
@@ -95,7 +117,7 @@ const createOrder = (
 const callWith = (req: Request, sessions: Partial<typeof AdminSessions.Service>) =>
   handlePaymentApp(
     req,
-    Context.make(Payments, { store, crediting, payments, intake }).pipe(
+    Context.make(Payments, { store, crediting, payments, intake, payouts }).pipe(
       Context.add(RequestLog, { log }),
       Context.add(AdminSessions, {
         origin: "http://localhost",
@@ -145,7 +167,7 @@ beforeAll(async () => {
 });
 beforeEach(async () => {
   await pg.exec(
-    "RESET ROLE; TRUNCATE admin_audit, settlement_item, payment_order, settlement, merchant, btc_quote; DELETE FROM public.\"user\" WHERE id <> 'admin'; SET ROLE payment_app;",
+    "RESET ROLE; TRUNCATE admin_audit, settlement_payout, settlement_item, payment_order, settlement, merchant, btc_quote; DELETE FROM public.\"user\" WHERE id <> 'admin'; SET ROLE payment_app;",
   );
   onne = (
     await store.createMerchant({ slug: "onne", name: "Onne", email: "onne@example.com" }, "admin")
@@ -285,7 +307,7 @@ test("payment updates are monotonic, late payments are credited and net cost is 
     orderId: row.id,
   });
 });
-test("batch lifecycle freezes amounts, reserves orders, retains cancelled history and confirms idempotently", async () => {
+test("batch lifecycle freezes amounts, reserves orders, retains cancelled history and settles by payout", async () => {
   const a = await createOrder(onne, key, { amountUsdCents: 1000 });
   const b = await createOrder(other, key, { amountUsdCents: 1000 });
   await credit(paid(a.id));
@@ -321,15 +343,18 @@ test("batch lifecycle freezes amounts, reserves orders, retains cancelled histor
     availableSettlementSat: 20000,
     pendingSettlementSat: 0,
   });
-  await expect(store.confirmSettlement(record.id, "proof", "admin")).rejects.toMatchObject({
-    code: "SETTLEMENT_STATE_CONFLICT",
-  });
+  await expect(
+    withWallet(
+      payouts.quote(record.id, { chain: "base", asset: "USDC", address: recipient }, "admin"),
+    ),
+  ).rejects.toMatchObject({ code: "SETTLEMENT_STATE_CONFLICT" });
   const next = (await store.settle("replacement-batch-key", { merchantId: onne }, "admin")).record;
   expect(next.orderCount).toBe(2);
-  const confirmed = await store.confirmSettlement(next.id, " transfer-1 ", "admin");
-  expect(await store.confirmSettlement(next.id, "transfer-1", "admin")).toEqual(confirmed);
-  await expect(store.confirmSettlement(next.id, "different", "admin")).rejects.toMatchObject({
-    code: "SETTLEMENT_PROOF_CONFLICT",
+  expect(await paySettlement(next.id)).toMatchObject({
+    status: "settled",
+    displayStatus: "settled",
+    proof: "0xtx",
+    confirmedBy: "admin",
   });
   await expect(store.cancelSettlement(next.id, "oops", "admin")).rejects.toMatchObject({
     code: "SETTLEMENT_STATE_CONFLICT",
@@ -380,14 +405,134 @@ test("batch HTTP rejects old bodies, paginates history, and exposes independent 
   expect(
     await (await call(request(`/api/admin/settlements/${batch.id}/orders`), "admin")).json(),
   ).toMatchObject({ total: 1, items: [{ orderId: row.id }] });
+  const payoutBody = { chain: "base", asset: "USDC", address: recipient };
   // Without an admin session the middleware answers before any admin endpoint runs.
   expect(
-    (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }))).status,
+    (await call(request(`/api/admin/settlements/${batch.id}/payouts`, payoutBody))).status,
   ).toBe(401);
+  // Manual confirmation is gone: only a payout settles a settlement.
   expect(
     (await call(request(`/api/admin/settlements/${batch.id}/confirm`, { proof: "wire" }), "admin"))
       .status,
-  ).toBe(200);
+  ).toBe(404);
+  const quoted = await call(
+    request(`/api/admin/settlements/${batch.id}/payouts`, payoutBody),
+    "admin",
+  );
+  expect(quoted.status).toBe(201);
+  const payout = (await quoted.json()) as { id: string; status: string; amountSat: number };
+  expect(payout).toMatchObject({ status: "quoted", displayStatus: "quoted", amountSat: 10000 });
+  const submitted = await call(
+    request(`/api/admin/settlements/${batch.id}/payouts/${payout.id}/submit`, {}),
+    "admin",
+  );
+  expect(await submitted.json()).toMatchObject({ status: "pending", submittedBy: "admin" });
+  expect(
+    await (await call(request(`/api/admin/settlements?limit=1`), "admin")).json(),
+  ).toMatchObject({ items: [{ id: batch.id, status: "pending", displayStatus: "paying" }] });
+  wallet.setPayout(payout.id, { state: "completed", deliveredOut: "5500000", externalTx: "0xabc" });
+  // The detail read asks the wallet about the active payout and settles the batch.
+  expect(
+    await (await call(request(`/api/admin/settlements/${batch.id}`), "admin")).json(),
+  ).toMatchObject({
+    status: "settled",
+    proof: "0xabc",
+    payouts: [{ id: payout.id, status: "completed", deliveredOut: "5500000", externalTx: "0xabc" }],
+  });
+  expect(await (await call(request("/api/admin/wallet"), "admin")).json()).toEqual({
+    balanceSat: 10_000_000,
+  });
+  expect(
+    (await (await call(request("/api/admin/payouts/routes"), "admin")).json()) as unknown,
+  ).toMatchObject({ routes: [{ chain: "base", asset: "USDC" }] });
+  expect((await call(request("/api/admin/quote"), "admin")).status).toBe(503);
+});
+test("payouts submit once, never resend an unknown outcome, and keep the settlement payable after a failure", async () => {
+  const row = await createOrder(onne, key, { amountUsdCents: 1000 });
+  await credit(paid(row.id));
+  const { record } = await store.settle(key, { merchantId: onne }, "admin");
+  const input = { chain: "base", asset: "USDC" as const, address: recipient };
+  // A refusal before funds move stores nothing.
+  wallet.refuseNext("quotePayout", "AMOUNT_OUT_OF_RANGE");
+  await expect(withWallet(payouts.quote(record.id, input, "admin"))).rejects.toMatchObject({
+    code: "AMOUNT_OUT_OF_RANGE",
+  });
+  expect(await payoutStore.payouts(record.id)).toEqual([]);
+  // A new quote replaces the open one.
+  const first = await withWallet(payouts.quote(record.id, input, "admin"));
+  const second = await withWallet(payouts.quote(record.id, input, "admin"));
+  expect((await payoutStore.payouts(record.id)).map((p) => [p.id, p.status])).toEqual([
+    [second.id, "quoted"],
+    [first.id, "expired"],
+  ]);
+  await expect(withWallet(payouts.submit(record.id, first.id, "admin"))).rejects.toMatchObject({
+    code: "PAYOUT_STATE_CONFLICT",
+  });
+  // The wallet's answer is lost: the payout stays submitting and is never sent again.
+  wallet.failNext("sendPayout", "timeout");
+  await expect(withWallet(payouts.submit(record.id, second.id, "admin"))).rejects.toMatchObject({
+    code: "PAYOUT_OUTCOME_UNKNOWN",
+  });
+  expect(await payoutStore.payout(second.id)).toMatchObject({ status: "submitting" });
+  await expect(withWallet(payouts.submit(record.id, second.id, "admin"))).rejects.toMatchObject({
+    code: "PAYOUT_STATE_CONFLICT",
+  });
+  await expect(withWallet(payouts.quote(record.id, input, "admin"))).rejects.toMatchObject({
+    code: "PAYOUT_IN_PROGRESS",
+  });
+  await expect(store.cancelSettlement(record.id, "stop", "admin")).rejects.toMatchObject({
+    code: "PAYOUT_IN_PROGRESS",
+  });
+  // Too early to call unconfirmed; the sync finds no payment and changes nothing.
+  await expect(
+    withWallet(payouts.markNotSent(record.id, second.id, "checked", "admin")),
+  ).rejects.toMatchObject({ code: "PAYOUT_STATE_CONFLICT" });
+  await withWallet(payouts.sync());
+  expect(await payoutStore.payout(second.id)).toMatchObject({ status: "submitting" });
+  await pg.exec(
+    `RESET ROLE; UPDATE settlement_payout SET submitted_at = now() - interval '1 minute' WHERE id = '${second.id}'; SET ROLE payment_app;`,
+  );
+  expect((await store.settlement(record.id)).displayStatus).toBe("unconfirmed");
+  const unsent = await withWallet(
+    payouts.markNotSent(record.id, second.id, " provider never saw it ", "admin"),
+  );
+  expect(unsent).toMatchObject({
+    status: "not_sent",
+    notSentReason: "provider never saw it",
+    resolvedBy: "admin",
+  });
+  // The settlement is payable again; a refunded payout also leaves it payable.
+  const third = await withWallet(payouts.quote(record.id, input, "admin"));
+  await withWallet(payouts.submit(record.id, third.id, "admin"));
+  wallet.setPayout(third.id, { state: "refunded" });
+  await withWallet(payouts.sync());
+  expect(await payoutStore.payout(third.id)).toMatchObject({ status: "refunded" });
+  expect(await store.settlement(record.id)).toMatchObject({
+    status: "pending",
+    displayStatus: "pending",
+  });
+  // A refusal at submission ends the attempt without leaving it active.
+  const fourth = await withWallet(payouts.quote(record.id, input, "admin"));
+  wallet.refuseNext("sendPayout", "INSUFFICIENT_BALANCE");
+  await expect(withWallet(payouts.submit(record.id, fourth.id, "admin"))).rejects.toMatchObject({
+    code: "INSUFFICIENT_BALANCE",
+  });
+  expect(await payoutStore.payout(fourth.id)).toMatchObject({ status: "failed" });
+  // An expired quote is recorded as expired and never reaches the wallet.
+  const fifth = await withWallet(payouts.quote(record.id, input, "admin"));
+  await pg.exec(
+    `RESET ROLE; UPDATE settlement_payout SET quote_expires_at = now() - interval '1 second' WHERE id = '${fifth.id}'; SET ROLE payment_app;`,
+  );
+  const sends = wallet.asked.sendPayout;
+  await expect(withWallet(payouts.submit(record.id, fifth.id, "admin"))).rejects.toMatchObject({
+    code: "QUOTE_EXPIRED",
+  });
+  expect(wallet.asked.sendPayout).toBe(sends);
+  expect(await payoutStore.payout(fifth.id)).toMatchObject({ status: "expired" });
+  // A quoted payout dies with its cancelled settlement.
+  const sixth = await withWallet(payouts.quote(record.id, input, "admin"));
+  await store.cancelSettlement(record.id, "merchant closed", "admin");
+  expect(await payoutStore.payout(sixth.id)).toMatchObject({ status: "expired" });
 });
 test("real non-owner RLS isolates merchants and public orders and resets on the pooled connection", async () => {
   const a = await createOrder(onne, key, { amountUsdCents: 1000 });

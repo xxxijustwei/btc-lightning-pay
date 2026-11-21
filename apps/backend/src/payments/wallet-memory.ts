@@ -1,10 +1,17 @@
-import { Millisats, satsToMsat, type WalletPayment } from "@btc-lightning-pay/api";
+import {
+  Millisats,
+  satsToMsat,
+  type PaymentErrorCode,
+  type WalletPayment,
+  type WalletPayoutState,
+} from "@btc-lightning-pay/api";
 import { Effect } from "effect";
-import { UpstreamFailure } from "./errors";
+import { PaymentFailure, UpstreamFailure } from "./errors";
 import type { Wallet } from "./wallet";
 
 type Payment = typeof WalletPayment.Type;
 type Operation = keyof typeof Wallet.Service;
+type PayoutState = typeof WalletPayoutState.Type;
 
 /**
  * The in-memory adapter of the Wallet, for tests: it issues deterministic invoices, reports the
@@ -15,7 +22,30 @@ export function memoryWallet() {
   const invoices = new Map<string, Payment>();
   const contradicted = new Set<string>();
   const failures = new Map<Operation, UpstreamFailure["reason"]>();
-  const asked: Record<Operation, number> = { issueInvoice: 0, lookup: 0, completedSince: 0 };
+  const refusals = new Map<Operation, PaymentErrorCode>();
+  const payoutStates = new Map<string, PayoutState>();
+  const quoted = new Set<string>();
+  let balanceSat = 10_000_000;
+  const asked: Record<Operation, number> = {
+    issueInvoice: 0,
+    lookup: 0,
+    completedSince: 0,
+    balance: 0,
+    payoutRoutes: 0,
+    quotePayout: 0,
+    sendPayout: 0,
+    payoutStatus: 0,
+  };
+  /** Like `enter`, and also refuses the call when a refusal was queued for this operation. */
+  const enterPayout = (operation: Operation) =>
+    enter(operation).pipe(
+      Effect.flatMap(() => {
+        const code = refusals.get(operation);
+        if (!code) return Effect.void;
+        refusals.delete(operation);
+        return Effect.fail(new PaymentFailure({ code }));
+      }),
+    );
   /** Counts the call and fails it when a failure was queued for this operation. */
   const enter = (operation: Operation) =>
     Effect.suspend(() => {
@@ -84,10 +114,93 @@ export function memoryWallet() {
           return { payments, latest: times.length ? Math.max(...times) : null, more: false };
         }),
       ),
+    balance: () => enter("balance").pipe(Effect.map(() => ({ balanceSat }))),
+    payoutRoutes: () =>
+      enter("payoutRoutes").pipe(
+        Effect.map(() => ({
+          routes: [
+            {
+              chain: "base",
+              chainId: "8453",
+              asset: "USDC" as const,
+              contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              decimals: 6,
+              addressFamily: "evm" as const,
+              minSat: 1200,
+              maxSat: null,
+              minUsdCents: 80,
+              maxUsdCents: 14410000,
+            },
+          ],
+        })),
+      ),
+    quotePayout: (request) =>
+      enterPayout("quotePayout").pipe(
+        Effect.map(() => {
+          quoted.add(request.payoutId);
+          return {
+            payoutId: request.payoutId,
+            provider: "orchestra" as const,
+            providerRef: `quote-${request.payoutId}`,
+            chain: request.chain,
+            chainId: "8453",
+            asset: request.asset,
+            contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            decimals: 6,
+            valueOut: String(request.amountSat * 580),
+            feeOut: "300000",
+            estimatedOut: String(request.amountSat * 580 - 300000),
+            expiresAt: new Date(Date.now() + 120_000).toISOString(),
+          };
+        }),
+      ),
+    sendPayout: (payoutId) =>
+      enterPayout("sendPayout").pipe(
+        Effect.flatMap(() => {
+          if (!quoted.delete(payoutId))
+            return Effect.fail(new PaymentFailure({ code: "QUOTE_EXPIRED" }));
+          payoutStates.set(payoutId, {
+            state: "pending",
+            paymentId: payoutId,
+            deliveredOut: null,
+            externalTx: null,
+          });
+          return Effect.succeed({ paymentId: payoutId });
+        }),
+      ),
+    payoutStatus: (payoutId) =>
+      enter("payoutStatus").pipe(
+        Effect.map(
+          () =>
+            payoutStates.get(payoutId) ?? {
+              state: "missing" as const,
+              paymentId: null,
+              deliveredOut: null,
+              externalTx: null,
+            },
+        ),
+      ),
   };
   return {
     wallet,
     asked,
+    /** Sets the BTC balance the wallet reports. */
+    setBalance(sats: number) {
+      balanceSat = sats;
+    },
+    /** Sets where a payout stands as the wallet reports it. */
+    setPayout(payoutId: string, state: Partial<PayoutState> & Pick<PayoutState, "state">) {
+      payoutStates.set(payoutId, {
+        paymentId: payoutId,
+        deliveredOut: null,
+        externalTx: null,
+        ...state,
+      });
+    },
+    /** Refuses the next call of a payout `operation` with `code`, before any funds move. */
+    refuseNext(operation: Operation, code: PaymentErrorCode) {
+      refusals.set(operation, code);
+    },
     /** Marks an issued invoice paid; `receivedMsat` defaults to the invoice amount. */
     pay(orderId: string, receivedMsat?: number) {
       const issued = invoices.get(orderId);

@@ -2,12 +2,18 @@ import { AdminActor, PaymentsApi } from "@btc-lightning-pay/api";
 import { Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse, HttpServer } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import { adminOrder, publicOrder, settlementView } from "./projection";
+import {
+  adminOrder,
+  payoutView,
+  publicOrder,
+  settlementDetail,
+  settlementView,
+} from "./projection";
 import { PaymentFailure, type PaymentError } from "./errors";
 import { paymentTask } from "./task";
 import { errorFields, type PaymentLog } from "./logging";
 import { errorBoundary, problem } from "./http";
-import type { Wallet } from "./wallet";
+import { Wallet } from "./wallet";
 import { Payments, RequestLog } from "../runtime";
 import { AdminSessionLive, type AdminSessions } from "./admin-session";
 
@@ -130,21 +136,65 @@ const AdminLive = HttpApiBuilder.group(PaymentsApi, "adminPayments", (handlers) 
           ),
         ),
       ),
+    // A detail read asks the wallet once about the settlement's active payout.
     settlement: ({ params }) =>
-      read("read_settlement", async (r) =>
-        settlementView(await r.store.settlement(params.settlementId)),
+      run("read_settlement", (r) =>
+        r.payouts
+          .refresh(params.settlementId)
+          .pipe(
+            Effect.flatMap((payouts) =>
+              paymentTask("read_settlement", async () =>
+                settlementDetail(await r.store.settlement(params.settlementId), payouts),
+              ),
+            ),
+          ),
       ),
     settlementOrders: ({ params, query }) =>
       read("settlement_orders", (r) =>
         r.store.settlementOrders(params.settlementId, ...paging(query)),
       ),
-    confirmSettlement: ({ params, payload }) =>
+    quotePayout: ({ params, payload }) =>
       asAdmin((actor) =>
-        read("confirm_settlement", async (r) =>
-          settlementView(
-            await r.store.confirmSettlement(params.settlementId, payload.proof, actor),
-          ),
+        run("quote_payout", (r) =>
+          r.payouts
+            .quote(params.settlementId, payload, actor)
+            .pipe(
+              Effect.map((row) => HttpServerResponse.jsonUnsafe(payoutView(row), { status: 201 })),
+            ),
         ),
+      ),
+    submitPayout: ({ params }) =>
+      asAdmin((actor) =>
+        run("submit_payout", (r) =>
+          r.payouts
+            .submit(params.settlementId, params.payoutId, actor)
+            .pipe(Effect.map(payoutView)),
+        ),
+      ),
+    markPayoutNotSent: ({ params, payload }) =>
+      asAdmin((actor) =>
+        run("mark_payout_not_sent", (r) =>
+          r.payouts
+            .markNotSent(params.settlementId, params.payoutId, payload.reason, actor)
+            .pipe(Effect.map(payoutView)),
+        ),
+      ),
+    wallet: () =>
+      run("wallet_balance", () =>
+        Effect.flatMap(Effect.service(Wallet), (wallet) => wallet.balance()),
+      ),
+    quote: () =>
+      read("btc_quote", async (r) => {
+        const row = await r.store.latestQuote();
+        return {
+          rateUsd: row.rateUsd,
+          source: "coinbase" as const,
+          quotedAt: row.quotedAt.toISOString(),
+        };
+      }),
+    payoutRoutes: () =>
+      run("payout_routes", () =>
+        Effect.flatMap(Effect.service(Wallet), (wallet) => wallet.payoutRoutes()),
       ),
     cancelSettlement: ({ params, payload }) =>
       asAdmin((actor) =>

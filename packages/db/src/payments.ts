@@ -181,6 +181,104 @@ export const settlementItem = pgTable(
   ],
 ).enableRLS();
 
+const tokenUnits = (column: SQLWrapper) => sql`${column} ~ '^(0|[1-9][0-9]{0,39})$'`;
+/**
+ * One attempt to pay a settlement: its whole amount converted to a stablecoin and sent cross-chain.
+ * A settlement has at most one quoted and at most one active (submitting or pending) attempt.
+ */
+export const settlementPayout = pgTable(
+  "settlement_payout",
+  {
+    id: uuid("id").primaryKey(),
+    settlementId: uuid("settlement_id").notNull(),
+    merchantId: text("merchant_id").notNull(),
+    amountSat: bigint("amount_sat", { mode: "number" }).notNull(),
+    chain: text("chain").notNull(),
+    chainId: text("chain_id"),
+    asset: text("asset").notNull(),
+    assetContract: text("asset_contract"),
+    assetDecimals: integer("asset_decimals").notNull(),
+    address: text("address").notNull(),
+    provider: text("provider").notNull(),
+    providerRef: text("provider_ref").notNull(),
+    quoteExpiresAt: timestamp("quote_expires_at", { withTimezone: true }).notNull(),
+    valueOut: text("value_out").notNull(),
+    feeOut: text("fee_out").notNull(),
+    estimatedOut: text("estimated_out").notNull(),
+    status: text("status").notNull(),
+    paymentId: text("payment_id"),
+    deliveredOut: text("delivered_out"),
+    externalTx: text("external_tx"),
+    notSentReason: text("not_sent_reason"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    submittedBy: text("submitted_by").references(() => user.id, { onDelete: "restrict" }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    resolvedBy: text("resolved_by").references(() => user.id, { onDelete: "restrict" }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.merchantId, t.settlementId],
+      foreignColumns: [settlement.merchantId, settlement.id],
+      name: "settlement_payout_batch_fk",
+    }).onDelete("restrict"),
+    index("settlement_payout_batch_idx").on(t.settlementId, t.createdAt),
+    index("settlement_payout_creator_idx").on(t.createdBy),
+    index("settlement_payout_submitter_idx").on(t.submittedBy),
+    index("settlement_payout_resolver_idx").on(t.resolvedBy),
+    uniqueIndex("settlement_payout_quoted_idx")
+      .on(t.settlementId)
+      .where(sql`${t.status} = 'quoted'`),
+    uniqueIndex("settlement_payout_active_idx")
+      .on(t.settlementId)
+      .where(sql`${t.status} IN ('submitting','pending')`),
+    index("settlement_payout_open_idx")
+      .on(t.status)
+      .where(sql`${t.status} IN ('quoted','submitting','pending')`),
+    check(
+      "settlement_payout_status",
+      sql`${t.status} IN ('quoted','expired','submitting','pending','completed','refunded','failed','not_sent')`,
+    ),
+    check(
+      "settlement_payout_amount",
+      sql`${t.amountSat} > 0 AND ${t.amountSat} <= 2100000000000000`,
+    ),
+    check("settlement_payout_asset", sql`${t.asset} IN ('USDC','USDT')`),
+    check("settlement_payout_provider", sql`${t.provider} IN ('orchestra','boltz')`),
+    check("settlement_payout_chain", sql`${t.chain} ~ '^[a-z0-9][a-z0-9-]{0,39}$'`),
+    check("settlement_payout_decimals", sql`${t.assetDecimals} BETWEEN 0 AND 36`),
+    check("settlement_payout_address", sql`${t.address} ~ '^[0-9A-Za-z]{20,64}$'`),
+    check(
+      "settlement_payout_units",
+      sql`${tokenUnits(t.valueOut)} AND ${tokenUnits(t.feeOut)} AND ${tokenUnits(t.estimatedOut)} AND (${t.deliveredOut} IS NULL OR ${tokenUnits(t.deliveredOut)})`,
+    ),
+    check(
+      "settlement_payout_submitted",
+      sql`(${t.status} IN ('quoted') AND ${t.submittedAt} IS NULL AND ${t.submittedBy} IS NULL) OR (${t.status} IN ('submitting','pending','completed','refunded','not_sent') AND ${t.submittedAt} IS NOT NULL AND ${t.submittedBy} IS NOT NULL) OR ${t.status} IN ('expired','failed')`,
+    ),
+    check(
+      "settlement_payout_payment",
+      sql`${t.status} NOT IN ('pending','completed','refunded') OR ${t.paymentId} IS NOT NULL`,
+    ),
+    check(
+      "settlement_payout_delivered",
+      sql`(${t.status} = 'completed' AND ${t.deliveredOut} IS NOT NULL) OR (${t.status} <> 'completed' AND ${t.deliveredOut} IS NULL AND ${t.externalTx} IS NULL)`,
+    ),
+    check(
+      "settlement_payout_resolved",
+      sql`(${t.status} IN ('completed','refunded','failed','not_sent')) = (${t.resolvedAt} IS NOT NULL)`,
+    ),
+    check(
+      "settlement_payout_not_sent",
+      sql`(${t.status} = 'not_sent' AND ${t.resolvedBy} IS NOT NULL AND length(trim(${t.notSentReason})) BETWEEN 1 AND 500) OR (${t.status} <> 'not_sent' AND ${t.resolvedBy} IS NULL AND ${t.notSentReason} IS NULL)`,
+    ),
+    pgPolicy("settlement_payout_access", { for: "all", using: admin, withCheck: admin }),
+  ],
+).enableRLS();
+
 /** Latest BTC/USD spot price, refreshed by the Worker's cron; one row per source. */
 export const btcQuote = pgTable(
   "btc_quote",

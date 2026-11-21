@@ -1,7 +1,6 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { OverviewPage } from "../modules/admin/overview-page";
 
 export const Route = createFileRoute("/_authenticated/")({
-  beforeLoad: () => {
-    throw redirect({ to: "/merchants", replace: true });
-  },
+  component: OverviewPage,
 });

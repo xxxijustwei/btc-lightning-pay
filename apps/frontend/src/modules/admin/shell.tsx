@@ -26,11 +26,12 @@ import {
 import { Toaster } from "@btc-lightning-pay/ui/components/toast";
 import { TooltipProvider } from "@btc-lightning-pay/ui/components/tooltip";
 import { Link, useMatchRoute } from "@tanstack/react-router";
-import { Receipt, Store, Users, Wallet, Zap } from "lucide-react";
+import { LayoutDashboard, Receipt, Store, Users, Wallet, Zap } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import { AccountMenu } from "../auth/account-menu";
 
 const nav = [
+  { to: "/", label: "概览", icon: LayoutDashboard, exact: true },
   { to: "/merchants", label: "商户", icon: Store },
   { to: "/orders", label: "订单", icon: Receipt },
   { to: "/settlements", label: "结算单", icon: Wallet },
@@ -68,7 +69,7 @@ export function AdminShell({
                   {nav.map((item) => (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton
-                        isActive={Boolean(matchRoute({ to: item.to, fuzzy: true }))}
+                        isActive={Boolean(matchRoute({ to: item.to, fuzzy: !("exact" in item) }))}
                         render={<Link to={item.to} />}
                       >
                         <item.icon aria-hidden="true" />

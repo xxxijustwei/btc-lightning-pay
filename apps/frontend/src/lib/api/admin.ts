@@ -3,7 +3,10 @@ import {
   ManagedUser,
   Merchant,
   PaymentsApi,
+  Payout,
+  PayoutRoute,
   Settlement,
+  SettlementDetail,
   Summary,
 } from "@btc-lightning-pay/api";
 import { AdminApiError, contractClient, type AdminApiErrorCode } from "./contract-client";
@@ -13,6 +16,11 @@ export type MerchantData = typeof Merchant.Type;
 export type ManagedUserData = typeof ManagedUser.Type;
 export type AdminOrderData = typeof AdminOrder.Type;
 export type SettlementData = typeof Settlement.Type;
+export type SettlementDetailData = typeof SettlementDetail.Type;
+export type PayoutData = typeof Payout.Type;
+export type PayoutRouteData = typeof PayoutRoute.Type;
+export type SettlementDisplayStatusValue = SettlementData["displayStatus"];
+export type PayoutDisplayStatusValue = PayoutData["displayStatus"];
 export type SummaryData = typeof Summary.Type;
 export type PaymentStatusValue = AdminOrderData["status"];
 export type SettlementStatusValue = SettlementData["status"];
@@ -58,6 +66,16 @@ const messages: Record<AdminApiErrorCode, string> = {
   PAYMENTS_UNAVAILABLE: "服务暂时不可用，请稍后重试。",
   WALLET_UNAVAILABLE: "钱包服务暂时不可用，请稍后重试。",
   AMOUNT_OVERFLOW: "金额超出可处理范围。",
+  PAYOUT_NOT_FOUND: "打款记录不存在。",
+  PAYOUT_ADDRESS_INVALID: "收款地址不可用，请换一个地址。",
+  ADDRESS_NETWORK_MISMATCH: "收款地址与所选网络不匹配。",
+  AMOUNT_OUT_OF_RANGE: "金额超出该网络的范围，请按最新范围调整。",
+  ROUTE_UNAVAILABLE: "该网络暂时不可用，请换一个网络或稍后再试。",
+  INSUFFICIENT_BALANCE: "钱包余额不足。",
+  QUOTE_EXPIRED: "报价已过期，请重新报价。",
+  PAYOUT_IN_PROGRESS: "这张结算单有正在进行的打款。",
+  PAYOUT_STATE_CONFLICT: "打款状态已变化，请刷新后查看。",
+  PAYOUT_OUTCOME_UNKNOWN: "钱包未及时响应，系统正在核实。请勿重新打款。",
 };
 
 /** User-facing Chinese message for a failed admin call; never shows backend internals. */

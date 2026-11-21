@@ -221,7 +221,7 @@ export function OrderDetailPage({ orderId }: { orderId: string }) {
                   </div>
                   {data.settlementStatus === "pending" ? (
                     <p className="text-muted-foreground">
-                      已被结算单占用，确认付款后才算已结算；若该单取消，本单会释放并进入下一张。
+                      已被结算单占用，打款完成后才算已结算；若该单取消，本单会释放并进入下一张。
                     </p>
                   ) : null}
                 </>
@@ -286,7 +286,7 @@ function timeline(order: AdminOrderData, settlement: SettlementData | undefined)
       detail: shortId(order.settlementId),
     });
     if (settlement?.status === "settled")
-      events.push({ label: "结算单已确认付款", at: settlement.confirmedAt, tone: "bg-success" });
+      events.push({ label: "结算单已打款完成", at: settlement.confirmedAt, tone: "bg-success" });
   }
   return events;
 }

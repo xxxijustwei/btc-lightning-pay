@@ -16,6 +16,7 @@ const SETTLEMENT = {
   cancelReason: null,
   cancelledAt: null,
   cancelledBy: null,
+  displayStatus: "pending",
 };
 
 function stub(respond: (url: string, init?: RequestInit) => Response | Promise<Response>) {

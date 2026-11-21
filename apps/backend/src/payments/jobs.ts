@@ -65,12 +65,15 @@ export async function runScheduled(
   };
   const run = Effect.gen(function* () {
     const { database } = yield* Database;
-    const { store, crediting, intake } = yield* Payments;
+    const { store, crediting, intake, payouts } = yield* Payments;
     const wallet = yield* Wallet;
     yield* Effect.promise(async () => {
       if (new Date(scheduledTime).getUTCMinutes() % 5 === 0) await saveQuote(store, fetcher, log);
       // Without wallet settings the sync fails alone, logged as `not_configured`.
       await task("sync_payments", () => syncPayments(store, crediting, wallet, log));
+      await task("sync_payouts", () =>
+        Effect.runPromise(payouts.sync().pipe(Effect.provideService(Wallet, wallet))),
+      );
       await task("release_reservations", async () => {
         const released = await intake.sweep();
         if (released)

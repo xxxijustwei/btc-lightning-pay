@@ -83,7 +83,7 @@ HTTP 200 时订单和 invoice 都已保存，状态为 `pending`（同一幂等�
 
 ### 结算单接口
 
-流程：生成固定结算单 → 平台人工转账 → 填写凭证确认完成。服务端不执行转账。同商户允许多张互不重叠的待付款单，同一天可以多次结算。
+流程：生成固定结算单 → 在结算单上用 USDC/USDT 打款 → 打款完成后自动结算。不再支持线下转账后填写凭证确认。同商户允许多张互不重叠的待付款单，同一天可以多次结算。打款规则见 [结算单稳定币打款](settlement-payouts-plan.md)。
 
 ```http
 POST /api/admin/settlements
@@ -95,34 +95,38 @@ Content-Type: application/json
 
 创建时不再传 orderIds、amountSat 或 proof，旧字段和其他未知字段返回 400。后端在同一事务内固定该商户全部已确认到账、未被有效批次占用的订单及总金额，不限制为 100 笔；无可选订单返回 409 `NO_ELIGIBLE_ORDERS`。停用商户仍能结算历史收款。
 
-新建返回 201；同幂等键、同商户重试返回 200 和原批次当前状态。响应包含 `id, merchantId, status, amountSat, orderCount, cutoffAt, createdAt, createdBy, proof, confirmedAt, confirmedBy, cancelReason, cancelledAt, cancelledBy`，不返回整个订单 ID 数组，也不暴露幂等键。未填写的审计字段为 null。
+新建返回 201；同幂等键、同商户重试返回 200 和原批次当前状态。响应包含 `id, merchantId, status, displayStatus, amountSat, orderCount, cutoffAt, createdAt, createdBy, proof, confirmedAt, confirmedBy, cancelReason, cancelledAt, cancelledBy`，不返回整个订单 ID 数组，也不暴露幂等键。未填写的审计字段为 null。`displayStatus` 在待付款单有进行中的打款时为 `paying`，打款提交超过 30 秒仍无结果时为 `unconfirmed`，其余同 `status`。
 
-| 接口                                      | 说明                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| `GET /api/admin/settlements`              | 支持 merchantId、status、from、to、limit、offset；按创建时间倒序          |
-| `GET /api/admin/settlements/:id`          | 读取批次金额、笔数、状态和审计记录                                        |
-| `GET /api/admin/settlements/:id/orders`   | 分页读取固定明细，每条含 orderId、merchantId、amountSat；取消后明细仍保留 |
-| `POST /api/admin/settlements/:id/confirm` | `{ "proof": "外部转账凭证" }`，仅待付款单可确认                           |
-| `POST /api/admin/settlements/:id/cancel`  | `{ "reason": "尚未付款，重新核对" }`，仅待付款单可取消                    |
+| 接口                                                         | 说明                                                                                                 |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `GET /api/admin/settlements`                                 | 支持 merchantId、status、from、to、limit、offset；按创建时间倒序                                     |
+| `GET /api/admin/settlements/:id`                             | 批次金额、笔数、状态、审计记录和全部打款记录 `payouts`（新的在前）；有进行中的打款时会向钱包核对一次 |
+| `GET /api/admin/settlements/:id/orders`                      | 分页读取固定明细，每条含 orderId、merchantId、amountSat；取消后明细仍保留                            |
+| `POST /api/admin/settlements/:id/cancel`                     | `{ "reason": "尚未付款，重新核对" }`，仅待付款且没有进行中打款的单可取消                             |
+| `POST /api/admin/settlements/:id/payouts`                    | `{ "chain": "base", "asset": "USDC", "address": "0x…" }`，按结算单全额报价，返回 201 和报价记录      |
+| `POST /api/admin/settlements/:id/payouts/:payoutId/submit`   | 提交报价；钱包未及时响应时返回 502 `PAYOUT_OUTCOME_UNKNOWN`，不可重试                                |
+| `POST /api/admin/settlements/:id/payouts/:payoutId/not-sent` | `{ "reason": "…" }`，把结果待确认的打款标记为未发出                                                  |
+| `GET /api/admin/payouts/routes`                              | 可打款的网络与币种及限额，来自钱包服务的跨链路由                                                     |
+| `GET /api/admin/wallet`、`GET /api/admin/quote`              | 钱包余额；最近一次存储的 BTC/USD 价格                                                                |
 
 结算列表和明细列表返回 `{items,total,limit,offset}`；默认 50、每页最多 100、offset 最大 100000。批次列表时间过滤针对 createdAt，from 含、to 不含。详情明细按订单 ID 排序。订单详情中的 settlementStatus 独立于支付 status：pending 表示占用，settled 才是已结算；不能只看 settlementId 非空就显示已结算。
 
-状态为 pending（待付款）、settled（已结算）、cancelled（已取消）。生成时只增加占用，确认时才计入已结算，取消释放占用但不删除明细。已结算不可取消、改凭证或删除；取消后不可确认。
+状态为 pending（待付款）、settled（已结算）、cancelled（已取消）。生成时只增加占用，打款完成时才计入已结算，取消释放占用但不删除明细。已结算不可取消或删除；取消后不可打款。
 
-凭证去首尾空白后为 1–1000 字符，取消原因 1–500 字符。同批次相同凭证重复确认／相同原因重复取消返回原结果，保留首次操作者和时间；不同内容返回对应 409 冲突。确认与取消并发只有一个成功。转账结果不明时保持待付款，先核实，不取消或再次付款。
+打款完成时在同一事务里把结算单改为已结算：`proof` 为目标链交易哈希（服务商未提供时为钱包付款 ID），`confirmedBy` 为提交打款的管理员。取消原因 1–500 字符，相同原因重复取消返回原结果，不同原因返回 409。提交与取消并发只有一个成功。打款结果不明时保持待付款，由定时同步核实；不取消、不重新打款，确认没有转出后再标记为未发出。
 
 截止时刻由数据库在生成时取快照，按毫秒记录；包含快照可见且 paidAt 不晚于截止时刻的订单，包括往日积累。之后的新到账、迟到确认不改变本批，顺延下一批。API 返回 UTC ISO8601，前端固定按北京时间 `Asia/Shanghai` 展示；不以午夜自动切账。创建结算单不会同步扫描所有 钱包 invoice。
 
 业务错误与输入校验错误统一返回 `{ "code": "...", "message": "..." }`。无效 JSON、Schema 输入校验失败返回 400 `INVALID_INPUT`；内部响应编码错误返回 500 `INTERNAL_ERROR`，不暴露原始校验内容。Worker 支付响应和 Wallet 响应带 `X-Request-Id`，可用于关联日志。
 
-| HTTP      | 常见 code / 含义                                                                                                                                       |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 400       | 输入不合法、`INVALID_PAGINATION`、`INVALID_DATE`、`BODY_TOO_LARGE`                                                                                     |
-| 401 / 403 | 未登录、`ADMIN_REQUIRED`、`ORIGIN_REJECTED`                                                                                                            |
-| 404       | `MERCHANT_NOT_FOUND`、`ORDER_NOT_FOUND`                                                                                                                |
-| 409       | `IDEMPOTENCY_CONFLICT`、`ORDER_IN_PROGRESS`、`MERCHANT_DISABLED`、`MERCHANT_EXISTS`、`USER_IS_MERCHANT`、`NO_ELIGIBLE_ORDERS`、`SETTLEMENT_*_CONFLICT` |
-| 429       | `RATE_LIMITED`：见下方限流；重试使用原幂等键                                                                                                           |
-| 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                                                                                              |
+| HTTP      | 常见 code / 含义                                                                                                                                                                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400       | 输入不合法、`INVALID_PAGINATION`、`INVALID_DATE`、`BODY_TOO_LARGE`                                                                                                                                                                                      |
+| 401 / 403 | 未登录、`ADMIN_REQUIRED`、`ORIGIN_REJECTED`                                                                                                                                                                                                             |
+| 404       | `MERCHANT_NOT_FOUND`、`ORDER_NOT_FOUND`                                                                                                                                                                                                                 |
+| 409       | `IDEMPOTENCY_CONFLICT`、`ORDER_IN_PROGRESS`、`MERCHANT_DISABLED`、`MERCHANT_EXISTS`、`USER_IS_MERCHANT`、`NO_ELIGIBLE_ORDERS`、`SETTLEMENT_*_CONFLICT`、`PAYOUT_*`、`AMOUNT_OUT_OF_RANGE`、`ROUTE_UNAVAILABLE`、`INSUFFICIENT_BALANCE`、`QUOTE_EXPIRED` |
+| 429       | `RATE_LIMITED`：见下方限流；重试使用原幂等键                                                                                                                                                                                                            |
+| 503       | `QUOTE_UNAVAILABLE`、配置缺失或服务故障；不展示为支付失败                                                                                                                                                                                               |
 
 ### 限流
 
@@ -195,6 +199,6 @@ Bearer token 保留为第二层校验，Worker 配置相同的 `WALLET_TOKEN`。
 
 本地自动检查：`pnpm ready`。钱包 runtime 测试由 Vite+ 启动 Bun 子进程，验证共享 API、真实 Breez WASM、公钥推导、HTTP 鉴权以及服务资源释放；不读取真实钱包环境或访问资金。Breez 的官方入口仍为 `/nodejs`，升级 Bun 或 SDK 后需要重新验证，不能仅凭 Node 下的单元测试通过判断兼容。真实 PostgreSQL 并发测试默认跳过，需要设置 `PAYMENT_TEST_DATABASE_URL`，只允许本机独占的空 `payments_test` 数据库。测试会初始化基线和角色，不可指向业务库。`BREEZ_TEST_DATABASE_URL` 可指向独立本地 `wallet_test`，验证真实 SDK PostgreSQL 的初始化、重连和关闭（公开测试助记词、regtest、不交易）。
 
-正式收款前手动完成：主网小额 Cash App 支付并确认 `receivePayment` 的 `fee` 为 0、付款后立即关闭页面并确认定时同步在约 1 分钟内入账、重启后查询、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。人工结算仍仅登记已完成的外部付款；本服务没有转账 API，实际资金转出流程需另行验收。
+正式收款前手动完成：主网小额 Cash App 支付并确认 `receivePayment` 的 `fee` 为 0、付款后立即关闭页面并确认定时同步在约 1 分钟内入账、重启后查询、invoice 到期及金额核对。Regtest 无法替代真实 Lightning 验收。结算打款需另行做主网小额验收：建一个测试商户、生成最小金额的结算单，人工提交打款，核对目标链浏览器、钱包余额和结算单状态。
 
 官方参考：[服务端 Treasury](https://sdk-doc-spark.breez.technology/guide/treasury.html)、[PostgreSQL 存储](https://sdk-doc-spark.breez.technology/guide/customizing.html#with-postgresql-backend)、[收款](https://sdk-doc-spark.breez.technology/guide/receive_payment.html)。

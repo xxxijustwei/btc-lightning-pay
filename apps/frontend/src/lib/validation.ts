@@ -2,8 +2,8 @@ import {
   AccountEmail,
   AccountName,
   CancelSettlement,
-  ConfirmSettlement,
   MerchantSlug,
+  NotSentPayout,
 } from "@btc-lightning-pay/api";
 import { Schema } from "effect";
 
@@ -14,7 +14,7 @@ import { Schema } from "effect";
 const isName = Schema.is(AccountName);
 const isEmail = Schema.is(AccountEmail);
 const isSlug = Schema.is(MerchantSlug);
-const isProof = Schema.is(ConfirmSettlement);
+const isNotSent = Schema.is(NotSentPayout);
 const isReason = Schema.is(CancelSettlement);
 
 export const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -35,12 +35,12 @@ export function validateSlug({ value }: { value: string }) {
   return isSlug(value) ? undefined : "3–32 位，小写字母开头，仅含小写字母、数字、连字符。";
 }
 
-export function validateProof({ value }: { value: string }) {
-  return isProof({ proof: value.trim() }) ? undefined : "请填写 1–1000 个字符的转账凭证。";
-}
-
 export function validateReason({ value }: { value: string }) {
   return isReason({ reason: value.trim() }) ? undefined : "请填写 1–500 个字符的取消原因。";
+}
+
+export function validateNotSentReason({ value }: { value: string }) {
+  return isNotSent({ reason: value.trim() }) ? undefined : "请填写 1–500 个字符的原因。";
 }
 
 /** Shapes TanStack Form's string errors for shadcn's `FieldError`. */

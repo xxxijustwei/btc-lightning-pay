@@ -16,7 +16,7 @@ DO $$ BEGIN
 END $$;
 GRANT USAGE ON SCHEMA public TO btc_backend;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public."user", public.session, public.account, public.verification, public.rate_limit, public.otp_throttle TO btc_backend;
-GRANT SELECT, INSERT, UPDATE ON public.merchant, public.settlement TO btc_backend;
+GRANT SELECT, INSERT, UPDATE ON public.merchant, public.settlement, public.settlement_payout TO btc_backend;
 -- DELETE releases an order reservation whose invoice could not be issued.
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.payment_order TO btc_backend;
 GRANT SELECT, INSERT, UPDATE ON public.wallet_sync_cursor TO btc_backend;

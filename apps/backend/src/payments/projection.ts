@@ -1,5 +1,7 @@
 import { Schema } from "effect";
-import { excessMsat, Settlement } from "@btc-lightning-pay/api";
+import { excessMsat, Payout, Settlement, SettlementDetail } from "@btc-lightning-pay/api";
+import type { settlement } from "@btc-lightning-pay/db/schema";
+import { isUnconfirmed, type PayoutRow } from "./payout-store";
 import type { PaymentStatus } from "@btc-lightning-pay/api";
 import type { OrderRow } from "./store";
 export function publicOrder(row: OrderRow) {
@@ -40,15 +42,53 @@ export function statusOf(row: OrderRow): typeof PaymentStatus.Type {
   return row.expiresAt.getTime() <= Date.now() ? "expired" : "pending";
 }
 
-export function settlementView(
-  row: typeof import("@btc-lightning-pay/db/schema").settlement.$inferSelect,
-) {
+type SettlementRow = typeof settlement.$inferSelect & { displayStatus: string };
+const iso = (date: Date | null) => date?.toISOString() ?? null;
+export function settlementView(row: SettlementRow) {
   const { key: _key, ...rest } = row;
   return Schema.decodeUnknownSync(Settlement)({
     ...rest,
     createdAt: row.createdAt.toISOString(),
-    cutoffAt: row.cutoffAt?.toISOString() ?? null,
-    confirmedAt: row.confirmedAt?.toISOString() ?? null,
-    cancelledAt: row.cancelledAt?.toISOString() ?? null,
+    cutoffAt: iso(row.cutoffAt),
+    confirmedAt: iso(row.confirmedAt),
+    cancelledAt: iso(row.cancelledAt),
+  });
+}
+export function payoutView(row: PayoutRow) {
+  return Schema.decodeUnknownSync(Payout)({
+    id: row.id,
+    settlementId: row.settlementId,
+    merchantId: row.merchantId,
+    amountSat: row.amountSat,
+    chain: row.chain,
+    chainId: row.chainId,
+    asset: row.asset,
+    contract: row.assetContract,
+    decimals: row.assetDecimals,
+    address: row.address,
+    provider: row.provider,
+    providerRef: row.providerRef,
+    quoteExpiresAt: row.quoteExpiresAt.toISOString(),
+    valueOut: row.valueOut,
+    feeOut: row.feeOut,
+    estimatedOut: row.estimatedOut,
+    status: row.status,
+    displayStatus: isUnconfirmed(row) ? "unconfirmed" : row.status,
+    paymentId: row.paymentId,
+    deliveredOut: row.deliveredOut,
+    externalTx: row.externalTx,
+    notSentReason: row.notSentReason,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    submittedAt: iso(row.submittedAt),
+    submittedBy: row.submittedBy,
+    resolvedAt: iso(row.resolvedAt),
+    resolvedBy: row.resolvedBy,
+  });
+}
+export function settlementDetail(row: SettlementRow, payouts: PayoutRow[]) {
+  return Schema.decodeUnknownSync(SettlementDetail)({
+    ...settlementView(row),
+    payouts: payouts.map(payoutView),
   });
 }

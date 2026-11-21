@@ -5,6 +5,7 @@ export {
   paymentOrder,
   settlement,
   settlementItem,
+  settlementPayout,
   walletSyncCursor,
 } from "./payments";
 import {

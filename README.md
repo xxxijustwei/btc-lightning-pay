@@ -1,6 +1,6 @@
 # BTC Lightning Pay
 
-Monorepo：两个 TanStack Start 前端（平台管理端、付款页）、Cloudflare Workers 业务后端、独立 Bun 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和人工结算后端。
+Monorepo：两个 TanStack Start 前端（平台管理端、付款页）、Cloudflare Workers 业务后端、独立 Bun 收款后端、共享 API 契约与 shadcn/ui 源码包。当前包含邮箱验证码认证、Breez Spark 平台钱包，以及多商户收款、支付同步和结算单稳定币打款后端。
 
 用户、商户与两个独立管理前端的边界见 [用户管理](docs/user-management.md)。业务范围见 [第一阶段方案](docs/backend-phase-one.md)，后端配置与 Claude 接入说明见 [后端接入与部署](docs/backend-setup.md)。
 
@@ -141,7 +141,7 @@ pnpm --filter @btc-lightning-pay/ui exec shadcn add dialog
 
 ## 当前边界
 
-已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成／确认／取消 API。付款页（`apps/pay`）与平台管理端页面（`apps/frontend`）已接入这些 API，尚未与真实后端和钱包联调。不包含商户独立钱包、退款或自动提现。业务和钱包共用一个 Supabase PostgreSQL，分别使用 `public` 和 `breez_wallet`。单独备份钱包密钥和 `breez_wallet`，部署步骤见 [后端接入与部署](docs/backend-setup.md)。
+已包含 Breez Spark 钱包服务、多商户订单、固定报价、到账核验、管理员权限和结算单生成、打款、取消 API。付款页（`apps/pay`）与平台管理端页面（`apps/frontend`）已接入这些 API，尚未与真实后端和钱包联调。不包含商户独立钱包、退款或独立提现；转出资金只能通过结算单打款。业务和钱包共用一个 Supabase PostgreSQL，分别使用 `public` 和 `breez_wallet`。单独备份钱包密钥和 `breez_wallet`，部署步骤见 [后端接入与部署](docs/backend-setup.md)。
 
 本地验证命令为 `pnpm ready`，包括格式/lint、各包类型检查、测试、前后端构建。测试覆盖共享按钮的加载禁用与失败重试；浏览器已验证 shadcn 主题渲染和前后端联调，冻结安装与 peer 检查通过。尚未验证真实云端部署。
 

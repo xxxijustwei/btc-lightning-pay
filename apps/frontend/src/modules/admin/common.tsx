@@ -1,13 +1,19 @@
 import { Alert, AlertDescription, AlertTitle } from "@btc-lightning-pay/ui/components/alert";
 import { Badge } from "@btc-lightning-pay/ui/components/badge";
 import { Button } from "@btc-lightning-pay/ui/components/button";
+import { Spinner } from "@btc-lightning-pay/ui/components/spinner";
+import { useQuery } from "@tanstack/react-query";
 import { Check, CircleAlert, Copy } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   describeAdminError,
   type PaymentStatusValue,
+  type PayoutDisplayStatusValue,
+  type SettlementDisplayStatusValue,
   type SettlementStatusValue,
 } from "../../lib/api/admin";
+import { satsToUsd } from "../../lib/payout";
+import { btcQuoteQuery } from "./queries";
 
 const orderStatus: Record<
   PaymentStatusValue,
@@ -44,9 +50,67 @@ export const settlementStatusOptions = Object.entries(settlementStatus).map(
   }),
 );
 
-export function SettlementStatusBadge({ status }: { status: SettlementStatusValue }) {
+export function SettlementStatusBadge({
+  status,
+}: {
+  status: SettlementStatusValue | SettlementDisplayStatusValue;
+}) {
+  if (status === "paying")
+    return (
+      <Badge variant="info">
+        <Spinner aria-hidden="true" />
+        打款中
+      </Badge>
+    );
+  if (status === "unconfirmed") return <Badge variant="warning">结果待确认</Badge>;
   const { label, variant } = settlementStatus[status];
   return <Badge variant={variant}>{label}</Badge>;
+}
+
+const payoutStatus: Record<
+  PayoutDisplayStatusValue,
+  {
+    label: string;
+    variant: "outline" | "info" | "warning" | "success" | "secondary" | "destructive";
+    className?: string;
+    busy?: boolean;
+  }
+> = {
+  quoted: { label: "已报价", variant: "outline" },
+  expired: { label: "已过期", variant: "outline", className: "text-muted-foreground" },
+  submitting: { label: "提交中", variant: "info", busy: true },
+  unconfirmed: { label: "结果待确认", variant: "warning" },
+  pending: { label: "处理中", variant: "info", busy: true },
+  completed: { label: "已完成", variant: "success" },
+  refunded: {
+    label: "已退款",
+    variant: "secondary",
+    className: "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
+  },
+  failed: { label: "失败", variant: "destructive" },
+  not_sent: { label: "未发出", variant: "secondary" },
+};
+
+export function PayoutStatusBadge({ status }: { status: PayoutDisplayStatusValue }) {
+  const { label, variant, className, busy } = payoutStatus[status];
+  return (
+    <Badge variant={variant} className={className}>
+      {busy ? <Spinner aria-hidden="true" /> : null}
+      {label}
+    </Badge>
+  );
+}
+
+/** "≈ $X" for `sats` at the latest stored BTC price; nothing until a price is known. */
+export function UsdApprox({ sats, className }: { sats: number; className?: string }) {
+  const quote = useQuery(btcQuoteQuery());
+  if (!quote.data) return null;
+  const rate = Number(quote.data.rateUsd).toLocaleString("en-US");
+  return (
+    <span className={className} title={`按当前价 1 BTC ≈ $${rate} 估算`}>
+      ≈ {satsToUsd(sats, quote.data.rateUsd)}
+    </span>
+  );
 }
 
 /** Settlement state of an order: occupied by a pending batch, settled, or not yet in any batch. */

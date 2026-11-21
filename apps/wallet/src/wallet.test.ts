@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import type { InputType, Payment } from "@breeztech/breez-sdk-spark/nodejs";
 import { Sats } from "@btc-lightning-pay/api";
+import { createPayouts, type PayoutSdk } from "./payouts.ts";
 import { createSparkWallet, type SparkSdk } from "./spark.ts";
 import { walletWebHandler } from "./app.ts";
 import { parseConfig, readSecret } from "./config.ts";
@@ -64,7 +65,8 @@ function fixture(records: Payment[] = []) {
     parse: vi.fn<SparkSdk["parse"]>(async () => parsed),
     listPayments: vi.fn<SparkSdk["listPayments"]>(async () => ({ payments: records })),
   };
-  return { sdk, wallet: createSparkWallet(sdk) };
+  // Payout calls are covered in payouts.test.ts; these tests never reach the payout SDK.
+  return { sdk, wallet: { ...createSparkWallet(sdk), payouts: createPayouts({} as PayoutSdk) } };
 }
 test("creates fixed one-hour invoices; pending receipt has no fabricated amount", async () => {
   const { sdk, wallet } = fixture();

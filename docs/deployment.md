@@ -110,12 +110,28 @@ pnpm --filter @btc-lightning-pay/frontend run deploy
 pnpm --filter @btc-lightning-pay/pay run deploy
 ```
 
+### Workers Builds
+
+在 Cloudflare 的 Worker → Settings → Builds 连接 `xxxijustwei/btc-lightning-pay`。生产分支用 `main`，关闭 Preview builds。Build command 留空，Deploy command 用 `pnpm run deploy`。管理端和付款页的部署脚本会先运行 Vite 构建。
+
+| Worker                      | Root directory  | Include paths（各 Worker 专用）    |
+| --------------------------- | --------------- | ---------------------------------- |
+| `btc-lightning-pay-backend` | `apps/backend`  | `apps/backend/*`、`packages/db/*`  |
+| `btc-lightning-pay-admin`   | `apps/frontend` | `apps/frontend/*`、`packages/ui/*` |
+| `btc-lightning-pay-pay`     | `apps/pay`      | `apps/pay/*`、`packages/ui/*`      |
+
+三个 Worker 的 Include paths 都加上 `packages/api/*`、`package.json`、`pnpm-workspace.yaml`、`pnpm-lock.yaml` 和 `tsconfig.json`。在 Builds 的变量区设置 `NODE_VERSION=26.13.1`，与仓库 `.node-version` 一致。pnpm 版本由仓库根目录 `package.json` 的 `packageManager` 决定。后端的运行时密钥继续在 Worker 的 **Runtime variables and secrets** 中管理。
+
+Workers Builds 按各自的监听路径独立部署。需要协调数据库、钱包和 Worker 的更新时，先按本文的日常更新顺序准备依赖，再合并会触发生产部署的变更。
+
+结算打款（迁移 `0001_settlement_payouts`）上线顺序：执行 `pnpm --filter @btc-lightning-pay/db run migrate`，在 SQL Editor 重新执行 `provision-backend-role.sql`（为 `btc_backend` 授权新表 `settlement_payout`）→ 部署 wallet（开启跨链路由）→ 部署 backend → 部署管理端。
+
 ## 6. 上线验收
 
 1. 打开 `https://x-admin.cashpayment.co` 用邮箱验证码登录（验证 Resend、HTTPS cookie、Hyperdrive）。
 2. 新建商户，打开 `https://www.cashpayment.co/<slug>` 下单，出现 invoice 即 backend → wallet 链路正常。
 3. 主网小额付款：确认 `fee` 为 0；付完立即关页，约 1 分钟内由定时同步入账；Dokploy 重启 wallet 后仍可查询；测一次 invoice 过期。
-4. 生成结算单，分别试确认和取消。
+4. 生成结算单，试取消；再用最小金额走一次打款（报价、提交、到账后自动结算），核对目标链浏览器和钱包余额。
 5. 正式收款前演练 `breez_wallet` 与助记词的备份恢复。
 
 ## 回滚

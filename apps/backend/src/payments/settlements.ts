@@ -1,9 +1,29 @@
-import { merchant, paymentOrder, settlement, settlementItem } from "@btc-lightning-pay/db/schema";
-import { and, count, desc, eq, gte, isNull, lte, lt, sql, type SQL } from "drizzle-orm";
+import {
+  merchant,
+  paymentOrder,
+  settlement,
+  settlementItem,
+  settlementPayout,
+} from "@btc-lightning-pay/db/schema";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  lt,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { TransactionRunner, Transaction } from "./store";
 import { PaymentFailure } from "./errors";
 
-async function lockMerchant(tx: Transaction, id: string) {
+/** Serializes every settlement and payout change of one merchant. */
+export async function lockMerchant(tx: Transaction, id: string) {
   await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
   await tx.execute(sql`SET LOCAL statement_timeout = '15s'`);
   await tx.execute(
@@ -12,50 +32,63 @@ async function lockMerchant(tx: Transaction, id: string) {
   const [row] = await tx.select({ id: merchant.id }).from(merchant).where(eq(merchant.id, id));
   if (!row) throw new PaymentFailure({ code: "MERCHANT_NOT_FOUND" });
 }
+/** A submitted payout still unanswered after this long shows as unconfirmed. */
+export const UNCONFIRMED_AFTER_SECONDS = 30;
+/** `status`, except a pending settlement with an active payout shows it as paying or unconfirmed. */
+// Qualified by hand: drizzle may render a selected column unqualified, which the subquery would
+// resolve against its own table.
+const displayStatus = sql<string>`CASE WHEN "settlement"."status" = 'pending' THEN coalesce((SELECT CASE WHEN p.status = 'submitting' AND p.submitted_at < now() - make_interval(secs => ${UNCONFIRMED_AFTER_SECONDS}) THEN 'unconfirmed' ELSE 'paying' END FROM settlement_payout p WHERE p.settlement_id = "settlement"."id" AND p.status IN ('submitting','pending') LIMIT 1), 'pending') ELSE "settlement"."status" END`;
+const withDisplay = { ...getTableColumns(settlement), displayStatus };
 export function createSettlementStore(transaction: TransactionRunner) {
   async function get(tx: Transaction, id: string) {
-    const [row] = await tx.select().from(settlement).where(eq(settlement.id, id));
+    const [row] = await tx.select(withDisplay).from(settlement).where(eq(settlement.id, id));
     if (!row) throw new PaymentFailure({ code: "SETTLEMENT_NOT_FOUND" });
     return row;
   }
-  async function finish(id: string, value: string, actor: string, status: "settled" | "cancelled") {
+  /** Cancels a pending settlement that no payout is paying; repeating the same reason is a no-op. */
+  async function cancel(id: string, value: string, actor: string) {
     return transaction({ admin: true }, async (tx) => {
       const initial = await get(tx, id);
       await lockMerchant(tx, initial.merchantId);
       const [row] = await tx.select().from(settlement).where(eq(settlement.id, id)).for("update");
       const text = value.trim();
-      if (text.length < 1 || text.length > (status === "settled" ? 1000 : 500))
-        throw new PaymentFailure({ code: "INVALID_INPUT" });
-      if (row.status === status) {
-        if ((status === "settled" ? row.proof : row.cancelReason) !== text)
-          throw new PaymentFailure({
-            code: status === "settled" ? "SETTLEMENT_PROOF_CONFLICT" : "SETTLEMENT_REASON_CONFLICT",
-          });
-        return row;
+      if (text.length < 1 || text.length > 500) throw new PaymentFailure({ code: "INVALID_INPUT" });
+      if (row.status === "cancelled") {
+        if (row.cancelReason !== text)
+          throw new PaymentFailure({ code: "SETTLEMENT_REASON_CONFLICT" });
+        return get(tx, id);
       }
       if (row.status !== "pending") throw new PaymentFailure({ code: "SETTLEMENT_STATE_CONFLICT" });
-      if (status === "cancelled")
-        await tx
-          .update(paymentOrder)
-          .set({ settlementId: null })
-          .where(
-            and(eq(paymentOrder.merchantId, row.merchantId), eq(paymentOrder.settlementId, id)),
-          );
-      const [saved] = await tx
-        .update(settlement)
-        .set(
-          status === "settled"
-            ? { status, proof: text, confirmedBy: actor, confirmedAt: sql`clock_timestamp()` }
-            : {
-                status,
-                cancelReason: text,
-                cancelledBy: actor,
-                cancelledAt: sql`clock_timestamp()`,
-              },
+      const [active] = await tx
+        .select({ id: settlementPayout.id })
+        .from(settlementPayout)
+        .where(
+          and(
+            eq(settlementPayout.settlementId, id),
+            inArray(settlementPayout.status, ["submitting", "pending"]),
+          ),
         )
-        .where(eq(settlement.id, id))
-        .returning();
-      return saved;
+        .limit(1);
+      if (active) throw new PaymentFailure({ code: "PAYOUT_IN_PROGRESS" });
+      // An unsubmitted quote dies with its settlement.
+      await tx
+        .update(settlementPayout)
+        .set({ status: "expired" })
+        .where(and(eq(settlementPayout.settlementId, id), eq(settlementPayout.status, "quoted")));
+      await tx
+        .update(paymentOrder)
+        .set({ settlementId: null })
+        .where(and(eq(paymentOrder.merchantId, row.merchantId), eq(paymentOrder.settlementId, id)));
+      await tx
+        .update(settlement)
+        .set({
+          status: "cancelled",
+          cancelReason: text,
+          cancelledBy: actor,
+          cancelledAt: sql`clock_timestamp()`,
+        })
+        .where(eq(settlement.id, id));
+      return get(tx, id);
     });
   }
   return {
@@ -70,7 +103,7 @@ export function createSettlementStore(transaction: TransactionRunner) {
         if (old) {
           if (old.merchantId !== input.merchantId)
             throw new PaymentFailure({ code: "IDEMPOTENCY_CONFLICT" });
-          return { record: old, created: false };
+          return { record: await get(tx, old.id), created: false };
         }
         await lockMerchant(tx, input.merchantId);
         const rows = await tx
@@ -120,13 +153,10 @@ export function createSettlementStore(transaction: TransactionRunner) {
         await tx.execute(
           sql`INSERT INTO settlement_item(settlement_id,merchant_id,order_id,amount_sat) SELECT ${record.id}::uuid,merchant_id,id,amount_sat FROM payment_order WHERE merchant_id=${input.merchantId} AND settlement_id=${record.id}::uuid`,
         );
-        return { record, created: true };
+        return { record: await get(tx, record.id), created: true };
       });
     },
-    confirmSettlement: (id: string, proof: string, actor: string) =>
-      finish(id, proof, actor, "settled"),
-    cancelSettlement: (id: string, reason: string, actor: string) =>
-      finish(id, reason, actor, "cancelled"),
+    cancelSettlement: cancel,
     settlement: (id: string) => transaction({ admin: true }, (tx) => get(tx, id)),
     async settlementOrders(id: string, limit: number, offset: number) {
       return transaction({ admin: true }, async (tx) => {
@@ -168,7 +198,7 @@ export function createSettlementStore(transaction: TransactionRunner) {
           .from(settlement)
           .where(and(...conditions));
         const items = await tx
-          .select()
+          .select(withDisplay)
           .from(settlement)
           .where(and(...conditions))
           .orderBy(desc(settlement.createdAt), settlement.id)

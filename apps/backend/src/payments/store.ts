@@ -83,6 +83,14 @@ export function createPaymentStore(db: Database, signal?: AbortSignal) {
           }),
       );
     },
+    /** The latest stored BTC/USD quote; `QUOTE_UNAVAILABLE` before the first one. */
+    async latestQuote() {
+      return transaction({ admin: true }, async (tx) => {
+        const [row] = await tx.select().from(btcQuote).where(eq(btcQuote.source, "coinbase"));
+        if (!row) throw new PaymentFailure({ code: "QUOTE_UNAVAILABLE" });
+        return row;
+      });
+    },
     /** Stores the latest quote; an older quote never replaces a newer one. */
     async saveQuote(quote: { rateUsd: string; quotedAt: Date }) {
       return transaction({ admin: true }, async (tx) => {

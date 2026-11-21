@@ -3,6 +3,7 @@ import { WalletApi, WalletAuth } from "@btc-lightning-pay/api/payments";
 import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerRequest } from "effect/http";
+import { PayoutRejected } from "./payouts.ts";
 import { Wallet } from "./wallet.ts";
 import {
   WalletDependencyFailure,
@@ -50,6 +51,8 @@ const walletCall = <A>(
     const { requestId } = yield* RequestTrace;
     return yield* walletTask(() => work(wallet)).pipe(
       Effect.catch((error) => {
+        // Refused before any funds moved: the Worker records it as a definite failure.
+        if (error instanceof PayoutRejected) return Effect.succeed(problem(error.code));
         if (error instanceof WalletDependencyFailure && error.reason === "mismatch") {
           logWalletAnomaly({ requestId, operation, orderId });
           return Effect.succeed(problem("PAYMENT_MISMATCH"));
@@ -83,6 +86,23 @@ export function walletRoutes(config: WalletConfig) {
       )
       .handle("completed", ({ payload }) =>
         walletCall("list_completed", undefined, (wallet) => wallet.completed(payload.since)),
+      )
+      .handle("balance", () =>
+        walletCall("balance", undefined, (wallet) => wallet.payouts.balance()),
+      )
+      .handle("payoutRoutes", () =>
+        walletCall("payout_routes", undefined, (wallet) => wallet.payouts.routes()),
+      )
+      .handle("quotePayout", ({ payload }) =>
+        walletCall("quote_payout", undefined, (wallet) => wallet.payouts.quote(payload)),
+      )
+      .handle("sendPayout", ({ payload }) =>
+        walletCall("send_payout", undefined, (wallet) => wallet.payouts.send(payload.payoutId)),
+      )
+      .handle("payoutStatus", ({ payload }) =>
+        walletCall("payout_status", undefined, (wallet) =>
+          wallet.payouts.status(payload.payoutId, payload.paymentId),
+        ),
       ),
   );
   return HttpApiBuilder.layer(WalletApi).pipe(

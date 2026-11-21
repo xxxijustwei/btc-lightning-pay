@@ -7,7 +7,7 @@ import { DateRangePicker } from "../../components/date-range-picker";
 import { adminApi, type SettlementData } from "../../lib/api/admin";
 import { formatBeijing, formatSats, shortId } from "../../lib/format";
 import { beijingRange, settlementsSearch } from "../../lib/list-search";
-import { ErrorState, SettlementStatusBadge, settlementStatusOptions } from "./common";
+import { ErrorState, SettlementStatusBadge, settlementStatusOptions, UsdApprox } from "./common";
 import { FilterToggle } from "./filter-toggle";
 import { MerchantCell, MerchantSelect } from "./merchant-select";
 import { useServerList } from "./server-list";
@@ -31,7 +31,7 @@ export const settlementColumns = helper.columns([
     header: "商户",
     cell: ({ getValue }) => <MerchantCell merchantId={getValue()} />,
   }),
-  helper.accessor("status", {
+  helper.accessor("displayStatus", {
     header: "状态",
     cell: ({ getValue }) => <SettlementStatusBadge status={getValue()} />,
   }),
@@ -39,8 +39,13 @@ export const settlementColumns = helper.columns([
     header: "应付 (sats)",
     meta: { headerClassName: "text-right", cellClassName: "text-right font-mono tabular-nums" },
     cell: ({ getValue, row }) => (
-      <span className={row.original.status === "cancelled" ? "text-muted-foreground" : undefined}>
-        {formatSats(getValue())}
+      <span className="flex flex-col items-end">
+        <span className={row.original.status === "cancelled" ? "text-muted-foreground" : undefined}>
+          {formatSats(getValue())}
+        </span>
+        {row.original.status === "pending" ? (
+          <UsdApprox sats={getValue()} className="font-sans text-xs text-muted-foreground" />
+        ) : null}
       </span>
     ),
   }),
@@ -60,7 +65,7 @@ export const settlementColumns = helper.columns([
     header: () => <span className="sr-only">操作</span>,
     meta: { headerClassName: "text-right", cellClassName: "text-right" },
     cell: ({ row }) => {
-      const pending = row.original.status === "pending";
+      const pending = row.original.displayStatus === "pending";
       return (
         <Button
           variant={pending ? "outline" : "ghost"}
@@ -70,7 +75,7 @@ export const settlementColumns = helper.columns([
             <Link to="/settlements/$settlementId" params={{ settlementId: row.original.id }} />
           }
         >
-          {pending ? "去确认付款" : "查看"}
+          {pending ? "去打款" : "查看"}
         </Button>
       );
     },

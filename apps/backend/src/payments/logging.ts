@@ -8,6 +8,7 @@ export type PaymentLog = (entry: {
   code: string;
   durationMs?: number;
   orderId?: string;
+  payoutId?: string;
   dependency?: string;
   reason?: string;
   upstreamStatus?: number;

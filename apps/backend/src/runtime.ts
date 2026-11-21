@@ -7,6 +7,8 @@ import { PaymentFailure } from "./payments/errors";
 import { createOrderIntake, type OrderIntake, type Quote } from "./payments/intake";
 import { paymentLogger, type PaymentLog } from "./payments/logging";
 import { createQuoteSource } from "./payments/quote";
+import { createPayoutStore } from "./payments/payout-store";
+import { createPayouts, type Payouts } from "./payments/payouts";
 import { createPaymentService } from "./payments/service";
 import { createPaymentStore, transactionRunner } from "./payments/store";
 import {
@@ -79,6 +81,7 @@ export class Payments extends Context.Service<
     crediting: Crediting;
     payments: ReturnType<typeof createPaymentService>;
     intake: OrderIntake;
+    payouts: Payouts;
   }
 >()("backend/Payments") {}
 
@@ -116,6 +119,7 @@ const paymentsLayer = (signal?: AbortSignal) =>
       const { quote } = yield* QuoteSource;
       const store = createPaymentStore(database, signal);
       const crediting = createCrediting(store, log);
+      const payouts = createPayouts(createPayoutStore(transactionRunner(database, signal)), log);
       return Payments.of({
         store,
         crediting,
@@ -126,6 +130,7 @@ const paymentsLayer = (signal?: AbortSignal) =>
           quote,
           log,
         }),
+        payouts,
       });
     }),
   );
